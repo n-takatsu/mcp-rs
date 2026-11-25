@@ -134,8 +134,72 @@ pub struct ToolAnnotations {
 pub struct Resource {
     pub uri: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+}
+
+/// リソースのテンプレート（#644）。`uri_template`（RFC 6570）の`{id}`等を
+/// 埋めたURIを、`resources/read`で読む
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceTemplate {
+    pub uri_template: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+}
+
+/// MCPのプロンプト（#643）。クライアントのメニュー等から選ぶ、定型の頼み方
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Prompt {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<PromptArgument>,
+}
+
+/// プロンプトの引数（#643）。値は文字列
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PromptArgument {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// ハンドラーが出すプロンプトと、そのプロンプトがAIに使わせるツール（#643）。
+/// 呼び出し元がツールのどれかを使えなければ、プロンプトも出さない
+#[derive(Debug, Clone)]
+pub struct PromptSpec {
+    pub prompt: Prompt,
+    pub tools: Vec<String>,
+}
+
+/// `prompts/get`の`params`（#643）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptGetParams {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: HashMap<String, String>,
+}
+
+/// `prompts/get`の結果（#643）。AIへの頼み（`user`の発言）を1つ返す
+pub fn prompt_result(description: &str, text: String) -> serde_json::Value {
+    serde_json::json!({
+        "description": description,
+        "messages": [{
+            "role": "user",
+            "content": {"type": "text", "text": text}
+        }]
+    })
 }
 
 #[cfg(test)]
@@ -256,5 +320,25 @@ mod tests {
         let value = serde_json::to_value(&resource).unwrap();
         assert!(value.get("mimeType").is_some());
         assert!(value.get("mime_type").is_none());
+    }
+
+    /// 未設定の`description`・`mimeType`は、`null`にせず省く（#760）
+    #[test]
+    fn test_resource_omits_unset_optional_fields() {
+        let resource = Resource {
+            uri: "file:///example.txt".to_string(),
+            name: "example".to_string(),
+            description: None,
+            mime_type: None,
+        };
+
+        let value = serde_json::to_value(&resource).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"uri": "file:///example.txt", "name": "example"})
+        );
+        // 省いた形も読める
+        let back: Resource = serde_json::from_value(value).unwrap();
+        assert!(back.description.is_none() && back.mime_type.is_none());
     }
 }

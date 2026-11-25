@@ -16,7 +16,7 @@ Complete API documentation for MCP-RS v0.16.0+ - Multi-database support with MyS
 
 Comprehensive reference for database engine implementations:
 
-- [📄 Database Engine API](./database.md)
+- [📄 Database Engine API]({{ site.baseurl }}/docs/api/database/)
   - Core types (Value, DatabaseError, QueryResult, ExecuteResult)
   - DatabaseEngine trait
   - DatabaseConnection trait
@@ -39,9 +39,8 @@ Standard JSON-RPC 2.0 protocol methods:
 
 Step-by-step guides for each database:
 
-- [PostgreSQL Integration Guide](../guides/postgres-integration.md)
+- [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 - MySQL Integration Guide (coming soon)
-- [Performance Tuning Guide](../guides/performance-tuning.md)
 
 ---
 
@@ -135,9 +134,9 @@ mcp-rs v0.28.0 and later also accept version `2026-07-28`, which has no `initial
 
 - `server/discover` returns the supported versions (`["2026-07-28"]`), the capabilities, and the server information (with `icons`) in `_meta["io.modelcontextprotocol/serverInfo"]`
 - Each request carries `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities` (an object) in `params._meta`. Without them, mcp-rs answers `-32602`; with a version it does not support, `-32022` with `data.supported` (which also lists the `initialize` versions) and `data.requested`
-- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list` and `resources/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` has `ttlMs: 0`
+- Results have `resultType: "complete"` and the server information in `_meta`. `tools/list`, `resources/list`, `resources/templates/list` and `prompts/list` have `ttlMs: 300000` and `cacheScope: "private"` (the lists depend on the API key or token), and `resources/read` and `prompts/get` have `ttlMs: 0`
 - `ping` is not part of `2026-07-28` (`-32601`). A missing resource is `-32602`
-- HTTP (`/mcp`): send `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and, for `tools/call` and `resources/read`, `Mcp-Name` (the tool name or URI; `=?base64?…?=` for values that are not plain ASCII). If a header is missing or does not match the body, mcp-rs answers HTTP 400 with `-32020`. Unknown methods get HTTP 404 with `-32601`, and version or `_meta` errors get HTTP 400. API keys, OAuth scopes and the audit log apply to each request. `/ws` uses only the legacy form
+- HTTP (`/mcp`): send `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and, for `tools/call`, `prompts/get` and `resources/read`, `Mcp-Name` (the tool or prompt name, or the URI; `=?base64?…?=` for values that are not plain ASCII). If a header is missing or does not match the body, mcp-rs answers HTTP 400 with `-32020`. Unknown methods get HTTP 404 with `-32601`, and version or `_meta` errors get HTTP 400. API keys, OAuth scopes and the audit log apply to each request. `/ws` uses only the legacy form
 
 ```json
 {
@@ -187,7 +186,7 @@ mcp-rs v0.28.0 and later also accept version `2026-07-28`, which has no `initial
     },
     "serverInfo": {
       "name": "mcp-rs",
-      "version": "0.29.0",
+      "version": "0.30.0",
       "description": "Rust implementation of the Model Context Protocol (MCP) server for WordPress and other tools",
       "websiteUrl": "https://n-takatsu.github.io/mcp-rs/",
       "icons": [
@@ -228,7 +227,8 @@ Lists available tools.
     "tools": [
       {
         "name": "get_posts",
-        "description": "Retrieve WordPress posts",
+        "title": "List posts",
+        "description": "List WordPress posts (or the posts of an allowed custom post type), published ones by default. ...",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -249,7 +249,7 @@ Lists available tools.
 
 - `get_*` and `wordpress_health_check`: `readOnlyHint: true`
 - `create_*` and `upload_media`: `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false` (they add new items, and each call adds another one)
-- `update_*`, `set_*`, and `delete_*`: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true` (they change or delete existing items)
+- `update_*`, `set_*`, `delete_*`, and `restore_revision`: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true` (they change or delete existing items)
 - All WordPress tools: `openWorldHint: false` (they work only with the configured WordPress site)
 
 #### `mcp_rs_status`
@@ -257,11 +257,11 @@ Lists available tools.
 mcp-rs always provides the read-only tool `mcp_rs_status` (first in `tools/list`), with or without WordPress and plugins. It returns text such as:
 
 ```text
-mcp-rs 0.29.0
+mcp-rs 0.30.0
 Mode: stdio
 Protocol version: 2025-11-25 (legacy)
 Supported protocol versions: 2026-07-28, 2025-11-25, 2025-06-18, 2024-11-05
-Update check: 0.29.0 is the latest release
+Update check: 0.30.0 is the latest release
 OS: windows (x86_64)
 Process ID: 12345
 Instance: 12345-20261109T093000
@@ -278,7 +278,8 @@ Handlers and plugins that failed to start:
 
 - `Log` is the log file in use. mcp-rs writes the log to `logs` in the folder of the executable, or, when it cannot write there (for example, when installed in `C:\Program Files\MCP-rs`), to the user folder (`%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere). `fallback: <reason>` is added only when it could write to neither and used another folder
 - The date in the log file name is the local date, and a new file starts at midnight local time (older versions used the UTC date). The times inside the log are also in local time. When a running mcp-rs moves to the next day's file, the new file starts with a `=== mcp-rs … continued at … / pid … / instance … ===` line
-- Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file; each line has `[pid …]` (Windows reuses process IDs, so read it together with the latest `=== mcp-rs … started … / pid … ===` line above it), and startup messages such as the WordPress connection check appear once per process. This is normal
+- Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file; each line has `[pid …]` (Windows reuses process IDs, so read it together with the latest `=== mcp-rs … started … / pid … ===` or `continued` line above it with the same `pid`; with two processes, the latest such line of any `pid` may belong to the other one), and startup messages such as the WordPress connection check appear once per process. This is normal
+- When mcp-rs started without a config file (STDIO mode, v0.30.0 and later), `Config file` says so and how to create one, for example ``none. no config file: run `mcp-rs init` to create C:\Users\me\.config\mcp-rs\config.toml, or pass one with --config <absolute path>, then restart mcp-rs (or the client). Until then, only mcp_rs_status is available``
 - Passwords, API keys, tokens, and environment variable values are not included
 - In HTTP mode, a caller who is not authenticated (no `auth_enabled` and no `[transport.http.oauth]`) gets the version only, so that file paths are not shown to everyone on the network. Authenticated callers also see `Caller: api_key:<name>` (or `oauth:<client>`)
 - It is read-only (`@read_only` allows it when [limiting tools](../security/#limiting-tools-per-api-key-or-token)), and calls are recorded in the audit log
@@ -365,6 +366,27 @@ Lists available resources.
 }
 ```
 
+#### `resources/templates/list`
+
+Lists resource templates (v0.30.0 and later): URIs with a part to fill in, such as `{id}`. Read the filled-in URI with `resources/read`. Templates follow the same limits as resources.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "resourceTemplates": [
+      {
+        "uriTemplate": "wordpress://post/{id}",
+        "name": "WordPress Post",
+        "description": "One post by ID, with its editable source when the credentials allow",
+        "mimeType": "application/json"
+      }
+    ]
+  },
+  "id": 5
+}
+```
+
 #### `resources/read`
 
 Reads a resource.
@@ -404,9 +426,18 @@ Reads a resource.
 
 ### Prompts
 
-#### `prompts/list`
+Prompts are ready-made requests that the user picks in the client (for example from the "+" menu in Claude Desktop), v0.30.0 and later. Each one returns a request to the AI as one `user` message; it calls no tools by itself. They ask the AI to confirm with the user before changing anything. The capability is `"prompts": { "listChanged": false }`.
 
-Lists available prompts.
+| Prompt | Arguments | Shown when |
+|---|---|---|
+| `draft_post` | `topic` (required), `notes` | WordPress is configured. Creates the post as a draft only |
+| `review_post_seo` | `post_id` (required) | WordPress is configured. Changes the post only after you approve |
+| `moderate_comments` | `post_id` | WordPress is configured. Changes comments only after you decide |
+| `summarize_table` | `table` (required) | `[database]` is configured. Only reads |
+
+With more than one WordPress site, the WordPress prompts also take `site`. In HTTP mode, a prompt is listed and returned only when the API key or access token may use all the tools it asks the AI to use (for example, `draft_post` needs `create_advanced_post`); a denied `prompts/get` is recorded in the audit log. Plugins' prompts are not relayed.
+
+#### `prompts/list`
 
 **Request:**
 
@@ -418,7 +449,7 @@ Lists available prompts.
 }
 ```
 
-**Response:**
+**Response (excerpt):**
 
 ```json
 {
@@ -426,14 +457,11 @@ Lists available prompts.
   "result": {
     "prompts": [
       {
-        "name": "wordpress_content_analysis",
-        "description": "Analyze WordPress content for SEO and readability",
+        "name": "review_post_seo",
+        "title": "Review a post's SEO",
+        "description": "Check a post's title, slug, excerpt, headings and links, and suggest improvements. The post is changed only after you approve",
         "arguments": [
-          {
-            "name": "post_id",
-            "description": "WordPress post ID to analyze",
-            "required": true
-          }
+          { "name": "post_id", "description": "ID of the post to review", "required": true }
         ]
       }
     ]
@@ -444,7 +472,7 @@ Lists available prompts.
 
 #### `prompts/get`
 
-Retrieves a prompt.
+Argument values are strings. An unknown prompt or a missing required argument returns `-32602`.
 
 **Request:**
 
@@ -453,26 +481,26 @@ Retrieves a prompt.
   "jsonrpc": "2.0",
   "method": "prompts/get",
   "params": {
-    "name": "wordpress_content_analysis",
+    "name": "review_post_seo",
     "arguments": { "post_id": "123" }
   },
   "id": 7
 }
 ```
 
-**Response:**
+**Response (excerpt):**
 
 ```json
 {
   "jsonrpc": "2.0",
   "result": {
-    "description": "WordPress content analysis prompt",
+    "description": "Check a post's title, slug, excerpt, headings and links, and suggest improvements. The post is changed only after you approve",
     "messages": [
       {
         "role": "user",
         "content": {
           "type": "text",
-          "text": "Please analyze the following WordPress post..."
+          "text": "Review the SEO of post 123 on my WordPress site.\n\n1. Read it with get_post (format \"raw\"). ..."
         }
       }
     ]
@@ -518,24 +546,33 @@ Creates a new WordPress post.
 
 #### `get_comments`
 
-Retrieves WordPress comments.
+Retrieves WordPress comments (approved ones by default).
 
 - `post_id` (number, optional)
+- `status` (string, optional): `approve`, `hold`, `spam`, `trash`, or `all`
+
+`create_comment`, `update_comment`, and `delete_comment` reply to, moderate, and delete comments. See [WordPress](../wordpress/#comments).
 
 ### Resources
 
-- `wordpress://posts` - All published posts
-- `wordpress://pages` - All published pages
-- `wordpress://media` - Media library items
+- `wordpress://posts` - All published posts, with their content
+- `wordpress://comments` - Approved comments
 - `wordpress://categories` - Post categories
 - `wordpress://tags` - Post tags
-- `wordpress://users` - Site users
+
+Resource templates (`resources/templates/list`, v0.30.0 and later) read one item by ID:
+
+- `wordpress://post/{id}` - One post, with its editable source when the credentials allow
+- `wordpress://page/{id}` - One page
+- `wordpress://media/{id}` - One media item
+
+For example, `resources/read` with `"uri": "wordpress://post/123"`. A missing item returns `-32002`. With more than one site, the resources and templates read the default site.
 
 ---
 
 ## Version Information
 
-- **Current Version**: v0.29.0
+- **Current Version**: v0.30.0
 - **Phase 1**: MySQL (Complete)
 - **Phase 2**: PostgreSQL (Complete)
 - **Last Updated**: 2025-11-23
@@ -588,6 +625,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 For more details, see:
 
-- [📄 Database Engine API](./database.md) - Complete API reference
-- [📖 PostgreSQL Integration Guide](../guides/postgres-integration.md) - Setup and usage
+- [📄 Database Engine API]({{ site.baseurl }}/docs/api/database/) - Complete API reference
+- [📖 PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/) - Setup and usage
 - [📖 Implementation Guides](../guides/) - All guides

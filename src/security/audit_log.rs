@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -307,8 +306,14 @@ impl AuditLogger {
         private_append_options()
             .open(path)
             .await
+            .map_err(|e| format!("could not open {}: {}", path, e))?;
+        // 書くたびに使うロックのファイルも、開けるか確かめる（#741）
+        let lock = lock_file_path(path);
+        tokio::fs::OpenOptions::from(lock_file_options())
+            .open(&lock)
+            .await
             .map(|_| ())
-            .map_err(|e| format!("could not open {}: {}", path, e))
+            .map_err(|e| format!("could not open {}: {}", lock, e))
     }
 
     /// デフォルト設定で監査ログシステムを作成
@@ -511,39 +516,6 @@ impl AuditLogger {
         Ok(())
     }
 
-    /// このユーザーの過去の監査ログエントリを削除せず redact する。
-    /// GDPR Art.17(3)(b)/(e)（法的義務・権利の防御）により、セキュリティ
-    /// 監査証跡は構造を保持したまま残す必要があるため、エントリ自体は
-    /// 削除せず、PIIやオンライン識別子を含みうるフィールド（メッセージ
-    /// 本文・IP・UA・セッションID・メタデータ）のみを消去する。
-    ///
-    /// `user_id`自体は意図的に残す（どのアカウントに対する処理だったかを
-    /// 後から監査・調査できるようにするため）。そのためこれは完全な
-    /// 匿名化（anonymization）ではなく、残す識別子を`user_id`に限定した
-    /// redactionである点に注意。
-    pub async fn redact_user(&self, user_id: &str) -> usize {
-        let mut entries = self.entries.write().await;
-        let mut count = 0;
-        for entry in entries.iter_mut() {
-            if entry.user_id.as_deref() == Some(user_id) {
-                entry.message = "[REDACTED: GDPR/CCPA erasure request]".to_string();
-                entry.ip_address = None;
-                entry.user_agent = None;
-                entry.session_id = None;
-                // どのプロセスが記録したか（pid・instance）は個人の情報では
-                // ないので残す
-                entry
-                    .metadata
-                    .retain(|key, _| key == "pid" || key == "instance");
-                entry
-                    .metadata
-                    .insert("gdpr_redacted".to_string(), "true".to_string());
-                count += 1;
-            }
-        }
-        count
-    }
-
     /// フィルター条件にマッチするかチェック
     fn matches_filter(&self, entry: &AuditLogEntry, filter: &AuditFilter) -> bool {
         // 時間範囲チェック
@@ -616,38 +588,18 @@ impl AuditLogger {
             };
 
             let line = format!("{}\n", content);
+            // プロセスの中の順番は`file_lock`で、プロセスの間（Claude Desktopが
+            // 起動する2つ等、同じファイルに書くもの）は`append_line`のファイルの
+            // ロックで守る（#741）
             let _guard = self.file_lock.lock().await;
-            if self.config.rotation_enabled {
-                let current = tokio::fs::metadata(file_path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                if current > 0 && current + line.len() as u64 > self.config.rotation_size {
-                    rotate_files(file_path, self.config.max_files)
-                        .await
-                        .map_err(|e| {
-                            SecurityError::Configuration(format!("Log rotation failed: {}", e))
-                        })?;
-                }
-            }
-
-            // tokio::fs::writeは毎回ファイル全体を上書きするため、ここでは
-            // 追記モードで開く。そうしないと2件目以降のログ記録で直前の
-            // エントリしかディスクに残らず、プロセス再起動後やログ出荷時に
-            // 監査証跡がほぼ消えてしまう。
-            let mut file = private_append_options()
-                .open(file_path)
+            let path = file_path.to_string();
+            let rotation = self
+                .config
+                .rotation_enabled
+                .then_some((self.config.rotation_size, self.config.max_files));
+            tokio::task::spawn_blocking(move || append_line(&path, &line, rotation))
                 .await
-                .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
-            file.write_all(line.as_bytes())
-                .await
-                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
-            // tokioのFileは、書き込みを裏で続けたまま閉じることがある。ロックを
-            // 手放す前に書き終える（次の書き込み・ローテーションと順番が
-            // 入れ替わらないように）
-            file.flush()
-                .await
-                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
+                .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))??;
         }
         Ok(())
     }
@@ -672,27 +624,127 @@ async fn create_private_dir_all(dir: &std::path::Path) -> std::io::Result<()> {
 /// 送ったファイルの権限もそのまま。
 /// シンボリックリンクもたどらない（`O_NOFOLLOW`、#543）
 fn private_append_options() -> tokio::fs::OpenOptions {
-    let mut options = tokio::fs::OpenOptions::new();
+    tokio::fs::OpenOptions::from(private_append_options_std())
+}
+
+/// `private_append_options`の、ブロックする版（`std::fs`）
+fn private_append_options_std() -> std::fs::OpenOptions {
+    let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
     options
+}
+
+/// プロセスの間のロックに使うファイル（`<path>.lock`、#741）
+fn lock_file_path(path: &str) -> String {
+    format!("{path}.lock")
+}
+
+/// ロックのファイルを開く設定。Windowsは、追記だけで開いたファイルに
+/// ロックを取れないので、読み書きで開く（中身は書かない）。Unix系では、
+/// 監査ログと同じく600・`O_NOFOLLOW`
+fn lock_file_options() -> std::fs::OpenOptions {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options
+}
+
+/// ほかのプロセスが持つ`<path>.lock`のロックを待つ長さ（#774）。ほかの
+/// プロセスが持つのは1行を書く間だけなので、ふつうはすぐ取れる。そのプロセスが
+/// 止められた（SIGSTOP等）ままでも、書き込みのタスクを止め続けない
+const FILE_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// ロックを取り直すまでの間隔
+const FILE_LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// `file`の排他のロックを、`timeout`まで取り直しながら待つ（#774。以前は
+/// 期限なしに待った）。取れなければエラー（呼び出し元は警告し、メモリへの
+/// 記録は続ける）
+fn lock_with_timeout(
+    file: &std::fs::File,
+    timeout: std::time::Duration,
+) -> Result<(), SecurityError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(FILE_LOCK_RETRY_INTERVAL);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(SecurityError::Configuration(format!(
+                    "File lock timed out after {} seconds",
+                    timeout.as_secs_f64()
+                )));
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(SecurityError::Configuration(format!(
+                    "File lock failed: {}",
+                    e
+                )));
+            }
+        }
+    }
+}
+
+/// `line`を`path`に追記する。`rotation`（大きさの上限・残す数）があれば、
+/// 上限を超えるときは先にローテーションする。
+///
+/// 別のプロセスも同じファイルに書き、回すことがある（既定の場所は設定
+/// ファイルに関係なく同じ。Claude Desktopは2つ起動する）。`<path>.lock`の
+/// 排他のロックを取ってから、大きさを確かめ、回し、追記する（#741）。
+/// ロックが無いと、2つが同時に回して、回した後の`path.N`を上書きし、
+/// 記録を失うことがある。
+///
+/// 追記モードで開く（毎回ファイル全体を上書きすると、直前の記録しか
+/// 残らない）。ブロックするので、`spawn_blocking`の中で呼ぶ
+fn append_line(path: &str, line: &str, rotation: Option<(u64, u32)>) -> Result<(), SecurityError> {
+    use std::io::Write;
+    let lock = lock_file_options()
+        .open(lock_file_path(path))
+        .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
+    lock_with_timeout(&lock, FILE_LOCK_TIMEOUT)?;
+    if let Some((rotation_size, max_files)) = rotation {
+        // ロックを取った後の大きさで決める（ほかのプロセスが回した後かも
+        // しれない）
+        let current = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if current > 0 && current + line.len() as u64 > rotation_size {
+            rotate_files(path, max_files)
+                .map_err(|e| SecurityError::Configuration(format!("Log rotation failed: {}", e)))?;
+        }
+    }
+    let mut file = private_append_options_std()
+        .open(path)
+        .map_err(|e| SecurityError::Configuration(format!("File open failed: {}", e)))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| SecurityError::Configuration(format!("File write failed: {}", e)))?;
+    // `lock`を閉じると、ロックも外れる
+    Ok(())
 }
 
 /// `path`を`path.1`に、`path.1`を`path.2`に…と送り、`path.<max_files>`を
 /// 超える古いものを消す。`max_files`が0なら、`path`を消すだけ。
-async fn rotate_files(path: &str, max_files: u32) -> std::io::Result<()> {
+fn rotate_files(path: &str, max_files: u32) -> std::io::Result<()> {
     let numbered = |n: u32| format!("{}.{}", path, n);
     if max_files == 0 {
-        return tokio::fs::remove_file(path).await;
+        return std::fs::remove_file(path);
     }
-    let _ = tokio::fs::remove_file(numbered(max_files)).await;
+    let _ = std::fs::remove_file(numbered(max_files));
     for n in (1..max_files).rev() {
-        if tokio::fs::metadata(numbered(n)).await.is_ok() {
-            tokio::fs::rename(numbered(n), numbered(n + 1)).await?;
+        if std::fs::metadata(numbered(n)).is_ok() {
+            std::fs::rename(numbered(n), numbered(n + 1))?;
         }
     }
-    tokio::fs::rename(path, numbered(1)).await
+    std::fs::rename(path, numbered(1))
 }
 
 #[cfg(test)]
@@ -715,62 +767,6 @@ mod tests {
         let stats = logger.get_statistics().await;
         assert_eq!(stats.total_entries, 1);
         assert_eq!(stats.entries_by_level.get(&AuditLevel::Info), Some(&1));
-    }
-
-    #[tokio::test]
-    async fn test_redact_user() {
-        let logger = AuditLogger::with_defaults();
-
-        let entry1 = AuditLogEntry::new(
-            AuditLevel::Info,
-            AuditCategory::Authentication,
-            "User logged in".to_string(),
-        )
-        .with_user("user-1".to_string())
-        .with_session("session-abc".to_string())
-        .with_request_info("192.168.1.1".to_string(), "Mozilla/5.0".to_string())
-        .add_metadata("key".to_string(), "value".to_string());
-
-        let entry2 = AuditLogEntry::new(
-            AuditLevel::Info,
-            AuditCategory::Authentication,
-            "User logged out".to_string(),
-        )
-        .with_user("user-1".to_string());
-
-        let entry3 = AuditLogEntry::new(
-            AuditLevel::Info,
-            AuditCategory::Authentication,
-            "Other user logged in".to_string(),
-        )
-        .with_user("user-2".to_string());
-
-        logger.log(entry1).await.unwrap();
-        logger.log(entry2).await.unwrap();
-        logger.log(entry3).await.unwrap();
-
-        let redacted_count = logger.redact_user("user-1").await;
-        assert_eq!(redacted_count, 2);
-
-        let all_entries = logger.get_all_entries().await;
-        for entry in &all_entries {
-            if entry.user_id.as_deref() == Some("user-1") {
-                assert!(entry.message.contains("REDACTED"));
-                assert!(entry.ip_address.is_none());
-                assert!(entry.user_agent.is_none());
-                assert!(entry.session_id.is_none());
-                assert_eq!(
-                    entry.metadata.get("gdpr_redacted").map(String::as_str),
-                    Some("true")
-                );
-                // 利用者の情報は消し、どのプロセスが記録したかは残す
-                assert!(!entry.metadata.contains_key("key"));
-                assert!(entry.metadata.contains_key("pid"));
-                assert!(entry.metadata.contains_key("instance"));
-            } else {
-                assert_eq!(entry.message, "Other user logged in");
-            }
-        }
     }
 
     /// どの記録にも、記録したプロセスのpidとinstanceが入る（#468）
@@ -927,6 +923,8 @@ mod tests {
             .expect("Failed to read audit log file");
         let line_count = contents.lines().count();
 
+        // プロセスの間のロックのファイル（#741）も消す
+        let _ = tokio::fs::remove_file(format!("{path}.lock")).await;
         tokio::fs::remove_file(&path)
             .await
             .expect("Failed to clean up test audit log file");
@@ -948,6 +946,97 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_output_rotates_by_size() {
+        test_file_output_rotates_by_size_inner().await;
+    }
+
+    /// ほかが持つロックは期限まで待ち、過ぎたらエラーで戻る（#774。以前は
+    /// 期限なしに待った）。外れた後は取れる
+    #[test]
+    fn test_file_lock_wait_has_a_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.log.lock");
+        let held = lock_file_options().open(&path).unwrap();
+        held.lock().unwrap();
+        let waiting = lock_file_options().open(&path).unwrap();
+
+        let started = std::time::Instant::now();
+        let result = lock_with_timeout(&waiting, std::time::Duration::from_millis(200));
+        assert!(
+            matches!(&result, Err(SecurityError::Configuration(message)) if message.contains("timed out")),
+            "{result:?}"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+
+        held.unlock().unwrap();
+        lock_with_timeout(&waiting, std::time::Duration::from_millis(200)).unwrap();
+    }
+
+    /// 別々の`AuditLogger`（別のプロセスと同じく、`file_lock`を共有しない）が
+    /// 同じファイルに書いて回しても、記録を失わない（#741）
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_rotation_from_separate_loggers_keeps_every_entry() {
+        let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.log");
+        let logger = || {
+            Arc::new(AuditLogger::new(AuditConfig {
+                enable_file_output: true,
+                log_file_path: Some(path.to_string_lossy().into_owned()),
+                // 1件は数百バイトなので、200件で十数回回す
+                rotation_size: 4000,
+                // 全部の記録が残るだけの数
+                max_files: 60,
+                ..Default::default()
+            }))
+        };
+        let tasks: Vec<_> = (0..4)
+            .map(|writer| {
+                let logger = logger();
+                tokio::spawn(async move {
+                    for i in 0..50 {
+                        logger
+                            .log(AuditLogEntry::new(
+                                AuditLevel::Info,
+                                AuditCategory::DataAccess,
+                                format!("writer {writer} entry {i}"),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        // 行数だけでなく、どの記録も1回ずつ残る（#774。欠けと重なりが同じ数
+        // だけ起きても見逃さない）
+        let mut messages = std::collections::BTreeSet::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name().to_string_lossy().ends_with(".lock") {
+                continue;
+            }
+            for line in std::fs::read_to_string(entry.path()).unwrap().lines() {
+                let logged: AuditLogEntry = serde_json::from_str(line).unwrap();
+                assert!(
+                    messages.insert(logged.message.clone()),
+                    "duplicated: {}",
+                    logged.message
+                );
+            }
+        }
+        let expected: std::collections::BTreeSet<String> = (0..4)
+            .flat_map(|writer| (0..50).map(move |i| format!("writer {writer} entry {i}")))
+            .collect();
+        assert_eq!(messages, expected);
+        // 実際に何度も回した
+        assert!(dir.join("audit.log.5").exists());
+        assert!(!dir.join("audit.log.60").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn test_file_output_rotates_by_size_inner() {
         let dir = std::env::temp_dir().join(format!("mcp-rs-audit-{}", Uuid::new_v4()));
         let path = dir.join("nested").join("audit.log");
         let path_str = path.to_string_lossy().into_owned();

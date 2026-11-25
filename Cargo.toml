@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2021"
 # 最小対応のRustのバージョン（MSRV、#516）。DockerfileのFROM rust:X.Yも
 # 同じにする（CIで一致を確かめる）。上げるときは両方を同じPRで変える
@@ -47,7 +47,10 @@ sqlparser = { version = "0.62", optional = true, features = ["visitor"] }
 # MySQL ([database] engine = "mysql", #527). TLS uses rustls with the ring
 # provider, as the HTTP server does, so no OpenSSL is needed. The default
 # features had no TLS at all
-mysql_async = { version = "0.36", optional = true, default-features = false, features = ["default-rustls-ring"] }
+mysql_async = { version = "0.37", optional = true, default-features = false, features = ["default-rustls-ring"] }
+# Not used directly. Sets the lower bound of mysql_async's lru (which allows
+# 0.18.0) to the version that fixes RUSTSEC-2026-0253
+lru = { version = "0.18.2", optional = true }
 redis = { version = "0.26", features = ["tokio-comp", "connection-manager"], optional = true }
 # MongoDB support
 mongodb = { version = "3.6", optional = true }
@@ -93,6 +96,8 @@ ipnet = "2.11"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json", "chrono"] }
 tracing-appender = "0.2.3"
+# `log`クレートの記録を`tracing`に流す（tracing-subscriberの`try_init`が使うものと同じ。PR #770）
+tracing-log = "0.2"
 
 # Configuration
 config = "0.15.18"
@@ -107,7 +112,7 @@ reqwest = { version = "0.12.24", default-features = false, features = ["json", "
 
 # Validation
 regex = "1.12"
-url = "2.5.7"
+url = "2.5.9"
 urlencoding = "2.1"
 ammonia = "4.1.9"
 
@@ -131,6 +136,10 @@ jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc
 # crates
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Windowsで、設定ファイルと控えを本人だけが使えるACLで作る（#674）.
+# Already in Cargo.lock through other crates
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # HTTP/2のクライアント（何もしていない接続を閉じるテスト、#592）
@@ -166,12 +175,16 @@ os-keyring = ["dep:keyring"]
 database = ["postgresql-backend", "dep:sqlparser"]
 
 # Storage backends
+# Redis engine: library code only. It cannot be selected in [database] (only
+# postgresql, mysql and mariadb); planned to become usable in v0.31.0 (#529)
 redis-backend = ["redis"]
 # The MySQL engine is part of the database handler code. On by default
 # (#527), so release builds and the Docker image can use engine = "mysql"
-mysql-backend = ["database", "mysql_async"]
+mysql-backend = ["database", "mysql_async", "dep:lru"]
 postgresql-backend = []
 sqlite = []
+# MongoDB engine: library code only. It cannot be selected in [database]; planned
+# to become usable in v0.31.0 (#530)
 mongodb-backend = ["mongodb"]
 
 # Hardware Security Module integration via PKCS#11 (e.g. SoftHSM2 or a

@@ -19,7 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
         keyring: None,
-        upload_allowed_dirs: Vec::new(),
+        upload_allowed_dirs: None,
+        post_types: None,
+        default_site: None,
+        sites: Default::default(),
     };
 
     // Create WordPress handler
@@ -55,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   Status: {}", post.status);
             println!(
                 "   Content length: {} characters",
-                post.content.rendered.len()
+                post.content.as_ref().map_or(0, |c| c.rendered.len())
             );
         }
         Err(e) => {

@@ -9,7 +9,7 @@ nav_order: 4
 
 {: .no_toc }
 
-**[Home](../) > [Documentation](./) > WordPress Integration**
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > WordPress Integration**
 
 Complete WordPress REST API integration with advanced media management capabilities.
 {: .fs-6 .fw-300 }
@@ -37,7 +37,7 @@ MCP-RS provides comprehensive WordPress integration through the WordPress REST A
 - **SEO Integration**: Meta fields for Yoast SEO and other plugins
 - **Post Retrieval**: Get all published posts with metadata
 - **Complete CRUD**: Create, read, update, and delete operations
-- **Comment Management**: Retrieve and manage post comments
+- **Comment Management**: List comments by status, approve, mark as spam, reply, and delete (v0.30.0 and later)
 
 ## 🖼️ Media Management
 
@@ -88,6 +88,8 @@ enabled = true
 
 `enabled = true` is required: without it, the WordPress tools are not registered (and `${...}` is not expanded), with no error.
 
+`url` is the site address only. A subdirectory such as `https://example.com/blog` is fine, but a query (`?lang=ja`) or fragment (`#...`) is refused at startup, because mcp-rs appends the REST API path (`/wp-json/wp/v2/...`) to the URL and it would end up inside the query (v0.30.0 and later).
+
 To keep the Application Password out of the config file in plaintext:
 
 - `keyring = "<name>"` instead of `username`/`password`: read them from the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service). This works the same whether Claude Desktop, Claude Code, or a terminal starts mcp-rs. See [OS Credential Store](../security/#os-credential-store)
@@ -102,6 +104,65 @@ To let `upload_media` read local files with `file_path`, list the folders it may
 [handlers.wordpress]
 upload_allowed_dirs = ["C:/Users/me/Pictures/blog"]
 ```
+
+### Custom post types {#custom-post-types}
+
+Plugins add post types such as products (WooCommerce) and events, and taxonomies such as product categories. mcp-rs uses a custom post type only when it is listed in `post_types` (v0.30.0 and later), so the AI does not change products or other content by accident:
+
+```toml
+[handlers.wordpress]
+post_types = ["product"]
+```
+
+- `post` and `page` are always allowed. With `sites`, a site without its own `post_types` uses the one in `[handlers.wordpress]`, and a site with `post_types = []` uses only `post` and `page`. The `post_type` argument of the tools lists the types allowed on any of the sites; each site accepts only its own
+- `get_post_types` lists the site's post types and taxonomies, and shows which ones mcp-rs may use
+- A listed type can be passed as `post_type` to `get_posts`, `get_post`, `create_advanced_post`, `update_post`, `delete_post` and the revision tools. The tools show only the allowed types in `post_type`
+- The post type must be in the REST API under `/wp/v2` (the type's `show_in_rest`). Types with their own API, such as WooCommerce products in `wc/v3` on some sites, are refused with the reason
+- `get_taxonomies` lists the taxonomies with their `rest_base`, and `get_terms` lists the terms of one. `create_advanced_post` and `update_post` take `terms`, such as `{"product_cat": [12, 15]}`, to set the terms of the listed taxonomies. A taxonomy that is not registered for the post type is refused with the valid ones (WordPress would ignore it). A term ID that is not in the taxonomy is refused too, before the post is changed: WordPress would skip it and still remove the other terms (v0.30.0 and later). `get_post` shows them for a custom post type. `get_terms` takes the taxonomy's name or `rest_base`; if a name of one taxonomy is the `rest_base` of another, the one with that `rest_base` is read. Creating and changing terms of custom taxonomies is not supported yet
+- A post type without the editor (no `content`) can be used too. `get_post` then says that the type has no content field instead of showing empty content
+- The WordPress user's capabilities still apply: the Application Password user must be allowed to edit the post type
+
+### Using more than one site {#sites}
+
+One mcp-rs can use several WordPress sites (v0.30.0 and later). Write every site in its own `[handlers.wordpress.sites.<site>]` table, and keep only the settings for all sites in `[handlers.wordpress]`:
+
+```toml
+[handlers.wordpress]
+enabled = true
+default_site = "blog"               # the site used when a tool call names none
+timeout_seconds = 30                # optional: for every site, unless a site sets its own
+
+[handlers.wordpress.sites.blog]
+url = "https://blog.example.com"
+keyring = "blog"
+
+[handlers.wordpress.sites.shop]
+url = "https://shop.example.com"
+keyring = "shop"
+```
+
+- **Tools**: the tools stay the same (the number of tools does not grow). Each tool gets a `site` argument: `get_posts` with `site: "shop"` reads the shop's posts. Without `site`, `default_site` is used, so ask the AI to name the site when it is not the default
+- **`[handlers.wordpress]`**: `enabled = true` turns on all the sites. `default_site` is required when two or more sites are used. `timeout_seconds`, `rate_limit`, `upload_allowed_dirs` and `post_types` apply to every site that does not set its own. A site with `upload_allowed_dirs = []` or `post_types = []` does not use the ones in `[handlers.wordpress]`: `upload_allowed_dirs = []` turns off `file_path` for that site. Write `url` and the credentials (`keyring`, `username`/`password`, `encrypted_credentials`) only in the sites' tables
+- **Each site**: `url` and the credentials, and optionally `timeout_seconds`, `rate_limit`, `upload_allowed_dirs` and `post_types`. Write `enabled = false` to stop using one site; its credentials are then not read. Site names use lowercase letters, digits, `_` and `-`, up to 32 characters
+- **Credentials**: each site has its own, preferably a dedicated user with an Application Password on that site. Store them with `mcp-rs wordpress-keyring set <name>` for each site
+- **Rate limit and audit log**: each site has its own rate limit. The audit log records the site's URL with each tool call
+- `mcp-rs check` checks each site, and `mcp_rs_status` lists them. `mcp-rs uninstall` offers to delete each site's entry in the OS credential store
+- Resources (`wordpress://posts` and others) and resource templates (`wordpress://post/{id}` and others) read the default site only
+- In HTTP mode, the tool limits of an API key or access token apply to every site: a key allowed `get_posts` can read the posts of all the sites
+- `WORDPRESS_URL`, `WORDPRESS_USERNAME` and `WORDPRESS_PASSWORD` do not change a config file with `sites`
+- [`mcp-rs init`](../guides/#mcp-rs-init) sets up the first site in the one-site form (`url` and `keyring` directly in `[handlers.wordpress]`), and then asks whether to add another site. From v0.30.0, adding one asks for a name for the site you have (it moves to `[handlers.wordpress.sites.<name>]` and becomes `default_site`, so tool calls without `site` still go to it), and for the new site's URL, credentials (kept in the OS credential store) and name. The rest of the config file and its comments are kept, with a backup copy. When the config file has a password in plain text, `init` asks whether to delete the backup copy, and deletes it unless you answer n: answer n to keep it for going back to the previous file. Run `mcp-rs init` again and keep the config file to add more sites later. To change the default site, edit `default_site`
+
+With one site, `url` and the credentials can still be written directly in `[handlers.wordpress]`, as in the examples above. That site is named `default`, and the tools get no `site` argument.
+
+## Prompts {#prompts}
+
+From v0.30.0, mcp-rs offers prompts: ready-made requests that you pick in the client (for example from the "+" menu in Claude Desktop) instead of typing them. They ask the AI to confirm with you before changing anything.
+
+- **Draft a blog post** (`draft_post`): give a topic and optional notes. The AI picks categories and tags from the site and creates a draft, without publishing it
+- **Review a post's SEO** (`review_post_seo`): give a post ID. The AI checks the title, slug, excerpt, headings and links and suggests changes, and changes the post only after you approve
+- **Moderate comments** (`moderate_comments`): optionally a post ID. The AI goes through the comments awaiting moderation and suggests what to do with each
+
+With more than one site, each prompt also takes `site`. The prompts are in English; the AI answers in the language you use.
 
 ## Setting up Application Passwords
 
@@ -155,13 +216,14 @@ Create a new WordPress post or page with advanced options.
 - `title` (string): Post/page title
 - `content` (string): Post/page content
 - `post_type` (string): "post" (投稿) or "page" (固定ページ) [default: "post"]
-- `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須) [default: "draft"]
+- `status` (string, optional): "publish" (公開), "draft" (下書き), "pending" (レビュー待ち), "private" (非公開), "future" (予約投稿、`date`が必須), or a custom status registered on the site (for example by a plugin) [default: "draft"]
 - `date` (string, optional): Publication date (ISO8601 format, required for "future" status)
-- `categories` (array, optional): Category IDs (posts only)
-- `tags` (array, optional): Tag IDs (posts only)
+- `categories` (array of IDs, optional): Category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): Featured image media ID
 - `meta` (object, optional): Meta fields for SEO (e.g., Yoast SEO fields)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
+- `excerpt` (string, optional): A short summary of the post, shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content (v0.30.0 and later). Posts and pages keep it. Custom post types without excerpt support do not: WordPress ignores it, and the result says that the excerpt was not saved. The item is still created, so do not create it again
 
 **Example Usage:**
 
@@ -192,13 +254,15 @@ Create a post or page with embedded YouTube videos and social media content appe
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Base post content (embeds are added after it)
-- `youtube_urls` (array of strings, optional): YouTube video URLs to embed
-- `social_urls` (array of strings, optional): Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)
+- `youtube_urls` (array of strings, optional): YouTube video URLs to embed as video players: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/embed/…`, `youtube.com/shorts/…`, `youtube.com/live/…` or `youtube-nocookie.com/embed/…` (Shorts, live and nocookie URLs from v0.30.0). A `youtube-nocookie.com` URL is embedded with `www.youtube-nocookie.com` (privacy-enhanced mode); the others with `www.youtube.com`. URLs in other forms are not added; the result lists them after `Not embedded (unsupported URL):` (v0.30.0 and later)
+- `social_urls` (array of strings, optional): Social media URLs to embed: X/Twitter, Instagram posts (`instagram.com/p/…`), Facebook or TikTok. Other URLs are not added and are listed in the result in the same way. Both lists accept only URLs on the services' own hosts (for example `www.youtube.com` or `x.com`, not a URL on another site that contains these names)
 - `post_type` (string, optional): `post` or `page`
-- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
-- `categories` (array of numbers, optional): Category IDs (posts only)
-- `tags` (array of numbers, optional): Tag IDs (posts only)
+- `status` (string, optional): `publish`, `draft`, `pending`, `private`, or a custom status registered on the site (for example by a plugin). Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
+- `categories` (array of IDs, optional): Category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
+
+mcp-rs adds each social media URL to the post on its own line, and WordPress decides how to show it. WordPress itself has not embedded Instagram or Facebook since 5.5.2, because Meta requires a developer app and an access token: those URLs stay plain links unless the site has a plugin that embeds them (for example one that takes the app ID and token). The result `Created … with embedded content` means that the URLs were added to the post, not that WordPress shows them as embeds. Check the post's preview to see how they look.
 
 **Example Usage:**
 
@@ -220,12 +284,14 @@ Update an existing WordPress post.
 
 **Parameters:**
 - `post_id` (number): ID of the post to update
+- `post_type` (string, optional): `post` (default) or `page`, or a type listed in [`post_types`](#custom-post-types). A page needs `"post_type": "page"`
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
+- `excerpt` (string, optional): New excerpt, the short summary shown in post lists and often used as the meta description. `""` lets WordPress make one from the content again. `get_post` shows the current one. A custom post type without excerpt support does not keep it, and the result says so (v0.30.0 and later)
 - `status` (string, optional): New post status: `publish`, `draft`, `pending`, `private`, or `future` (scheduled). `future` needs `date`, unless the post is already scheduled
-- `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2026-11-19T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
-- `categories` (array, optional): New category IDs
-- `tags` (array, optional): New tag IDs
+- `date` (string, optional): Publication date, ISO8601 in the site's time zone (for example `2030-01-01T10:00:00`). See [Scheduling an existing post](#scheduling-an-existing-post) (v0.29.0 and later)
+- `categories` (array of IDs, optional): New category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): New tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): New featured image ID
 - `meta` (object, optional): New meta fields
 - `slug` (string, optional): New URL slug. WordPress does not change the slug when the title changes. See [Slugs](#slugs)
@@ -255,15 +321,27 @@ To check a draft first and schedule it afterwards, update it with `status: "futu
   "arguments": {
     "post_id": 123,
     "status": "future",
-    "date": "2026-11-19T10:00:00"
+    "date": "2030-01-01T10:00:00"
   }
 }
 ```
 
+- Replace `date` with the time you want, in the future. With a date in the past, WordPress publishes the post immediately instead of scheduling it
 - `date` is in the site's time zone (Settings → General). `get_post` shows the date with a `Date:` line, marked `scheduled` for a scheduled post
 - `status: "future"` without `date` is refused unless the post is already scheduled: WordPress would publish it immediately. Up to v0.28.0, `update_post` had no `date` and sent `future` as it was
+- For an already scheduled post, `status: "future"` without `date` keeps the schedule by not sending `status` at all (v0.30.0 and later). If another editor cancelled the schedule after mcp-rs read the post, sending `future` again would bring it back or publish the post immediately
 - To change the time of a scheduled post, send only `date`
 - `get_posts` with `status: "future"` lists the scheduled posts
+
+### Revisions {#revisions}
+
+WordPress keeps earlier versions (revisions) of posts and pages when they are saved. If the AI changed a post in a way you do not want, go back to an earlier version (v0.30.0 and later). These tools need credentials with permission to edit the post.
+
+- `get_revisions`: the revisions of a post or page, newest first, with the revision ID, date, author, title, length and the start of the content. Parameters: `post_id` (required), `post_type` (`post`, the default, or `page`)
+- `get_revision`: one revision's title, excerpt and content. Parameters: `post_id`, `revision_id` (required), `post_type`, `format` (`raw`, the default, `rendered` or `text`, as in `get_post`)
+- `restore_revision`: replace the title, content and excerpt of the post with those of the revision. For a post type without some of them (such as no editor), only the ones the revision has are replaced, and the result lists them. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. Parameters: `post_id`, `revision_id` (required), `post_type`
+
+When revisions are enabled on the site, WordPress saves the content before the restore as a revision, so a restore can usually be undone the same way. The site may turn revisions off or limit how many it keeps (`WP_POST_REVISIONS`); then the content before the restore may not be kept, so read it with `get_post` first if you must keep it. A revision of another post is refused.
 
 ### `delete_post`
 
@@ -305,7 +383,7 @@ Notes:
 - WordPress may change the slug you pass. It removes characters that cannot be used in a URL, and appends `-2` and so on if another post already uses the slug. The tool result shows the actual slug, for example `Slug: my-first-post-2`
 - For a draft, WordPress keeps the slug as given and makes it unique when the post is published
 - Changing the slug of a published post changes its URL. Whether the old URL redirects depends on WordPress and your plugins; mcp-rs does not set up redirects
-- An empty `slug` is rejected. Omit `slug` to leave it unchanged
+- An empty `slug`, or one with no letters or digits once HTML tags and entities are removed and percent-encoding is decoded (such as `!!!`, `&amp;` or `%c2%a0`, which WordPress would make empty), is rejected. Omit `slug` to leave it unchanged
 
 ## Content Retrieval
 
@@ -316,14 +394,14 @@ Retrieve WordPress posts. By default, only published posts.
 **Parameters:**
 - `status` (string, optional): Which posts to list: `publish` (default), `future` (scheduled), `draft`, `pending`, `private`, or `any`. Several can be given with commas, for example `future,draft` (v0.29.0 and later). Other than `publish`, the credentials must be allowed to edit posts
 - `search` (string, optional): Keyword to search for in the title and content
-- `categories`, `tags` (arrays of IDs, optional): Only posts in any of these categories, or with any of these tags (`get_categories` and `get_tags` list the IDs)
+- `categories`, `tags` (arrays of IDs, optional): Only posts in any of these categories, or with any of these tags (`get_categories` and `get_tags` list the IDs). Refused for a custom post type without categories or tags on the site, because WordPress would ignore the filter and return the unfiltered list (v0.30.0 and later)
 - `author` (number, optional): Author user ID
 - `after`, `before` (string, optional): Only posts published after or before this date or date-time, in the site's time zone (`2026-11-01` or `2026-11-01T09:00:00`)
 - `orderby` (optional): `date` (default), `modified`, `title`, `id`, `slug`, `author`, or `relevance` (with `search`)
 - `order` (optional): `desc` (default) or `asc`
 - `per_page` (1-100), `page` (from 1) (optional)
 
-Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts (up to 100 pages of 100). With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
+Without any of `search`, `categories`, `tags`, `author`, `after`, `before`, `orderby`, `order`, `per_page`, and `page`, `get_posts` returns all posts, up to 100 pages of 100 (10,000 posts). With more, it returns an error instead of a list that is missing posts: read them one page at a time with `per_page` and `page`, or narrow them down (v0.30.0 and later; up to v0.29.0, it returned the first 10,000 as if they were all). The full list is read 100 posts at a time, not as one snapshot: if posts are added, removed or re-dated while it is read, mcp-rs reads it again when the total changes or a post appears twice, but a post can still be missed in rare cases. With any of them (v0.29.0 and later), it reads only one page (20 posts unless `per_page` is given), and the first line shows the page and the total, for example `Found 3 posts (page 1 of 3, 3 per page; 8 in total)`. Use `page` for the next ones:
 
 ```json
 {
@@ -358,6 +436,8 @@ The output has a `Date:` line with the publication date in the site's time zone,
 
 The output has a `Slug:` line with the post's URL slug (a Japanese slug is shown decoded). A draft created without a slug shows `none`, because WordPress generates the slug when the post is published.
 
+The output has an `Excerpt:` line with the post's excerpt, in the same format as the content, or `(none)` for a post type without excerpts (v0.30.0 and later).
+
 The output also has a `Featured Media:` line with the featured image's media ID and URL, for example `Featured Media: 123 (https://example.com/wp-content/uploads/photo.png)`. It shows `none` when no featured image is set. If the media item cannot be fetched, only the ID is shown.
 
 ## Media Management
@@ -376,7 +456,8 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
 
 **`file_path` restrictions:**
 - The path must be absolute
-- The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them
+- The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them. After opening the file, mcp-rs checks that it opened the file it checked, so replacing an item in the folder with a link at that moment does not let it read a file outside. On Windows, the check uses the opened file's actual path. On Linux and macOS, it re-resolves the path and compares the files; a folder inside an allowed folder that is replaced twice at exactly the right moments can still get past it, so do not let others write to the allowed folders
+- On Windows, the path must be on a drive (such as `C:\...`). Network paths (`\\server\share\...`) and device paths (`\\.\...`) are rejected before mcp-rs touches them, so it does not connect to the server (and send your Windows credentials) for a path it would not allow
 - A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
 - With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 - The uploaded file is public at once: WordPress gives every media file a URL that anyone can open (the `source_url` in the result), even before it is used in a post. Put only files you are willing to publish in `upload_allowed_dirs`
@@ -464,8 +545,8 @@ Create a post with a featured image in one operation.
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Post content
-- `featured_media_id` (number): Media ID from uploaded image
-- `status` (string, optional): `publish`, `draft`, `pending`, or `private`. Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
+- `featured_media_id` (number): Media ID from uploaded image. If WordPress does not set it (for example, the ID does not exist), the post is still created: the result says so and gives the post ID. Do not create the post again; check the media ID and use `set_featured_image`
+- `status` (string, optional): `publish`, `draft`, `pending`, `private`, or a custom status registered on the site (for example by a plugin). Defaults to `draft`. `future` (scheduled) is not available because this tool has no date parameter
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
 ### `set_featured_image`
@@ -475,6 +556,8 @@ Set featured image for an existing post.
 **Parameters:**
 - `post_id` (number): ID of the post to update
 - `media_id` (number): ID of the media to set as featured image
+
+If WordPress does not set the media (for example, the ID does not exist), the result is an error that says so, with the post's current `featured_media` (v0.30.0 and later; before, it reported success).
 
 ## Category & Tag Management
 
@@ -508,12 +591,14 @@ Update an existing WordPress post with comprehensive options.
 
 **Parameters:**
 - `post_id` (number): ID of post to update
+- `post_type` (string, optional): `post` (default) or `page`, or a type listed in [`post_types`](#custom-post-types). A page needs `"post_type": "page"`
 - `title` (string, optional): New post title
 - `content` (string, optional): New post content
+- `excerpt` (string, optional): New excerpt, the short summary shown in post lists and often used as the meta description. `""` lets WordPress make one from the content again. `get_post` shows the current one. A custom post type without excerpt support does not keep it, and the result says so (v0.30.0 and later)
 - `status` (string, optional): `publish`, `draft`, `pending`, `private`, or `future` (scheduled, with `date`). Unchanged when omitted
 - `date` (string, optional): Publication date, ISO8601 in the site's time zone. See [Scheduling an existing post](#scheduling-an-existing-post)
-- `categories` (array, optional): Array of category IDs
-- `tags` (array, optional): Array of tag IDs
+- `categories` (array of IDs, optional): Array of category IDs. Refused for a post type without categories on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Array of tag IDs. Refused for a post type without tags on the site, such as a page. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): Featured image media ID
 - `slug` (string, optional): New URL slug. WordPress does not change the slug when the title changes. See [Slugs](#slugs)
 
@@ -557,12 +642,17 @@ Delete a WordPress post.
 
 **Note:** When `force` is `false` (default), the post is moved to trash. When `true`, it's permanently deleted.
 
+## Comments {#comments}
+
+Comments are read and changed as the configured WordPress user, who needs to be able to moderate comments (an Editor or Administrator) to list comments awaiting moderation, spam or trash, and to change them. The commenter's email and IP addresses are not shown (v0.30.0 and later; up to v0.29.0, `get_comments` showed the email address).
+
 ## `get_comments`
 
-Retrieve WordPress comments.
+Retrieve WordPress comments: ID, post, parent (the comment it replies to, `0` if none), status, author name, date, link, and content.
 
 **Parameters:**
-- `post_id` (number, optional): Filter comments by specific post
+- `post_id` (number, optional): Filter comments by specific post. A value that is not a positive integer is refused (v0.30.0 and later; before, it was ignored and the comments on all posts were returned)
+- `status` (string, optional): `approve` (approved, the default), `hold` (awaiting moderation), `spam`, `trash`, or `all` (approved and awaiting moderation). v0.30.0 and later
 
 **Example Usage:**
 
@@ -575,6 +665,53 @@ Retrieve WordPress comments.
 }
 
 ```
+
+## `create_comment`
+
+Create a comment as the configured WordPress user, usually a reply to another comment (v0.30.0 and later).
+
+WordPress comments have no drafts. So that you can check a reply the AI wrote before it appears on the site, the comment is held for moderation by default. Approve it with `update_comment` (`status: "approve"`) or in the WordPress admin (**Comments**). Pass `status: "approve"` to publish it at once.
+
+WordPress saves a new comment as approved and then sets the requested status within the same request. A held comment is not shown on the site, but plugins that run when a comment is saved (notifications, for example) may see it as approved for that moment. mcp-rs cannot avoid this through the REST API.
+
+**Parameters:**
+- `content` (string, required): Comment text
+- `parent` (number, optional): ID of the comment to reply to
+- `post_id` (number, optional): Post or page to comment on. Required without `parent`; with `parent`, the post of that comment is used
+- `status` (string, optional): `hold` (held for moderation, the default) or `approve` (published at once)
+
+mcp-rs always sends the status, and WordPress lets only users with the `moderate_comments` capability (Editor or Administrator role) set it. With an Author or Contributor account, WordPress refuses the comment with `rest_comment_invalid_status`, and the error says that the capability is needed. mcp-rs does not retry without the status, because WordPress could then publish the comment at once.
+
+**Example Usage:**
+
+```json
+{
+  "tool": "create_comment",
+  "arguments": {
+    "parent": 45,
+    "content": "Thank you for your question. The setting is under Settings > Reading."
+  }
+}
+```
+
+## `update_comment`
+
+Change a comment's status or text (v0.30.0 and later). Approving a comment publishes it on the site.
+
+**Parameters:**
+- `comment_id` (number, required): Comment ID
+- `status` (string, optional): `approve` (published), `hold` (back to awaiting moderation), `spam`, or `trash`
+- `content` (string, optional): New comment text
+
+Pass `status`, `content`, or both.
+
+## `delete_comment`
+
+Delete a comment (v0.30.0 and later).
+
+**Parameters:**
+- `comment_id` (number, required): Comment ID
+- `force` (boolean, optional): Delete permanently instead of moving to the trash (default: `false`)
 
 ## `get_categories`
 
@@ -632,11 +769,11 @@ Update an existing WordPress category.
 
 ## `delete_category`
 
-Delete a WordPress category.
+Delete a WordPress category permanently. WordPress has no trash for categories, so `force` must be `true`; without it, WordPress refuses the request. Posts that were only in this category are moved to the default category, and the default category itself cannot be deleted.
 
 **Parameters:**
 - `category_id` (number): ID of category to delete
-- `force` (boolean, optional): Force delete (bypass trash)
+- `force` (boolean): Must be `true`
 
 **Example Usage:**
 
@@ -705,11 +842,11 @@ Update an existing WordPress tag.
 
 ## `delete_tag`
 
-Delete a WordPress tag.
+Delete a WordPress tag permanently. WordPress has no trash for tags, so `force` must be `true`; without it, WordPress refuses the request. The tag is removed from every post that has it.
 
 **Parameters:**
 - `tag_id` (number): ID of tag to delete
-- `force` (boolean, optional): Force delete (bypass trash)
+- `force` (boolean): Must be `true`
 
 **Example Usage:**
 
@@ -731,8 +868,8 @@ Create a new WordPress post with categories and tags.
 **Parameters:**
 - `title` (string): Post title
 - `content` (string): Post content
-- `categories` (array, optional): Array of category IDs
-- `tags` (array, optional): Array of tag IDs
+- `categories` (array of IDs, optional): Array of category IDs. See [Category and tag IDs](#category-and-tag-ids)
+- `tags` (array of IDs, optional): Array of tag IDs. See [Category and tag IDs](#category-and-tag-ids)
 - `featured_media_id` (number, optional): Featured image media ID
 - `slug` (string, optional): URL slug, for example an English slug for a post with a Japanese title. If omitted, WordPress generates one from the title. See [Slugs](#slugs)
 
@@ -758,8 +895,15 @@ Update categories and tags for an existing WordPress post.
 
 **Parameters:**
 - `post_id` (number): ID of post to update
-- `categories` (array, optional): Array of category IDs to set
-- `tags` (array, optional): Array of tag IDs to set
+- `post_type` (string, optional): `post` (default), `page`, or a type listed in [`post_types`](#custom-post-types). Non-empty `categories` or `tags` are refused for a type without them on the site (pages have neither, unless a plugin adds them)
+- `categories` (array of IDs, optional): Array of category IDs to set. It replaces the current categories; `[]` removes them all
+- `tags` (array of IDs, optional): Array of tag IDs to set. It replaces the current tags; `[]` removes them all
+
+### Category and tag IDs
+
+`categories` and `tags` take the IDs that `get_categories` and `get_tags` list, as positive integers. From v0.30.0, a list with any other value (such as `7.5`, `0` or `"7"`) is rejected; up to v0.29.0, mcp-rs dropped that value and sent the rest, so replacing the list could remove a category or tag the post had. An empty list (`[]`) is still accepted, and `7.0` is read as `7`.
+
+From v0.30.0, a non-empty `categories` or `tags` for a post type that does not have those taxonomies on the site is rejected: mcp-rs looks up the post type's taxonomies, and does not send the post. This is the case for a page (`"post_type": "page"`), unless a plugin registers categories or tags for pages, and for a custom post type that has its own taxonomies instead. WordPress would ignore them and report success. `get_taxonomies` with `post_type` shows the taxonomies; posts always have both. Custom taxonomies are set with `terms`, which `update_post` (to change a post) and `create_advanced_post` (to create one) take; `update_post_categories_tags` does not take `terms`. Passing the same taxonomy both directly and in `terms` (such as `categories` and `terms.categories`) is rejected. Up to v0.29.0, `update_post` and `update_post_categories_tags` sent them anyway, and the tools that create a post dropped them for anything but a post.
 
 **Example Usage:**
 
@@ -1094,17 +1238,18 @@ The health check performs five critical validation stages:
 
 ### 4. ✅ Permission Verification
 
-- **Purpose**: Check user has required capabilities
-- **Test**: Validate publish_posts, upload_files, and edit_posts permissions
-- **Success**: User has all required capabilities
-- **Failure**: Insufficient permissions for content operations
+- **Purpose**: Check that the credentials can read content
+- **Test**: Authenticated GET requests to the posts list (`/wp-json/wp/v2/posts`) and the media list (`/wp-json/wp/v2/media`)
+- **Success**: Both lists return a 2xx status. Write permissions (`publish_posts`, `upload_files`) are not verified
+- **Failure**: Either list is refused or returns an error
 
-### 5. 📁 Media Upload Capability
+### 5. 📁 Media Readable
 
-- **Purpose**: Test file upload functionality end-to-end
-- **Test**: Upload small test image to media library
-- **Success**: File uploaded successfully and media ID returned
-- **Failure**: Upload restrictions, storage issues, or API limitations
+- **Purpose**: Check that the media library can be read with the credentials
+- **Test**: GET request to `/wp-json/wp/v2/media`
+- **Success**: The media endpoint returned a 2xx status; the report shows `Media Readable: ✅`. The contents of the response are not read or validated
+- **Failure**: The media endpoint is blocked or returns an error
+- **Note**: This does not check the permission to upload (`upload_files`). Up to v0.29.0, the report called this line `Media Upload Possible`, although it was checked the same way
 
 ## Health Report
 

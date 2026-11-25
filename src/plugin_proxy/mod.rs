@@ -58,9 +58,12 @@ const MAX_TOOL_LIST_PAGES: usize = 100;
 /// プラグインへの`initialize`で要求する版（#417）。プラグインが古い版で
 /// 答えた場合も、そのまま使う（mcp-rsは古い版の項目も読める）
 const PROTOCOL_VERSION: &str = LATEST_PROTOCOL_VERSION;
-/// プラグインが答えてよい版。これ以外は警告を出す（使い続ける）
+/// プラグインが答えてよい版。これ以外は、`notifications/initialized`を送る
+/// 前に起動のエラーにする（仕様では、クライアントは切断すべき、#750）
 const KNOWN_PLUGIN_PROTOCOL_VERSIONS: &[&str] =
     &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+/// 上限を超えて読み捨てる行のうち、`id`を読むために残す先頭の長さ（#750）
+const OVERSIZED_LINE_PREFIX_BYTES: usize = 1024;
 /// 標準エラー出力の1行としてログに記録する長さの上限
 const MAX_STDERR_LINE_BYTES: u64 = 8192;
 const RATE_LIMIT_CLIENT_ID: &str = "plugin-tool-calls";
@@ -304,29 +307,194 @@ struct Cleanup {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
+    /// 失敗の文面が「既に消えていた」なら、成功とみなす。`docker rm -f`・
+    /// `podman rm -f`だけ。`kubectl delete`は`--ignore-not-found`で、既に無ければ
+    /// 成功で終わるので、失敗はいつも知らせる（認証のコマンドの失敗の文面に
+    /// `No such container`が入ることもあるため。PR #685のレビュー）
+    ignore_already_removed: bool,
 }
 
 impl Cleanup {
     /// コマンドを実行する（終了を待たない）。既に消えていれば何もしない。
     fn run(self) {
+        self.spawn(None);
+    }
+
+    /// コマンドを実行し、`delay`の後にもう1度実行する（終了を待たない）。
+    /// 作る要求（`kubectl create`）の途中で打ち切ったとき、APIサーバーが
+    /// 受け取っていた要求は、消した後に作り終えることがある。少し後で
+    /// もう1度消して、残さない（PR #698のレビュー）。`--ignore-not-found`
+    /// なので、2回目に消すものが無くても成功する
+    fn run_twice(self, delay: std::time::Duration) {
+        self.spawn(Some(delay));
+    }
+
+    fn spawn(self, again_after: Option<std::time::Duration>) {
+        // 終了を待って回収するため、別スレッドで実行する。mcp-rsの終了前に
+        // `wait_for_cleanups`で待てるよう、スレッドを覚えておく（PR #672の
+        // レビュー）。失敗は、`wait_for_cleanups`が返す（#684）。2回実行する
+        // ときは、最後の結果を返す
+        let handle = std::thread::spawn(move || {
+            let mut result = self.execute();
+            if let Some(delay) = again_after {
+                std::thread::sleep(delay);
+                result = self.execute();
+            }
+            if let Err(error) = result {
+                CLEANUP_FAILURES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(error);
+            }
+        });
+        let mut pending = PENDING_CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.retain(|h| !h.is_finished());
+        pending.push(handle);
+    }
+
+    /// コマンドを実行し、終了を待つ。起動できない・失敗したら、その理由を
+    /// 返す（#684）。既に消えていた場合は成功
+    fn execute(&self) -> Result<(), String> {
         let mut command = std::process::Command::new(&self.program);
         command
             .args(&self.args)
             .env_clear()
-            .envs(self.env)
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
         }
-        // 終了を待って回収するため、別スレッドで実行する
-        std::thread::spawn(move || {
-            let _ = command.status();
-        });
+        let output = command
+            .output()
+            .map_err(|e| format!("could not run `{}`: {}", self.command_line(), e))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if self.ignore_already_removed && is_already_removed(&stderr) {
+            return Ok(());
+        }
+        let stderr = stderr.trim();
+        let mut message = format!("`{}` failed ({})", self.command_line(), output.status);
+        if !stderr.is_empty() {
+            message.push_str(": ");
+            message.push_str(&truncate(stderr, 300));
+        }
+        Err(message)
     }
+
+    /// 表示用のコマンド。環境変数（資格情報を含むことがある）は含めない
+    fn command_line(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// 落とされたら`Cleanup`を実行する。作ったもの（KubernetesのJob・Secret）を
+/// 準備の途中で外から打ち切られても（`tokio::time::timeout`等でFutureが
+/// 落とされても）、残さないため（#697）。準備ができたら`disarm`で取り出す
+struct CleanupOnDrop(Option<Cleanup>);
+
+impl CleanupOnDrop {
+    fn new(cleanup: Cleanup) -> Self {
+        Self(Some(cleanup))
+    }
+
+    /// 後片付けを取り出す。落としても、もう実行しない
+    fn disarm(mut self) -> Cleanup {
+        self.0
+            .take()
+            .expect("CleanupOnDrop holds the cleanup until it is disarmed")
+    }
+}
+
+impl Drop for CleanupOnDrop {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.0.take() {
+            // 作る要求の途中で落とされたときに、後から作り終えたものも消す
+            cleanup.run_twice(CLEANUP_RETRY_DELAY);
+        }
+    }
+}
+
+/// 準備の途中で落とされたときに、もう1度消すまでの時間。`check`等が後片付けを
+/// 待つ時間（10秒）に収まるようにする
+const CLEANUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// テストで、後片付けの結果（`PENDING_CLEANUPS`・`CLEANUP_FAILURES`）を
+/// 読み出す（`wait_for_cleanups`）テストを、同時に動かさないためのロック。
+/// 並べて動かすと、ほかのテストが登録した失敗を先に読み出してしまう
+/// （PR #698のレビュー）
+#[cfg(test)]
+pub(crate) static CLEANUP_REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
+/// 後片付けのコマンドが、消すものが既に無くて失敗したか。`docker run --rm`の
+/// コンテナは止まると自分で消えるので、`docker rm -f`と重なることがある
+fn is_already_removed(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "no such container",
+        "already in progress",
+        "no container with name or id",
+    ]
+    .iter()
+    .any(|text| stderr.contains(text))
+}
+
+/// 実行中の後片付けのコマンド（`Cleanup::run`）
+static PENDING_CLEANUPS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// 失敗した後片付けのコマンドと、その理由（#684）
+static CLEANUP_FAILURES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// 後片付けのコマンドを待った結果（`wait_for_cleanups`）
+#[derive(Debug, Default)]
+pub struct CleanupReport {
+    /// 待ち終えずに残ったコマンドがある
+    pub timed_out: bool,
+    /// 失敗した・起動できなかったコマンドと、その理由（#684）
+    pub failures: Vec<String>,
+}
+
+/// 後片付けのコマンド（`docker rm -f`・`kubectl delete`）の終了を、最長
+/// `timeout`待つ。mcp-rsが終わる前に呼ぶ。待たないと、プロセスの終了で
+/// コマンドのスレッドも終わり、コンテナ・Job・Secretが残ることがある
+/// （PR #672のレビュー）。待ち終えなかったか、失敗したコマンドを返す（#684）
+pub fn wait_for_cleanups(timeout: std::time::Duration) -> CleanupReport {
+    let deadline = std::time::Instant::now() + timeout;
+    let handles = std::mem::take(
+        &mut *PENDING_CLEANUPS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let mut report = CleanupReport::default();
+    'handles: for handle in handles {
+        // JoinHandleには時間を区切ったjoinが無いので、終わったかを見て待つ
+        while !handle.is_finished() {
+            if std::time::Instant::now() >= deadline {
+                report.timed_out = true;
+                break 'handles;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = handle.join();
+    }
+    report.failures = std::mem::take(
+        &mut *CLEANUP_FAILURES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    report
 }
 
 /// dockerコマンド自体に渡す、本体の環境変数
@@ -375,6 +543,14 @@ pub fn validate_plugin_name(name: &str) -> Result<(), String> {
 /// MCPのツールの名前の長さの上限（2025-11-25の仕様の`SHOULD`）
 const MAX_TOOL_NAME_LENGTH: usize = 128;
 
+/// `tools/list`のツール（`raw`）が、tasks（2025-11-25）でしか呼べないか
+/// （`execution.taskSupport`が`"required"`、#741）
+fn requires_task(raw: &Value) -> bool {
+    raw.pointer("/execution/taskSupport")
+        .and_then(Value::as_str)
+        == Some("required")
+}
+
 /// MCPのツールの名前の形か（#598）。英数字・`_`・`-`・`.`で、1〜128文字
 /// （2025-11-25の仕様の`SHOULD`）。プラグインの名前を前に付けた名前で確かめる
 fn is_valid_tool_name(name: &str) -> bool {
@@ -392,7 +568,10 @@ pub fn launcher_program(config: &PluginConfig) -> Result<String, String> {
     match (&config.container, &config.kubernetes) {
         (Some(_), Some(_)) => Err("container and kubernetes cannot both be set".to_string()),
         (Some(container), None) => {
-            container_launch(config, container, &[], "check").map(|launch| launch.program)
+            // 起動するときと同じく、`env`の名前も確かめる（値は要らない。#697）
+            let mut env_keys: Vec<&str> = config.env.keys().map(String::as_str).collect();
+            env_keys.sort_unstable();
+            container_launch(config, container, &env_keys, "check").map(|launch| launch.program)
         }
         (None, Some(kubernetes)) => {
             kubernetes::validate(config, kubernetes)?;
@@ -466,8 +645,119 @@ pub async fn start_plugins_reporting_failures(
 
 enum ReadLine {
     Line(Vec<u8>),
-    /// 上限を超えた行（行末まで読み捨てた）
-    Oversized,
+    /// 上限を超えた行（行末まで読み捨てた）。先頭の
+    /// `OVERSIZED_LINE_PREFIX_BYTES`バイトだけを持つ
+    Oversized(Vec<u8>),
+}
+
+/// 行の長さを、末尾のLFと、その直前のCRを除いて数える（#750）。行末を
+/// まだ読んでいなければ（`complete`が`false`）、最後のCRは次のLFの直前
+/// かもしれないので数えない
+fn line_content_len(line: &[u8], complete: bool) -> usize {
+    let mut content = line;
+    if complete {
+        content = content.strip_suffix(b"\n").unwrap_or(content);
+    }
+    content.strip_suffix(b"\r").unwrap_or(content).len()
+}
+
+/// 読み捨てる行の先頭から、最上位の`"id"`の値を読む（#750）。先頭の範囲に
+/// `"id"`が無いとき（前の項目が長い等）・JSONとして読めないときは`None`
+fn leading_id(prefix: &[u8]) -> Option<Value> {
+    let mut i = skip_json_whitespace(prefix, 0);
+    if prefix.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    loop {
+        i = skip_json_whitespace(prefix, i);
+        if prefix.get(i) != Some(&b'"') {
+            return None;
+        }
+        let key_end = json_value_end(prefix, i)?;
+        let key: String = serde_json::from_slice(&prefix[i..key_end]).ok()?;
+        i = skip_json_whitespace(prefix, key_end);
+        if prefix.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_json_whitespace(prefix, i + 1);
+        let value_end = json_value_end(prefix, i)?;
+        if key == "id" {
+            return serde_json::from_slice(&prefix[i..value_end]).ok();
+        }
+        i = skip_json_whitespace(prefix, value_end);
+        if prefix.get(i) != Some(&b',') {
+            return None;
+        }
+        i += 1;
+    }
+}
+
+fn skip_json_whitespace(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+        i += 1;
+    }
+    i
+}
+
+/// `start`から始まるJSONの値の終わり（の次の位置）。値が途中で切れて
+/// いれば`None`
+fn json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, &b) in bytes.get(start..)?.iter().enumerate() {
+        let at = start + offset;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+                if depth == 0 {
+                    return Some(at + 1);
+                }
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    // 数等の値が、外側の`}`で終わった
+                    return Some(at);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at + 1);
+                }
+            }
+            b',' | b' ' | b'\t' | b'\r' | b'\n' if depth == 0 => return Some(at),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 送信中の`write_message`が取り消された（期限切れ等）ら、接続を止める
+/// （#750）。送りかけのフレームがパイプに残り、次の要求がその続きになって、
+/// 子プロセスが独立したJSON-RPCのフレームとして読めなくなるため
+struct WriteInProgress<'a> {
+    connection: &'a mut Connection,
+    finished: bool,
+}
+
+impl Drop for WriteInProgress<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.connection.stop(
+                "sending a message to the plugin was interrupted (the call timed out while writing)"
+                    .to_string(),
+            );
+        }
+    }
 }
 
 /// 子プロセスとの接続。リクエストは1つずつ送り、応答を待つ。
@@ -519,11 +809,18 @@ impl Connection {
     async fn write_message(&mut self, message: &Value) -> Result<(), McpError> {
         let mut bytes = serde_json::to_vec(message)?;
         bytes.push(b'\n');
+        // 書き終える前に取り消されたら、`WriteInProgress`が接続を止める
+        let mut writing = WriteInProgress {
+            connection: self,
+            finished: false,
+        };
         let result = async {
-            self.stdin.write_all(&bytes).await?;
-            self.stdin.flush().await
+            writing.connection.stdin.write_all(&bytes).await?;
+            writing.connection.stdin.flush().await
         }
         .await;
+        writing.finished = true;
+        drop(writing);
         if let Err(e) = result {
             let reason = format!("could not write to the plugin: {}", e);
             let error = self.not_running_error(&reason);
@@ -556,20 +853,25 @@ impl Connection {
                 Some(pos) => (pos + 1, true),
                 None => (available.len(), false),
             };
-            if !self.discarding {
+            if self.discarding {
+                // 読み捨てる行も、`id`を読むために先頭だけは残す
+                let room = OVERSIZED_LINE_PREFIX_BYTES.saturating_sub(self.line.len());
+                self.line.extend_from_slice(&available[..len.min(room)]);
+            } else {
                 self.line.extend_from_slice(&available[..len]);
             }
             self.stdout.consume(len);
 
-            // 行末の改行（と\r）は上限に数えない
-            if !self.discarding && self.line.len() > max_bytes + 2 {
+            // 行末のLFと、その直前のCRは上限に数えない
+            if !self.discarding && line_content_len(&self.line, newline) > max_bytes {
                 self.discarding = true;
-                self.line = Vec::new();
+                self.line.truncate(OVERSIZED_LINE_PREFIX_BYTES);
+                self.line.shrink_to_fit();
             }
             if newline {
                 if self.discarding {
                     self.discarding = false;
-                    return Ok(ReadLine::Oversized);
+                    return Ok(ReadLine::Oversized(std::mem::take(&mut self.line)));
                 }
                 return Ok(ReadLine::Line(std::mem::take(&mut self.line)));
             }
@@ -606,7 +908,16 @@ impl Connection {
         loop {
             let bytes = match self.read_line(max_bytes).await? {
                 ReadLine::Line(bytes) => bytes,
-                ReadLine::Oversized => {
+                ReadLine::Oversized(prefix) => {
+                    // 期限の切れた前の要求への応答なら、読み飛ばす（#750）。
+                    // 待っている要求への応答か、`id`が読めなければエラー
+                    if leading_id(&prefix).is_some_and(|other| other != json!(id)) {
+                        debug!(
+                            "Plugin '{}' sent an oversized response for another request (ignored)",
+                            self.plugin
+                        );
+                        continue;
+                    }
                     return Err(McpError::ExternalApi(format!(
                         "plugin '{}' sent a message larger than max_response_bytes ({} bytes)",
                         self.plugin, max_bytes
@@ -746,6 +1057,9 @@ pub struct PluginHandler {
     runtime: &'static str,
     /// ツールの「読み取りだけ」の印を、`@read_only`に使うか（#595）
     trust_annotations: bool,
+    /// mcp-rsの終了で`true`にする（#673）。処理中の呼び出しをやめさせ、
+    /// 接続のロックを空けて、子プロセス・コンテナを止められるようにする
+    shutting_down: tokio::sync::watch::Sender<bool>,
 }
 
 impl PluginHandler {
@@ -852,6 +1166,7 @@ impl PluginHandler {
                     program: launch.program,
                     args: vec!["rm".into(), "-f".into(), launch.container_name],
                     env: docker_env,
+                    ignore_already_removed: true,
                 });
                 command
             }
@@ -954,6 +1269,15 @@ impl PluginHandler {
                 );
                 continue;
             }
+            // tasks（2025-11-25）でしか呼べないツールは、使えない（#741）。
+            // mcp-rsはtasksを実装しておらず、`task`無しの`tools/call`は断られる
+            if requires_task(&raw) {
+                warn!(
+                    "Plugin '{}' listed tool '{}', which can only be called as a task (execution.taskSupport = \"required\"); mcp-rs does not support tasks (ignored)",
+                    config.name, original
+                );
+                continue;
+            }
             let description = raw.get("description").and_then(Value::as_str).unwrap_or("");
             tools.push(Tool {
                 name: name.clone(),
@@ -986,6 +1310,7 @@ impl PluginHandler {
             rate_limiter: RateLimiter::new(config.rate_limit.clone().unwrap_or_default()),
             audit_logger,
             trust_annotations: config.trust_annotations.unwrap_or(false),
+            shutting_down: tokio::sync::watch::channel(false).0,
             runtime: if config.container.is_some() {
                 "container"
             } else if config.kubernetes.is_some() {
@@ -1018,17 +1343,19 @@ impl PluginHandler {
             .get("protocolVersion")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if KNOWN_PLUGIN_PROTOCOL_VERSIONS.contains(&version) {
-            debug!(
-                "Plugin '{}' uses MCP protocol version {}",
-                connection.plugin, version
-            );
-        } else {
-            warn!(
-                "Plugin '{}' answered with MCP protocol version '{}', which mcp-rs does not know. Continuing anyway",
-                connection.plugin, version
-            );
+        // 知らない版なら、`notifications/initialized`を送る前にやめる（#750）
+        if !KNOWN_PLUGIN_PROTOCOL_VERSIONS.contains(&version) {
+            return Err(McpError::ExternalApi(format!(
+                "plugin '{}' answered with MCP protocol version '{}', which mcp-rs does not support (supported: {})",
+                connection.plugin,
+                truncate(version, 64),
+                KNOWN_PLUGIN_PROTOCOL_VERSIONS.join(", ")
+            )));
         }
+        debug!(
+            "Plugin '{}' uses MCP protocol version {}",
+            connection.plugin, version
+        );
         connection.notify("notifications/initialized").await?;
 
         let mut tools = Vec::new();
@@ -1063,7 +1390,12 @@ impl PluginHandler {
         result: &Result<Value, McpError>,
         started: std::time::Instant,
     ) {
-        let success = result.is_ok();
+        // 子プロセスが`isError: true`の結果を返したときも、失敗として記録する
+        // （#750）。中継する結果は変えない
+        let tool_error = result
+            .as_ref()
+            .is_ok_and(|value| value.get("isError") == Some(&Value::Bool(true)));
+        let success = result.is_ok() && !tool_error;
         let status = if success { "SUCCESS" } else { "FAILURE" };
         let mut entry = AuditLogEntry::new(
             if success {
@@ -1078,6 +1410,11 @@ impl PluginHandler {
         .with_result(status.to_string());
         if let Err(e) = result {
             entry = entry.add_metadata("error".to_string(), e.to_string());
+        } else if tool_error {
+            entry = entry.add_metadata(
+                "error".to_string(),
+                "the tool returned a result with isError: true".to_string(),
+            );
         }
         // 呼び出し元と所要時間（#55）
         let entry = crate::mcp::audit_tool_call_context(entry, started);
@@ -1095,22 +1432,37 @@ impl PluginHandler {
             "name": original,
             "arguments": arguments.unwrap_or_default()
         });
-        let result = tokio::time::timeout(self.call_timeout, async {
+        let mut shutting_down = self.shutting_down.subscribe();
+        let call = tokio::time::timeout(self.call_timeout, async {
             let mut connection = self.connection.lock().await;
             connection
                 .request("tools/call", params, self.max_response_bytes)
                 .await
-        })
-        .await
-        .unwrap_or_else(|_| {
-            Err(McpError::ExternalApi(format!(
-                "plugin '{}' did not respond within {} seconds",
-                self.name,
-                self.call_timeout.as_secs()
-            )))
-        })?;
+        });
+        // mcp-rsの終了では、応答を待たずにやめる（#673）。待っている間は
+        // 接続がロックされ、`shutdown`がプラグインを止められないため
+        let result = tokio::select! {
+            biased;
+            _ = shutting_down.wait_for(|stopping| *stopping) => {
+                Err(self.shutting_down_error())
+            }
+            result = call => result.unwrap_or_else(|_| {
+                Err(McpError::ExternalApi(format!(
+                    "plugin '{}' did not respond within {} seconds",
+                    self.name,
+                    self.call_timeout.as_secs()
+                )))
+            }),
+        }?;
 
         call_tool_result_for_client(&self.name, result)
+    }
+
+    fn shutting_down_error(&self) -> McpError {
+        McpError::ExternalApi(format!(
+            "plugin '{}' was stopped because mcp-rs is shutting down",
+            self.name
+        ))
     }
 
     #[cfg(test)]
@@ -1136,6 +1488,16 @@ impl McpHandler for PluginHandler {
     }
 
     async fn call_tool(&self, params: ToolCallParams) -> Result<Value, McpError> {
+        // STDIOの取り消し（`notifications/cancelled`）で、途中で止めさせない
+        // （PR #765のレビュー）。送信の途中で止めると、`WriteInProgress`が
+        // 接続ごと止め、監査ログも残らない。取り消された呼び出しも最後まで
+        // 行い（`call_timeout`まで）、応答だけを返さない。プラグインに
+        // 取り消しを伝えることはしない
+        if !crate::mcp::keep_call_from_being_aborted() {
+            return Err(McpError::Other(
+                "the tool call was cancelled before it started".to_string(),
+            ));
+        }
         let started = std::time::Instant::now();
         let Some(original) = self.original_names.get(&params.name) else {
             return Err(McpError::ToolNotFound(params.name));
@@ -1186,6 +1548,18 @@ impl McpHandler for PluginHandler {
     async fn read_resource(&self, params: ResourceReadParams) -> Result<Value, McpError> {
         Err(McpError::ResourceNotFound(params.uri))
     }
+
+    async fn shutdown(&self) {
+        // 処理中の呼び出しをやめさせてから、接続のロックを取る（#673）
+        self.shutting_down.send_replace(true);
+        let mut connection = self.connection.lock().await;
+        if connection.stopped.is_none() {
+            // 後片付け（`docker rm -f`等）は`Cleanup::run`が始め、終了は
+            // `wait_for_cleanups`で待つ
+            connection.kill();
+            connection.stopped = Some("mcp-rs is shutting down".to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1193,7 +1567,206 @@ pub(crate) mod tests {
     use super::*;
     use crate::config::{PluginKubernetesConfig, PluginMountConfig};
 
+    /// 後片付けのコマンドを覚えておき、終了を待てる（PR #672のレビュー）。
+    /// 起動できなかったコマンドは、失敗として返す（#684）
+    #[test]
+    fn test_wait_for_cleanups() {
+        let _registry = CLEANUP_REGISTRY_TEST_LOCK.blocking_lock();
+        Cleanup {
+            program: "mcp-rs-test-no-such-command".to_string(),
+            args: vec!["job/test-684".to_string()],
+            env: Vec::new(),
+            ignore_already_removed: false,
+        }
+        .run();
+        let report = wait_for_cleanups(std::time::Duration::from_secs(30));
+        assert!(!report.timed_out);
+        assert!(
+            report.failures.iter().any(|failure| failure
+                .starts_with("could not run `mcp-rs-test-no-such-command job/test-684`")),
+            "{:?}",
+            report.failures
+        );
+    }
+
+    /// `path`にファイルを作るコマンド
+    /// （このテストのバイナリを`test_touch_main`だけ動かす。シェルを通さない
+    /// ので、パスに空白等があってもよい。PR #698のレビュー）
+    fn touch_cleanup(path: &std::path::Path) -> Cleanup {
+        Cleanup {
+            program: std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            args: vec![
+                "--exact".to_string(),
+                "plugin_proxy::tests::test_touch_main".to_string(),
+                "--ignored".to_string(),
+                "--test-threads=1".to_string(),
+            ],
+            env: vec![(
+                TEST_TOUCH_ENV.to_string(),
+                path.to_string_lossy().into_owned(),
+            )],
+            ignore_already_removed: false,
+        }
+    }
+
+    const TEST_TOUCH_ENV: &str = "MCP_RS_TEST_TOUCH";
+
+    /// `touch_cleanup`から動かすとき（`MCP_RS_TEST_TOUCH`があるとき）だけ、
+    /// そのパスのファイルに1行足す（何回動いたかを数えられる）
+    #[test]
+    #[ignore]
+    fn test_touch_main() {
+        use std::io::Write as _;
+        if let Some(path) = std::env::var_os(TEST_TOUCH_ENV) {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            file.write_all(b"ran\n").unwrap();
+        }
+    }
+
+    /// ファイルの行数（無ければ0）
+    fn count_lines(path: &std::path::Path) -> usize {
+        std::fs::read_to_string(path)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// ファイルが`lines`行になるまで、最長10秒待つ
+    fn wait_for_lines(path: &std::path::Path, lines: usize) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if count_lines(path) >= lines {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        count_lines(path) >= lines
+    }
+
+    /// 準備の途中で落とされたら、後片付けを実行し、少し後でもう1度実行する
+    /// （遅れて作り終えたものも消す。PR #698のレビュー）。取り出した後は
+    /// 実行しない（#697）
+    #[test]
+    fn test_cleanup_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        // パスに空白があってもよい（PR #698のレビュー）
+        let dropped = dir.path().join("dropped marker");
+        drop(CleanupOnDrop::new(touch_cleanup(&dropped)));
+        assert!(wait_for_lines(&dropped, 2), "{}", count_lines(&dropped));
+
+        let disarmed = dir.path().join("disarmed");
+        let cleanup = CleanupOnDrop::new(touch_cleanup(&disarmed)).disarm();
+        // 取り出した後片付けは、呼べば1回だけ実行できる
+        assert_eq!(count_lines(&disarmed), 0);
+        cleanup.execute().unwrap();
+        assert_eq!(count_lines(&disarmed), 1);
+    }
+
+    /// `tokio::time::timeout`で打ち切られたFutureの中のガードも、後片付けを
+    /// 実行する（`mcp-rs check`がプラグインの起動を10秒で打ち切るとき。#697）
+    #[tokio::test]
+    async fn test_cleanup_runs_when_the_future_is_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("cancelled");
+        let preparing = {
+            let marker = marker.clone();
+            async move {
+                let _guard = CleanupOnDrop::new(touch_cleanup(&marker));
+                // Podを待ち続ける代わり
+                std::future::pending::<()>().await;
+            }
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), preparing).await;
+        assert!(result.is_err());
+        assert!(wait_for_lines(&marker, 1));
+    }
+
+    /// 終了コードを返すコマンド（Windowsでは`cmd /c exit N`）
+    fn exit_cleanup(code: u8) -> Cleanup {
+        #[cfg(windows)]
+        let (program, args) = ("cmd", vec!["/c".to_string(), format!("exit {}", code)]);
+        #[cfg(not(windows))]
+        let (program, args) = ("sh", vec!["-c".to_string(), format!("exit {}", code)]);
+        Cleanup {
+            program: program.to_string(),
+            args,
+            env: Vec::new(),
+            ignore_already_removed: false,
+        }
+    }
+
+    /// 後片付けのコマンドが失敗したら、コマンドと終了コードを返す（#684）
+    #[test]
+    fn test_cleanup_execute_reports_failure() {
+        let error = exit_cleanup(1).execute().unwrap_err();
+        assert!(error.contains("exit 1`"), "{}", error);
+        assert!(error.contains("failed"), "{}", error);
+    }
+
+    /// 「既に消えていた」の文面で成功とみなすのは、コンテナの後片付けだけ。
+    /// kubectlの失敗は、同じ文面でも知らせる（PR #685のレビュー）
+    #[test]
+    fn test_already_removed_only_for_container_cleanups() {
+        #[cfg(windows)]
+        let (program, args) = (
+            "cmd",
+            vec![
+                "/c".to_string(),
+                "echo No such container: x 1>&2 & exit 1".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            "sh",
+            vec![
+                "-c".to_string(),
+                "echo 'No such container: x' >&2; exit 1".to_string(),
+            ],
+        );
+        let cleanup = |ignore_already_removed| Cleanup {
+            program: program.to_string(),
+            args: args.clone(),
+            env: Vec::new(),
+            ignore_already_removed,
+        };
+        assert_eq!(cleanup(true).execute(), Ok(()));
+        let error = cleanup(false).execute().unwrap_err();
+        assert!(error.contains("No such container"), "{}", error);
+    }
+
+    /// 後片付けのコマンドが成功したら、失敗にしない（#684）
+    #[test]
+    fn test_cleanup_execute_success() {
+        assert_eq!(exit_cleanup(0).execute(), Ok(()));
+    }
+
+    /// 消すものが既に無いだけの失敗は、成功とみなす（#684）
+    #[test]
+    fn test_is_already_removed() {
+        assert!(is_already_removed(
+            "Error response from daemon: No such container: mcp-rs-fs-1"
+        ));
+        assert!(is_already_removed(
+            "Error response from daemon: removal of container mcp-rs-fs-1 is already in progress"
+        ));
+        assert!(is_already_removed(
+            "Error: no container with name or ID \"mcp-rs-fs-1\" found: no such container"
+        ));
+        assert!(!is_already_removed(
+            "error: You must be logged in to the server (Unauthorized)"
+        ));
+        assert!(!is_already_removed(""));
+    }
+
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
+    /// テスト用のプラグインが`initialize`で答える版（省略時は`PROTOCOL_VERSION`）
+    const TEST_PLUGIN_VERSION_ENV: &str = "MCP_RS_TEST_PLUGIN_VERSION";
 
     /// テスト用のMCPサーバー。このテストバイナリ自身をプラグインとして
     /// 起動し、この関数だけを実行させる（`--exact`・`--ignored`）。通常の
@@ -1230,7 +1803,9 @@ pub(crate) mod tests {
             let method = request["method"].as_str().unwrap_or("");
             let result = match method {
                 "initialize" => json!({
-                    "protocolVersion": PROTOCOL_VERSION,
+                    // 知らない版で答えるプラグインのテスト（#750）
+                    "protocolVersion": std::env::var(TEST_PLUGIN_VERSION_ENV)
+                        .unwrap_or_else(|_| PROTOCOL_VERSION.to_string()),
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "test-plugin", "version": "1.0.0" }
                 }),
@@ -1251,7 +1826,15 @@ pub(crate) mod tests {
                     };
                     // ページ分けを確かめるため、2ページに分ける
                     if request["params"]["cursor"] == json!("page2") {
-                        json!({ "tools": [tool("big"), tool("exit"), tool("noisy"), tool("fail")] })
+                        json!({ "tools": [
+                            tool("big"),
+                            tool("exit"),
+                            tool("noisy"),
+                            tool("fail"),
+                            tool("toolerror"),
+                            tool("slowbig"),
+                            tool("raw")
+                        ] })
                     } else {
                         json!({
                             "tools": [tool("echo"), tool("env"), tool("sleep")],
@@ -1287,6 +1870,37 @@ pub(crate) mod tests {
                             text_result("x".repeat(args["bytes"].as_u64().unwrap_or(0) as usize))
                         }
                         "exit" => std::process::exit(3),
+                        "toolerror" => json!({
+                            "content": [{ "type": "text", "text": "tool failed" }],
+                            "isError": true
+                        }),
+                        "slowbig" => {
+                            // 期限の切れた後に届く、上限を超える応答（#750）
+                            let ms = args["ms"].as_u64().unwrap_or(0);
+                            std::thread::sleep(Duration::from_millis(ms));
+                            text_result("x".repeat(args["bytes"].as_u64().unwrap_or(0) as usize))
+                        }
+                        "raw" => {
+                            // 改行を除いてちょうど`bytes`バイトの応答を、LFか
+                            // CRLFで終えて送る（#750）
+                            let bytes = args["bytes"].as_u64().unwrap_or(0) as usize;
+                            let line = |text: String| {
+                                json!({ "jsonrpc": "2.0", "id": id, "result": text_result(text) })
+                                    .to_string()
+                            };
+                            let padding = bytes.saturating_sub(line(String::new()).len());
+                            let mut text = line("x".repeat(padding));
+                            assert_eq!(text.len(), bytes);
+                            text.push_str(if args["crlf"] == json!(true) {
+                                "\r\n"
+                            } else {
+                                "\n"
+                            });
+                            let mut raw = std::io::stdout();
+                            raw.write_all(text.as_bytes()).unwrap();
+                            raw.flush().unwrap();
+                            continue;
+                        }
                         "fail" => {
                             send(json!({
                                 "jsonrpc": "2.0",
@@ -1448,7 +2062,10 @@ pub(crate) mod tests {
                 "demo__big",
                 "demo__exit",
                 "demo__noisy",
-                "demo__fail"
+                "demo__fail",
+                "demo__toolerror",
+                "demo__slowbig",
+                "demo__raw"
             ]
         );
         let tools = handler.list_tools().await.unwrap();
@@ -1537,6 +2154,64 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn test_shutdown_stops_plugin_shared_with_dispatcher() {
+        // HTTPモードのように、`dispatcher`がハンドラーを共有していても、
+        // `McpServer::shutdown`でプラグインが止まる（#673）
+        let handler = Arc::new(
+            PluginHandler::start(&test_plugin_config("down"))
+                .await
+                .unwrap(),
+        );
+        let mut server = crate::mcp::McpServer::new();
+        server.add_handler("down".to_string(), handler.clone());
+        let _dispatcher = server.dispatcher();
+
+        // 処理中の呼び出しは、応答を待たずにエラーで終わる
+        let in_flight = {
+            let handler = handler.clone();
+            tokio::spawn(async move { call(&handler, "down__sleep", json!({ "ms": 20000 })).await })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::timeout(Duration::from_secs(5), server.shutdown())
+            .await
+            .expect("shutdown should not wait for the call in progress");
+        let error = tokio::time::timeout(Duration::from_secs(5), in_flight)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("shutting down"), "{}", error);
+
+        let status = handler.status().await.unwrap();
+        assert!(
+            status.contains("stopped (mcp-rs is shutting down)"),
+            "{}",
+            status
+        );
+        let error = call(&handler, "down__echo", json!({ "text": "late" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("shutting down"), "{}", error);
+
+        // プラグインのプロセスが実際に終わる（`dispatcher`が残っていても）
+        // （PR #675のレビュー）
+        let exited = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some(_)) = handler.connection.lock().await.child.try_wait() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(exited.is_ok(), "the plugin process is still running");
+
+        // 2回目は何もしない
+        server.shutdown().await;
+        drop(_dispatcher);
+    }
+
+    #[tokio::test]
     async fn test_oversized_response_returns_error_and_later_calls_still_work() {
         let handler = PluginHandler::start(&test_plugin_config("big"))
             .await
@@ -1568,7 +2243,176 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not running"), "{}", error);
-        assert_eq!(handler.list_tools().await.unwrap().len(), 7);
+        assert_eq!(handler.list_tools().await.unwrap().len(), 10);
+    }
+
+    /// 子プロセスが`isError: true`の結果を返したら、結果はそのまま中継し、
+    /// 監査ログには`FAILURE`と記録する（#750）
+    #[tokio::test]
+    async fn test_tool_error_result_is_audited_as_failure() {
+        let handler = PluginHandler::start(&test_plugin_config("toolerr"))
+            .await
+            .unwrap();
+        let result = call(&handler, "toolerr__toolerror", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], json!(true));
+        assert_eq!(text(&result), "tool failed");
+        call(&handler, "toolerr__echo", json!({ "text": "ok" }))
+            .await
+            .unwrap();
+
+        let entries = handler.audit_logger().get_all_entries().await;
+        let results: Vec<Option<&str>> = entries.iter().map(|e| e.result.as_deref()).collect();
+        assert_eq!(results, vec![Some("FAILURE"), Some("SUCCESS")]);
+        assert_eq!(entries[0].level, AuditLevel::Error);
+    }
+
+    /// 知らない版で答えるプラグインは、起動のエラーにする（#750）
+    #[tokio::test]
+    async fn test_plugin_with_unknown_protocol_version_fails_to_start() {
+        let mut config = test_plugin_config("unknownver");
+        config.env.insert(
+            TEST_PLUGIN_VERSION_ENV.to_string(),
+            "2099-01-01".to_string(),
+        );
+        let error = PluginHandler::start(&config).await.err().unwrap();
+        assert!(error.contains("2099-01-01"), "{}", error);
+        assert!(error.contains("does not support"), "{}", error);
+
+        // 知っている古い版なら起動する
+        let mut config = test_plugin_config("oldver");
+        config.env.insert(
+            TEST_PLUGIN_VERSION_ENV.to_string(),
+            "2024-11-05".to_string(),
+        );
+        assert!(PluginHandler::start(&config).await.is_ok());
+    }
+
+    /// 送信の途中で期限が切れたら、送りかけのフレームが残った接続を止める。
+    /// 応答を待つ間の期限切れでは、接続を使い続ける（#750）
+    #[tokio::test]
+    async fn test_timeout_while_writing_stops_the_connection() {
+        let mut config = test_plugin_config("partial");
+        config.call_timeout_seconds = Some(1);
+        let handler = PluginHandler::start(&config).await.unwrap();
+
+        // 子プロセスが3秒間、標準入力を読まないようにする（応答を待つ間の
+        // 期限切れなので、接続は止めない）
+        let error = call(&handler, "partial__sleep", json!({ "ms": 3000 }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("did not respond"), "{}", error);
+        assert!(handler.status().await.unwrap().contains(": running"));
+
+        // パイプに入りきらない要求は、書き終える前に期限が切れる
+        let error = call(
+            &handler,
+            "partial__echo",
+            json!({ "text": "x".repeat(8 * 1024 * 1024) }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("did not respond"), "{}", error);
+        let status = handler.status().await.unwrap();
+        assert!(status.contains("interrupted"), "{}", status);
+
+        let error = call(&handler, "partial__echo", json!({ "text": "after" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not running"), "{}", error);
+    }
+
+    /// 期限の切れた前の要求への、上限を超える応答は読み飛ばし、待っている
+    /// 要求の応答を返す（#750）
+    #[tokio::test]
+    async fn test_oversized_late_response_for_another_request_is_skipped() {
+        let mut config = test_plugin_config("latebig");
+        config.call_timeout_seconds = Some(1);
+        let handler = PluginHandler::start(&config).await.unwrap();
+
+        let error = call(
+            &handler,
+            "latebig__slowbig",
+            json!({ "ms": 1500, "bytes": 10000 }),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("did not respond"), "{}", error);
+
+        let result = call(&handler, "latebig__echo", json!({ "text": "after" }))
+            .await
+            .unwrap();
+        assert_eq!(text(&result), "after");
+    }
+
+    /// 行の上限は、末尾のLFと、その直前のCRを除いた長さで比べる（#750）
+    #[tokio::test]
+    async fn test_line_limit_excludes_only_the_line_ending() {
+        let handler = PluginHandler::start(&test_plugin_config("limit"))
+            .await
+            .unwrap();
+        // `test_plugin_config`の`max_response_bytes`は4096
+        for crlf in [false, true] {
+            let result = call(
+                &handler,
+                "limit__raw",
+                json!({ "bytes": 4096, "crlf": crlf }),
+            )
+            .await
+            .unwrap();
+            assert!(text(&result).starts_with('x'), "crlf: {}", crlf);
+
+            let error = call(
+                &handler,
+                "limit__raw",
+                json!({ "bytes": 4097, "crlf": crlf }),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("max_response_bytes"),
+                "crlf: {}: {}",
+                crlf,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn test_line_content_len() {
+        assert_eq!(line_content_len(b"{}\n", true), 2);
+        assert_eq!(line_content_len(b"{}\r\n", true), 2);
+        // CRは、LFの直前の1つだけを除く
+        assert_eq!(line_content_len(b"{}\r\r\n", true), 3);
+        // 行末を読む前は、最後のCRを数えない（次がLFかもしれない）
+        assert_eq!(line_content_len(b"{}\r", false), 2);
+        assert_eq!(line_content_len(b"{}\rx", false), 4);
+        assert_eq!(line_content_len(b"{}", false), 2);
+    }
+
+    #[test]
+    fn test_leading_id() {
+        let big = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{{\"text\":\"{}",
+            "x".repeat(100)
+        );
+        assert_eq!(leading_id(big.as_bytes()), Some(json!(7)));
+        assert_eq!(
+            leading_id(br#" { "id" : "a\"b", "result": "#),
+            Some(json!("a\"b"))
+        );
+        // 前の項目（入れ子・文字列の中の`"id"`）は飛ばす
+        assert_eq!(
+            leading_id(br#"{"meta":{"id":1,"x":[1,"}"]},"note":"\"id\":2","id":3,"#),
+            Some(json!(3))
+        );
+        assert_eq!(leading_id(br#"{"id":null}"#), Some(Value::Null));
+        // 先頭に`"id"`が無い・途中で切れている・JSONでない
+        assert_eq!(leading_id(br#"{"result":{"text":"xxxx"#), None);
+        assert_eq!(leading_id(br#"{"jsonrpc":"2.0","id":12"#), None);
+        assert_eq!(leading_id(b"not json"), None);
+        assert_eq!(leading_id(b""), None);
     }
 
     #[tokio::test]
@@ -1723,6 +2567,22 @@ pub(crate) mod tests {
             launch.args[launch.args.len() - 4..],
             ["python:3.12-alpine", "python", "-c", "print(1)"]
         );
+    }
+
+    /// `mcp-rs check`（`launcher_program`）も、起動するときと同じく`env`の
+    /// 名前を確かめる（#697）
+    #[test]
+    fn test_launcher_program_checks_container_env_names() {
+        let mut config = container_plugin_config("tool", container_config("example/image"));
+        config
+            .env
+            .insert("API_KEY".to_string(), "${MCP_RS_TEST_API_KEY}".to_string());
+        assert!(launcher_program(&config).is_ok());
+        config
+            .env
+            .insert("DOCKER_HOST".to_string(), "tcp://example:2375".to_string());
+        let error = launcher_program(&config).unwrap_err();
+        assert!(error.contains("DOCKER_HOST"), "{error}");
     }
 
     #[test]
@@ -2094,6 +2954,33 @@ for line in sys.stdin:
         eprintln!("probe (network = allow): {}", result);
         assert_eq!(result["network"], json!("ok"));
 
+        // Secretは、作る時点から同じプラグインのJobが所有者（#700）
+        for plugin in ["k8snone", "k8sallow"] {
+            let get = |kind: &str, jsonpath: &str| {
+                let output = std::process::Command::new("kubectl")
+                    .args([
+                        "get",
+                        kind,
+                        "-o",
+                        &format!("jsonpath={}", jsonpath),
+                        &format!("--selector={}={}", CONTAINER_LABEL, plugin),
+                    ])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            };
+            let owner = get(
+                "secrets",
+                "{.items[0].metadata.ownerReferences[0].kind}/{.items[0].metadata.ownerReferences[0].name}/{.items[0].metadata.ownerReferences[0].uid}",
+            );
+            let job = get(
+                "jobs",
+                "Job/{.items[0].metadata.name}/{.items[0].metadata.uid}",
+            );
+            assert!(job.len() > "Job//".len(), "no job for {}", plugin);
+            assert_eq!(owner, job, "owner of the secret for {}", plugin);
+        }
+
         // 止めると、JobとSecretも残らない
         assert!(!kubernetes_resources_with_label("k8snone").is_empty());
         drop(isolated);
@@ -2108,6 +2995,22 @@ for line in sys.stdin:
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             assert!(remaining.is_empty(), "left for {}: {}", plugin, remaining);
+        }
+    }
+
+    /// tasksでしか呼べないツールだけを除く（#741）
+    #[test]
+    fn test_requires_task() {
+        assert!(requires_task(
+            &json!({ "name": "t", "execution": { "taskSupport": "required" } })
+        ));
+        for tool in [
+            json!({ "name": "t" }),
+            json!({ "name": "t", "execution": {} }),
+            json!({ "name": "t", "execution": { "taskSupport": "optional" } }),
+            json!({ "name": "t", "execution": { "taskSupport": "forbidden" } }),
+        ] {
+            assert!(!requires_task(&tool), "{tool}");
         }
     }
 

@@ -375,6 +375,17 @@ impl zeroize::Zeroize for StoredDatabaseCredentials {
 
 const STORED_DATABASE_KIND: &str = "database";
 
+/// Whether two database hosts are the same. Host names are compared without
+/// case, as DNS does; a Unix socket path (starting with `/`) is compared
+/// exactly, because file systems may tell case apart (#692).
+fn same_database_host(a: &str, b: &str) -> bool {
+    if a.starts_with('/') || b.starts_with('/') {
+        a == b
+    } else {
+        a.eq_ignore_ascii_case(b)
+    }
+}
+
 /// Read the database credentials named `name` and check that they are for
 /// `host`, `port` and `username` (the values of `[database]`).
 pub fn load_database_credentials(
@@ -401,7 +412,7 @@ pub fn load_database_credentials(
     if stored.kind != STORED_DATABASE_KIND || stored.username.is_empty() {
         return Err(not_database());
     }
-    if !stored.host.eq_ignore_ascii_case(host.trim())
+    if !same_database_host(&stored.host, host.trim())
         || stored.port != port
         || stored.username != username
     {
@@ -459,6 +470,35 @@ pub fn database_entry(
             Err(_) => DatabaseEntry::Other,
         },
     ))
+}
+
+/// What kind of credentials a keyring entry holds, by its stored `kind`
+/// (#684). The secret itself is not read out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    /// mcp-rs WordPress credentials
+    WordPress,
+    /// mcp-rs database credentials
+    Database,
+    /// Not mcp-rs credentials (another program's secret, or an unknown kind)
+    Other,
+}
+
+/// The kind of the entry named `name`, or `None` if there is none.
+pub fn entry_kind(store: &dyn SecretStore, name: &str) -> Result<Option<EntryKind>, KeyringError> {
+    #[derive(Deserialize)]
+    struct Kind {
+        kind: String,
+    }
+    let name = check_name(name)?;
+    let Some(secret) = store.get(name)? else {
+        return Ok(None);
+    };
+    Ok(Some(match serde_json::from_str::<Kind>(&secret) {
+        Ok(stored) if stored.kind == STORED_KIND => EntryKind::WordPress,
+        Ok(stored) if stored.kind == STORED_DATABASE_KIND => EntryKind::Database,
+        _ => EntryKind::Other,
+    }))
 }
 
 /// Create or replace the database credentials named `name`, then read them
@@ -532,6 +572,40 @@ impl SecretStore for MemoryStore {
 
     fn delete(&self, name: &str) -> Result<bool, KeyringError> {
         Ok(self.entries.lock().unwrap().remove(name).is_some())
+    }
+}
+
+/// A [`MemoryStore`] for tests whose first `set` succeeds, but whose next
+/// `get` (the read-back) fails once. Later calls work normally.
+#[cfg(test)]
+#[derive(Default)]
+pub struct ReadBackFailingStore {
+    pub inner: MemoryStore,
+    /// 0: before the first `set`, 1: the next `get` fails, 2: done
+    state: std::sync::Mutex<u8>,
+}
+
+#[cfg(test)]
+impl SecretStore for ReadBackFailingStore {
+    fn get(&self, name: &str) -> Result<Option<Zeroizing<String>>, KeyringError> {
+        let mut state = self.state.lock().unwrap();
+        if *state == 1 {
+            *state = 2;
+            return Err(KeyringError::Unavailable("read-back failed".to_string()));
+        }
+        self.inner.get(name)
+    }
+
+    fn set(&self, name: &str, secret: &str) -> Result<(), KeyringError> {
+        let mut state = self.state.lock().unwrap();
+        if *state == 0 {
+            *state = 1;
+        }
+        self.inner.set(name, secret)
+    }
+
+    fn delete(&self, name: &str) -> Result<bool, KeyringError> {
+        self.inner.delete(name)
     }
 }
 
@@ -709,5 +783,31 @@ mod tests {
             err.contains("does not hold mcp-rs database credentials"),
             "{err}"
         );
+    }
+
+    /// ホスト名は大文字小文字を区別しないが、Unixソケットのパスは区別する
+    /// （#692）
+    #[test]
+    fn test_database_credentials_for_a_unix_socket() {
+        assert!(same_database_host("db.example.com", "DB.Example.COM"));
+        assert!(same_database_host(
+            "/var/run/postgresql",
+            "/var/run/postgresql"
+        ));
+        assert!(!same_database_host("/tmp/Db", "/tmp/db"));
+        assert!(!same_database_host("/tmp/db", "localhost"));
+
+        let store = MemoryStore::default();
+        let socket = DatabaseKeyringCredentials {
+            host: "/tmp/Db".to_string(),
+            port: 5432,
+            username: "reader".to_string(),
+            password: Zeroizing::new("s3cret".to_string()),
+        };
+        store_database_credentials(&store, "socket", &socket).unwrap();
+        assert!(load_database_credentials(&store, "socket", "/tmp/Db", 5432, "reader").is_ok());
+        let err =
+            load_database_credentials(&store, "socket", "/tmp/db", 5432, "reader").unwrap_err();
+        assert!(err.contains("not sent to another server"), "{err}");
     }
 }

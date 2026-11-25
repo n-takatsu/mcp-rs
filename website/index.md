@@ -43,11 +43,13 @@ MCP-RS is a Model Context Protocol (MCP) server written in Rust. MCP clients suc
 
 See [Security](docs/security/) for the settings.
 
-## 🎯 WordPress MCP Tools (32 tools available)
+## 🎯 WordPress MCP Tools (41 tools available)
 
 **📝 Content Management:**
 
 - Create, read (full editable source), update, and delete posts and pages
+- List revisions and restore a post or page to one of them
+- Custom post types (products, events, ...) allowed in the config, and their own taxonomies
 - Advanced post creation with SEO and scheduling
 - YouTube and social media embeds
 - Category and tag management
@@ -62,7 +64,7 @@ See [Security](docs/security/) for the settings.
 **🔗 Content Integration:**
 
 - Create posts with taxonomy
-- Comment retrieval
+- Comment moderation: approve, mark as spam, reply, and delete
 
 **⚙️ Site Management:**
 
@@ -83,7 +85,19 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.29.0)
+## ✅ Recently Completed (v0.30.0)
+
+A stronger core for WordPress, MCP and setup. Some changes affect existing settings (for example, `ssl_mode` is now required for remote databases); see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.30.0) before updating.
+
+- **🌐 Several WordPress sites**: One mcp-rs serves several sites, each under `[handlers.wordpress.sites.<name>]`, with a `site` argument on each tool (the default site when left out). The single-site form still works, and `mcp-rs init` can add more sites. See [WordPress](docs/wordpress/#sites)
+- **📝 Comments, revisions and custom post types**: Create, moderate and delete comments, view revisions and restore one, and use the custom post types you allow in `post_types`, with their taxonomies (`terms`). `create_post_with_embeds` also embeds YouTube Shorts. See [Comments](docs/wordpress/#comments), [Revisions](docs/wordpress/#revisions) and [Custom post types](docs/wordpress/#custom-post-types)
+- **💬 MCP prompts and resource templates**: Ready-made prompts in the client's menu (`draft_post`, `review_post_seo`, `moderate_comments`, `summarize_table`), and `wordpress://post/{id}`, `wordpress://page/{id}` and `wordpress://media/{id}` to read one item. See [Prompts](docs/wordpress/#prompts) and [API](docs/api/)
+- **🧩 Claude Desktop extension**: Each release has `mcp-rs-<version>.mcpb`, with mcp-rs for Windows, macOS (Apple Silicon) and Linux. The site URL, username and Application Password are entered in Claude Desktop. See [Getting Started](docs/guides/#claude-desktop-extension)
+- **🧭 Setup**: `mcp-rs init` can set up a database without WordPress. Without a config file, mcp-rs starts in STDIO mode with only `mcp_rs_status`, which says how to set it up. Tool descriptions were rewritten so AI clients pick the right tool. See [Getting Started](docs/guides/#mcp-rs-init)
+- **🐳 Docker**: The image is a single statically linked (musl) executable on `gcr.io/distroless/static-debian12:nonroot`, without the Debian C library and OpenSSL packages. See the [Docker Guide](https://github.com/n-takatsu/mcp-rs/blob/main/docs/DOCKER_GUIDE.md)
+- **🔒 Hardening**: Remote databases need `ssl_mode` (see [Database Integration](docs/database/#tls)), fewer false positives in the IDS, plugins are stopped on SIGTERM, and many fixes from reviews of earlier versions. On Windows, `mcp-rs init` writes config files with owner-only ACLs
+
+## ✅ v0.29.0
 
 Easier to set up and to use. Some changes affect existing settings; see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0) before updating.
 

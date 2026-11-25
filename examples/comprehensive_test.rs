@@ -26,24 +26,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   📝 WordPress設定:");
         println!("      URL: {}", wp_config.url);
         println!("      Username: {}", wp_config.username);
+        // パスワードは一部も出さない（ログを共有しても漏れないように。#750）
         println!(
-            "      Password: {}***",
-            wp_config.password.chars().take(8).collect::<String>()
+            "      Password: {}",
+            if wp_config.password.is_empty() {
+                "未設定"
+            } else {
+                "設定済み"
+            }
         );
 
         // 環境変数が正しく設定されているかチェック
         let env_vars = ["TEST_WP_URL", "TEST_WP_USER", "TEST_WP_PASS"];
         for var in &env_vars {
+            // 空の値は、WordPressのパスワードの表示と同じく未設定とする
             match env::var(var) {
-                Ok(value) => {
+                Ok(value) if !value.is_empty() => {
                     let display_value = if var.contains("PASS") {
-                        format!("{}***", value.chars().take(8).collect::<String>())
+                        "設定済み".to_string()
                     } else {
                         value
                     };
                     println!("   ✅ {}: {}", var, display_value);
                 }
-                Err(_) => println!("   ⚠️  {}: 未設定", var),
+                _ => println!("   ⚠️  {}: 未設定", var),
             }
         }
     } else {
@@ -113,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     println!(
-        "      メディアアップロード: {}",
+        "      メディア読み取り: {}",
         if health_check.media_upload_possible {
             "✅"
         } else {

@@ -18,7 +18,12 @@ mod tests {
     /// テーブルはマイグレーション（migrations/20260201_column_encryption_rbac.sql）
     /// で作る。前のテストの権限・監査ログが残らないように、毎回消してから作る
     /// （マイグレーションのCREATE TRIGGERは、2回目の実行で失敗するためでもある）
-    async fn setup_test_db() -> PgPool {
+    /// 共有の表を消して作り直すので、テストを1つずつ動かす（#724。並べて
+    /// 動かすと、互いの表を消した）
+    static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn setup_test_db() -> (PgPool, tokio::sync::MutexGuard<'static, ()>) {
+        let guard = DB_LOCK.lock().await;
         let pool = PgPool::connect(&crate::common::postgres_url())
             .await
             .expect("TEST_DATABASE_URL is set but PostgreSQL is not reachable");
@@ -34,13 +39,13 @@ mod tests {
         .execute(&pool)
         .await
         .expect("failed to apply the RBAC migration");
-        pool
+        (pool, guard)
     }
 
     #[tokio::test]
     #[ignore] // Requires test database
     async fn test_admin_has_all_permissions() {
-        let pool = setup_test_db().await;
+        let (pool, _db) = setup_test_db().await;
         let rbac = ColumnEncryptionRbac::new(pool);
 
         let mut admin_user = AuthUser::new("admin1".to_string(), "Admin User".to_string());
@@ -74,7 +79,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires test database
     async fn test_user_without_permission() {
-        let pool = setup_test_db().await;
+        let (pool, _db) = setup_test_db().await;
         let rbac = ColumnEncryptionRbac::new(pool);
 
         let mut regular_user = AuthUser::new("user1".to_string(), "Regular User".to_string());
@@ -91,7 +96,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires test database
     async fn test_grant_and_check_permission() {
-        let pool = setup_test_db().await;
+        let (pool, _db) = setup_test_db().await;
         let rbac = Arc::new(ColumnEncryptionRbac::new(pool));
 
         // Grant permission
@@ -120,7 +125,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires test database
     async fn test_wildcard_permissions() {
-        let pool = setup_test_db().await;
+        let (pool, _db) = setup_test_db().await;
         let rbac = ColumnEncryptionRbac::new(pool);
 
         // Grant wildcard permission
@@ -148,7 +153,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires test database
     async fn test_audit_log() {
-        let pool = setup_test_db().await;
+        let (pool, _db) = setup_test_db().await;
         let rbac = ColumnEncryptionRbac::new(pool.clone());
 
         let audit_log = EncryptionAuditLog {
@@ -179,7 +184,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires test database
     async fn test_revoke_permission() {
-        let pool = setup_test_db().await;
+        let (pool, _db) = setup_test_db().await;
         let rbac = ColumnEncryptionRbac::new(pool);
 
         // Grant then revoke

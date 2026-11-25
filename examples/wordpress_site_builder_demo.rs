@@ -137,7 +137,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit: None,
         encrypted_credentials: None,
         keyring: None,
-        upload_allowed_dirs: Vec::new(),
+        upload_allowed_dirs: None,
+        post_types: None,
+        default_site: None,
+        sites: Default::default(),
     })
     .map_err(|e| io::Error::other(format!("WordPress ハンドラーの初期化に失敗しました: {}", e)))?;
 
@@ -326,6 +329,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 featured_media_id: None,
                 meta: None,
                 slug: None,
+                excerpt: None,
+                terms: None,
             })
             .await
         {
@@ -567,6 +572,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 featured_media_id: None,
                 meta: None,
                 slug: None,
+                excerpt: None,
+                terms: None,
             })
             .await
         {

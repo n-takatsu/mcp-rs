@@ -50,6 +50,19 @@ fn enforcement_for(action: RecommendedAction) -> Enforcement {
     }
 }
 
+/// 分析したリクエストの送信元
+fn source_info(request: &RequestData) -> SourceInfo {
+    SourceInfo {
+        ip_address: request.source_ip,
+        // 認証した呼び出し元（#543）。`X-User-ID`ヘッダーは使わない
+        user_id: request.caller_id.clone(),
+        session_id: request.headers.get("X-Session-ID").cloned(),
+        user_agent: request.headers.get("User-Agent").cloned(),
+        referer: request.headers.get("Referer").cloned(),
+        geo_location: None,
+    }
+}
+
 /// 侵入検知システム
 pub struct IntrusionDetectionSystem {
     config: IDSConfig,
@@ -101,11 +114,32 @@ impl IntrusionDetectionSystem {
         self
     }
 
-    /// リクエストを分析
+    /// リクエストを分析する。`IDSConfig::enabled`が`false`なら分析せず、
+    /// 統計・学習の状態も変えずに、遮断を求めない結果を返す（#760）。
+    /// 信頼度が`IDSConfig::min_confidence_threshold`に届かない検知は、
+    /// 侵入とせず、推奨アクションも`Monitor`にする（#760）
     pub async fn analyze_request(
         &self,
         request: &RequestData,
     ) -> Result<DetectionResult, McpError> {
+        if !self.config.enabled {
+            return Ok(DetectionResult {
+                is_intrusion: false,
+                confidence: 0.0,
+                detection_type: DetectionType::Other,
+                attack_details: AttackDetails {
+                    pattern_names: Vec::new(),
+                    severity: Severity::Low,
+                    description: "IDS is disabled".to_string(),
+                    impact: String::new(),
+                    cve_ids: Vec::new(),
+                },
+                source_info: source_info(request),
+                recommended_action: RecommendedAction::Monitor,
+                detected_at: Utc::now(),
+                analysis_time_ms: 0,
+            });
+        }
         let start_time = std::time::Instant::now();
         debug!("Analyzing request: {}", request.request_id);
 
@@ -158,6 +192,22 @@ impl IntrusionDetectionSystem {
             }
         }
 
+        // 設定した最小の信頼度に届かない検知は、侵入とせず、遮断も求めない
+        // （#760）。HTTPは推奨アクションを見て拒否するので、両方を抑える
+        let below_threshold = max_confidence < self.config.min_confidence_threshold;
+        if is_intrusion && below_threshold {
+            debug!(
+                "Detection below the minimum confidence ({:.2} < {:.2}) is not treated as an intrusion",
+                max_confidence, self.config.min_confidence_threshold
+            );
+            is_intrusion = false;
+        }
+        let recommended_action = if below_threshold {
+            RecommendedAction::Monitor
+        } else {
+            self.determine_action(max_confidence, max_severity)
+        };
+
         let analysis_time_ms = start_time.elapsed().as_millis() as u64;
 
         // 統計更新
@@ -177,16 +227,8 @@ impl IntrusionDetectionSystem {
                 impact: self.assess_impact(detection_type, max_severity),
                 cve_ids: Vec::new(),
             },
-            source_info: SourceInfo {
-                ip_address: request.source_ip,
-                // 認証した呼び出し元（#543）。`X-User-ID`ヘッダーは使わない
-                user_id: request.caller_id.clone(),
-                session_id: request.headers.get("X-Session-ID").cloned(),
-                user_agent: request.headers.get("User-Agent").cloned(),
-                referer: request.headers.get("Referer").cloned(),
-                geo_location: None,
-            },
-            recommended_action: self.determine_action(max_confidence, max_severity),
+            source_info: source_info(request),
+            recommended_action,
             detected_at: Utc::now(),
             analysis_time_ms,
         };
@@ -248,7 +290,8 @@ impl IntrusionDetectionSystem {
     ///
     /// 実際にIPをブロックするかどうかは`IDSConfig::auto_block_enabled`
     /// （デフォルト`false`）に従う。無効な場合でも検知・アラート送信は
-    /// 従来通り行われる - 変わるのは自動ブロックの有無だけ。
+    /// 従来通り行われる - 変わるのは自動ブロックの有無だけ。アラートを
+    /// 送るかは`IDSConfig::alert_enabled`に従う。
     pub async fn analyze_and_enforce(
         &self,
         request: &RequestData,
@@ -284,9 +327,12 @@ impl IntrusionDetectionSystem {
 
             // アラート送信の失敗でリクエストの分析結果自体は無効にしない -
             // 他の個別検知器の失敗を無視して処理を続ける上のロジックと
-            // 同じ方針。
-            if let Err(e) = self.generate_alert(result.clone()).await {
-                warn!("Failed to send IDS alert: {}", e);
+            // 同じ方針。`alert_enabled`が`false`なら、検知・遮断はそのままで、
+            // アラートだけ作らない（#760）
+            if self.config.alert_enabled {
+                if let Err(e) = self.generate_alert(result.clone()).await {
+                    warn!("Failed to send IDS alert: {}", e);
+                }
             }
         }
 
@@ -386,7 +432,10 @@ mod tests {
 
     fn sql_injection_request(source_ip: &str) -> RequestData {
         let mut query_params = std::collections::HashMap::new();
-        query_params.insert("id".to_string(), "1 UNION SELECT FROM users".to_string());
+        query_params.insert(
+            "id".to_string(),
+            vec!["1 UNION SELECT FROM users".to_string()],
+        );
 
         RequestData {
             request_id: "test-enforce-001".to_string(),
@@ -542,5 +591,81 @@ mod tests {
             enforcement_for(RecommendedAction::EmergencyResponse),
             Enforcement::Permanent
         );
+    }
+
+    /// `enabled: false`なら分析しない。遮断を求めず、統計も変えない（#760）
+    #[tokio::test]
+    async fn disabled_ids_does_not_analyze() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            enabled: false,
+            auto_block_enabled: true,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
+        let request = sql_injection_request("203.0.113.30");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(!result.is_intrusion);
+        assert_eq!(result.recommended_action, RecommendedAction::Monitor);
+        assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
+        let stats = ids.get_stats().await;
+        assert_eq!(stats.total_detections, 0);
+        assert_eq!(stats.total_alerts, 0);
+        assert_eq!(stats.total_blocks, 0);
+    }
+
+    /// `alert_enabled: false`なら、検知・遮断はそのままで、アラートだけ
+    /// 作らない（#760）
+    #[tokio::test]
+    async fn alert_disabled_ids_detects_and_blocks_without_alerts() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            alert_enabled: false,
+            auto_block_enabled: true,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
+        let request = sql_injection_request("203.0.113.31");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert!(ids.is_blocked(request.source_ip.unwrap()).await);
+        let stats = ids.get_stats().await;
+        assert_eq!(stats.total_alerts, 0);
+        assert_eq!(stats.total_blocks, 1);
+        assert!(ids.alert_manager.get_alert_history(None).await.is_empty());
+    }
+
+    /// 信頼度が`min_confidence_threshold`に届かない検知は、侵入とせず、
+    /// 推奨アクションも遮断にしない（#760）
+    #[tokio::test]
+    async fn detection_below_min_confidence_is_not_an_intrusion() {
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            min_confidence_threshold: 1.0,
+            auto_block_enabled: true,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
+        let request = sql_injection_request("203.0.113.32");
+
+        let result = ids.analyze_and_enforce(&request).await.unwrap();
+        assert!(result.confidence < 1.0, "confidence={}", result.confidence);
+        assert!(!result.is_intrusion);
+        assert_eq!(result.recommended_action, RecommendedAction::Monitor);
+        assert!(!ids.is_blocked(request.source_ip.unwrap()).await);
+        assert_eq!(ids.get_stats().await.total_alerts, 0);
+
+        // 下限が無ければ、同じリクエストを侵入として遮断する
+        let ids = IntrusionDetectionSystem::new(IDSConfig {
+            min_confidence_threshold: 0.0,
+            ..IDSConfig::default()
+        })
+        .await
+        .unwrap();
+        let result = ids.analyze_request(&request).await.unwrap();
+        assert!(result.is_intrusion);
+        assert_ne!(result.recommended_action, RecommendedAction::Monitor);
     }
 }

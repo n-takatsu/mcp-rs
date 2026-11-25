@@ -6,7 +6,7 @@ permalink: /docs/security/
 
 # Security
 
-**[Home](../) > [Documentation](./) > Security**
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Security**
 
 ## Overview
 
@@ -64,7 +64,7 @@ The `env` of the client (or `claude mcp add -e`) only passes values. Which varia
 
 ### Which config file mcp-rs reads
 
-With `--config <path>`, mcp-rs reads that file. Without it, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`; when mcp-rs finds no config file but one of these exists, it stops and tells you to pass it with `--config` and its absolute path.
+With `--config <path>`, mcp-rs reads that file. Without it, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`; when mcp-rs finds no config file but one of these exists, it tells you to pass it with `--config` and its absolute path. From v0.30.0, when it is not configured by environment variables either (`WORDPRESS_URL`, `MCP_WORDPRESS_URL`, `MCP_SERVER_BIND_ADDR`), mcp-rs then starts in STDIO mode without any configuration (only the `mcp_rs_status` tool, which shows this message) instead of stopping; it still does not read the file. In HTTP mode, it stops.
 
 Up to v0.23.0, mcp-rs also read these names from the current folder. Clients such as Claude Code start MCP servers in the folder you open, so with mcp-rs registered without `--config`, opening a repository that contains a `config.toml` made mcp-rs read it. Such a file could run any command as a plugin (`[[plugins]]`), or send your WordPress credentials to another site (`url` with `keyring`, or `password = "${ANY_VARIABLE}"`). Always register mcp-rs with `--config` and an absolute path, or put the file at `~/.config/mcp-rs/config.toml`. A relative path (`--config config.toml`) is read from the folder mcp-rs starts in, which has the same problem, so mcp-rs prints a warning to standard error when `--config` is relative. `--config ~/…` is expanded to your home folder by mcp-rs itself (v0.24.0 and later), also where no shell expands it, such as the `args` of `claude_desktop_config.json`.
 
@@ -99,7 +99,7 @@ Run `set` again to change the password, `mcp-rs wordpress-keyring show example.c
 
 - Startup fails if the entry does not exist, or if `keyring` is combined with `username`, `password`, or `encrypted_credentials`. The error names the entry, never the values
 - The entry is tied to the site URL entered with `set`. mcp-rs uses it only when `url` in the config file has the same scheme, host, and port (the path does not matter), and otherwise does not start. So a config file someone else wrote cannot name your entry with `url = "https://attacker.example"` and receive the password. Credentials stored for `https://` are not sent over `http://` either
-- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables are not used, even without `--config`
+- With `keyring`, the `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` environment variables do not override the config file, even without `--config`. A `${...}` written in the config file (such as `url = "${WORDPRESS_URL}"`) is still expanded, so keep those variables when the file uses them
 - Secrets are never accepted as command-line arguments. Without a terminal, `set` reads the site URL, the username, and the Application Password as three lines from standard input
 - The credential store is read only when `enabled = true`
 - Docker, CI, and servers without a desktop session have no Secret Service. Keep using `${VAR}` or `encrypted_credentials` there; both work as before. The Docker image is built without this feature (`os-keyring`, on by default when building from source)
@@ -147,6 +147,8 @@ It asks for the WordPress username, the Application Password, and a master passw
 
 When the HTTP transport listens on anything other than loopback (for example `addr = "0.0.0.0"` in Docker, with `network_policy_reject_external_connections = false`), it needs authentication: API keys, OAuth 2.1, or client certificates (mTLS). Without any of them, mcp-rs does not start (v0.24.0 and later), because anyone who can reach the address could use every tool. Up to v0.23.0, it only logged a warning.
 
+Authentication does not encrypt the connection. Over plain HTTP, the API key or access token in each request can be read by anyone on the network path, and reused. Before other machines can connect, set up TLS: `tls_enabled = true` with `tls_cert_path` and `tls_key_path` (see [TLS](#http-tls)), or a reverse proxy that handles TLS in front of mcp-rs (see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy)). With a proxy, the part between the proxy and mcp-rs carries the same keys and tokens: run the proxy on the same machine and let mcp-rs listen only on loopback (`127.0.0.1`), or, when the proxy is on another machine, also set `tls_enabled = true` on mcp-rs.
+
 The same applies behind a reverse proxy: when `trusted_proxies` is set, mcp-rs needs authentication even when it listens on loopback (v0.27.0 and later). A proxy on the same machine (nginx, Caddy, …) connects from loopback, so every client the proxy lets in looks like a local one, and listening on `127.0.0.1` does not keep out clients on the internet. Up to v0.26.0, mcp-rs started without authentication in this case. Behind a proxy, only API keys and OAuth count: client certificates (mTLS) between the proxy and mcp-rs check only the proxy, not the clients behind it.
 
 If something in front of mcp-rs authenticates the clients (for example a reverse proxy that requires a login, and mcp-rs is reachable only through it), allow it explicitly. mcp-rs then logs a warning at startup:
@@ -167,17 +169,18 @@ Limits (v0.24.0 and later):
 ```toml
 [transport.http]
 # max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
-# request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
+# request_timeout_seconds = 30        # the TLS handshake, the request headers, each wait for more of the body, idle connections, and sending a response
 # max_connections = 1024              # connections served at once; more wait. An open /ws connection counts toward websocket_max_connections (1000) instead
 # websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
 ```
 
-- A connection with no request in progress for `request_timeout_seconds` is closed, over HTTP/1.1 and HTTP/2 alike (v0.27.0 and later). Up to v0.26.0, an HTTP/2 connection that answered pings but sent no request, or a connection that sent nothing at all, stayed open, so clients could fill `max_connections` without authenticating. A tool call that takes longer, or a large response being sent, does not count as idle
+- A connection with no request in progress for `request_timeout_seconds` is closed, over HTTP/1.1 and HTTP/2 alike (v0.27.0 and later). Up to v0.26.0, an HTTP/2 connection that answered pings but sent no request, or a connection that sent nothing at all, stayed open, so clients could fill `max_connections` without authenticating. A tool call that takes longer does not count as idle. A large response being sent does not count as idle either, but only while its sending progresses (see the next item)
+- Over HTTP (HTTP/1.1 and HTTP/2), a response with a body must keep being sent: each part of it must be sent within `request_timeout_seconds` plus the time it takes at 64 KB/s. Otherwise mcp-rs closes the connection (v0.30.0 and later). Up to v0.29.0, an HTTP/2 client that stopped reading a response kept the connection open, because the response counted as a request in progress. This does not limit how long a tool call takes, only the sending of its response
 - `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
 - On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
 - A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
 - On `/ws`, each response must be sent within 10 seconds plus the time it takes at 64 KB/s (for a 10 MB response, about 170 seconds). Otherwise mcp-rs closes the connection, because a client that stops reading would keep mcp-rs waiting and hold a connection. On a connection slower than 64 KB/s (about 512 kbps, such as a weak mobile connection), a large response, such as a database query result of several MB, can close the connection. Up to v0.23.0, there was no limit
-- A request that is not valid JSON gets the JSON-RPC error `-32700` (Parse error), and a JSON value that is not a request, such as a batch (an array, which MCP does not use), gets `-32600` (Invalid Request), both with `"id": null`. Over HTTP, the status is 400. A JSON-RPC response sent by the client (no `method`, with `result` or `error`) gets no answer (202 over HTTP). This applies to STDIO, HTTP, and `/ws`. Up to v0.23.0, mcp-rs did not answer them, so the client waited until its own timeout
+- A request that is not valid JSON gets the JSON-RPC error `-32700` (Parse error), and a JSON value that is not a request, such as a batch (an array, which MCP does not use), gets `-32600` (Invalid Request), both with `"id": null`. Over HTTP, the status is 400. A JSON-RPC response sent by the client (no `method`, with `result` or `error`) gets no answer (202 over HTTP). This applies to STDIO, HTTP, and `/ws`, as the mcp-rs program uses them (it always sets a request handler). When mcp-rs is used as a library and `HttpTransport` is set up without `with_request_handler`, HTTP passes messages to the application instead: a value without an `id`, such as a batch, gets 202, and a message with an `id` (a response included) waits until the application answers it with `send_message` for that `id`, or gets 408 after 30 seconds. Up to v0.23.0, mcp-rs did not answer them, so the client waited until its own timeout
 - `max_connections` is shared by all clients, and there is no limit per client address. A client that is not allowed in can still hold connections until `request_timeout_seconds` passes, so many such connections can make other clients wait. When mcp-rs is reachable from the internet, put a reverse proxy in front of it that limits connections per address
 
 ## HTTP: TLS, Client Certificates, and WebSocket {#http-tls}
@@ -202,6 +205,7 @@ hsts_enabled = true
 ```
 
 - `mtls_enabled = true` requires `tls_enabled = true` and `mtls_ca_cert_path`
+- With `tls_enabled = true`, mcp-rs serves TLS 1.3 only, so `min_tls_version` must be `"1.3"` (or not set). A higher version such as `"1.4"` cannot be met, and mcp-rs does not start (v0.30.0 and later; up to v0.29.0, it started and accepted TLS 1.3)
 - Clients without a valid certificate signed by the configured CA are rejected at the TLS handshake
 
 WebSocket is not a separate transport. In HTTP mode, `enable_websocket_upgrade = true` also accepts MCP requests on `/ws`, with the same authentication and limits as HTTP:
@@ -236,7 +240,7 @@ When mcp-rs runs behind a reverse proxy that handles TLS, some settings read hea
 
 | Setting | Header |
 |---------|--------|
-| `enforce_https` (without `tls_enabled`) | `X-Forwarded-Proto: https`, or `Forwarded: proto=https` |
+| `enforce_https` (without `tls_enabled`) | `X-Forwarded-Proto: https`, or `Forwarded` with `proto=https` in the element added by the proxy that received the request from the client |
 | `min_tls_version` (without `tls_enabled`) | `X-Forwarded-TLS-Version`, or `X-SSL-Protocol` |
 | `certificate_pinning_enabled` (without `tls_enabled`) | `certificate_pin_header` (default `x-tls-cert-sha256`) |
 | `ids_trust_forwarded_for` | `X-Forwarded-For`, or `X-Real-IP` |
@@ -249,15 +253,18 @@ enforce_https = true
 trusted_proxies = ["127.0.0.1", "10.0.0.0/24"]   # IP addresses or CIDR ranges
 ```
 
+With `enforce_https` and without `tls_enabled`, the proxy must also send the TLS version (`X-Forwarded-TLS-Version` or `X-SSL-Protocol`, such as `TLSv1.3`): `min_tls_version` is `"1.3"` when it is not set, and a request without the header gets 403. Configure the proxy to add it, for example in nginx: `proxy_set_header X-SSL-Protocol $ssl_protocol;`. The header is needed whatever `min_tls_version` is set to. mcp-rs reads `1.3`, `TLSv1.3` and `TLS 1.3`, and rejects a value it cannot read (v0.30.0 and later; up to v0.29.0, it accepted values it could not read, such as `TLSv1.2`). Also set the lowest TLS version on the proxy itself (in nginx, `ssl_protocols TLSv1.3;`), so that clients with an older version are refused before they reach mcp-rs.
+
 With `trusted_proxies`, mcp-rs also needs API keys or OAuth (see [Listening on the Network](#httpwebsocket-listening-on-the-network)), unless the proxy authenticates the clients and you set `allow_unauthenticated_external = true`.
 
 - Without `trusted_proxies`, mcp-rs does not start with `enforce_https` or `certificate_pinning_enabled` (unless `tls_enabled = true`, where mcp-rs itself handles TLS and does not need the headers), or with `ids_trust_forwarded_for`. Without it, the TLS version header is ignored. Up to v0.23.0, mcp-rs used these headers from any client, so a client connecting over plain HTTP could pass `enforce_https` by adding `X-Forwarded-Proto: https`
+- `Forwarded` (RFC 7239): like the other headers, it is used only on connections from `trusted_proxies`. Proxies add elements to the right. mcp-rs reads the elements from the right, skips those whose `for` is one of `trusted_proxies` (hops between your proxies), and uses `proto` of the first other element, which the proxy that received the request from the client added. If the `for` of every element is one of `trusted_proxies` (for example, the client itself runs on a proxy's address), mcp-rs uses the rightmost element, which the proxy connected to mcp-rs added, not the leftmost, which the client may have sent. The value must be exactly `https`. Elements further left were sent by the client and are ignored. A malformed header (an unclosed quote, a parameter without `=`, the same parameter twice in an element) does not count as HTTPS (v0.30.0 and later; up to v0.29.0, mcp-rs looked for `proto=https` anywhere in the header, so a client could send it itself)
 - Make sure that clients cannot reach mcp-rs except through the proxy (for example, with `network_policy_ip_whitelist`), and that the proxy replaces these headers instead of passing on the ones the client sent
 - For `X-Forwarded-For`, mcp-rs takes the rightmost address that is not in `trusted_proxies`. A proxy adds the address it received the request from to the end, so the addresses to its left are whatever the client sent. Up to v0.23.0, mcp-rs took the leftmost one, so a client could make the intrusion detection block another address
 
 ## HTTP/WebSocket API Key Authentication
 
-When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated.
+When the HTTP transport listens on anything other than loopback, enable API key authentication. Each key is hashed in memory at startup and never logged. Startup fails if `auth_enabled = true` and no keys are configured, or if a key is empty or duplicated, or if two keys have the same `name` (v0.30.0 and later; the name identifies the caller in the audit log, the replay protection and the intrusion detection).
 
 ```toml
 [transport.http]
@@ -286,7 +293,7 @@ user_id = "user-1"
 
 - Use long random keys, such as the output of `openssl rand -hex 32`. mcp-rs logs a warning at startup for a key shorter than 16 characters (v0.27.0 and later)
 - A client address that fails authentication 20 times within a minute gets HTTP 429 for the rest of that minute, even with a valid key, so keys cannot be guessed quickly (v0.27.0 and later). Requests being checked at the same time count too, so sending many at once does not get past the limit. Behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For` is counted. Behind a proxy that is not in `trusted_proxies`, or a NAT, every client shares the proxy's address: one client's failures then make everyone get 429 for the rest of the minute, so list the proxy in `trusted_proxies`
-- `mcp_rs_status` shows a key or token limited by `tools` only the version, the mode, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
+- `mcp_rs_status` shows a key or token limited by `tools` only the mcp-rs version, the mode, the protocol versions, the update check (STDIO mode only; HTTP mode does not check for updates), the OS, the process ID, the instance, the uptime, and the caller's name: the config file, the logs, and the state of the handlers and plugins are shown only to callers that may use every tool (v0.27.0 and later)
 
 ## Limiting Tools per API Key or Token
 
@@ -314,7 +321,7 @@ Each item in `tools` is one of:
 
 A request is allowed a tool when any item matches it. `tools = []` allows no tools. Unknown presets (such as `@admin`) and empty items stop mcp-rs from starting. STDIO mode is not limited (it is a local pipe used by one person).
 
-The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later). Each resource belongs to the read-only tool that reads the same data, and a key or token can read the resource only when it is allowed that tool. `wordpress://posts` returns every published post with its full content, so it belongs to `get_post` (which returns one post with its content), not to `get_posts` (which returns only summaries):
+The same limits apply to resources (`resources/list` and `resources/read`, v0.24.0 and later) and resource templates (`resources/templates/list`, v0.30.0 and later). Each resource belongs to the read-only tool that reads the same data, and a key or token can read the resource only when it is allowed that tool. `wordpress://posts` returns every published post with its full content, so it belongs to `get_post` (which returns one post with its content), not to `get_posts` (which returns only summaries):
 
 | Resource | Tool |
 |----------|------|
@@ -322,6 +329,8 @@ The same limits apply to resources (`resources/list` and `resources/read`, v0.24
 | `wordpress://comments` | `get_comments` |
 | `wordpress://categories` | `get_categories` |
 | `wordpress://tags` | `get_tags` |
+| `wordpress://post/{id}`, `wordpress://page/{id}` | `get_post` |
+| `wordpress://media/{id}` | `get_media_item` |
 | `db://schema` | `get_schema` |
 
 Other resources are not shown in `resources/list`, and reading them fails with the error "Resource '...' is not allowed for this API key or access token". So `tools = []` allows no resources either, and `tools = ["@read_only"]` allows all of them. Up to version 0.23.0, keys and tokens with limits could list and read every resource.
@@ -371,7 +380,7 @@ Both are off by default.
 - Nonces are remembered per caller: the API key or token, or the client's address without authentication (behind a proxy in `trusted_proxies`, the address from `X-Forwarded-For`, as for the intrusion detection). One caller can keep at most 10,000, and all callers 100,000. Up to v0.23.0, they shared one cache, so one client could fill it and make every request fail, and nonces were remembered for 5 minutes
 - With many addresses (for example IPv6), a client can still fill the whole cache. Remembering nonces only for 70 seconds makes this harder, but does not prevent it: limit connections per address in front of mcp-rs, or use authentication
 
-`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. On `/ws`, it checks each message too, and closes the connection (close code 1008) when it finds an attack (v0.27.0 and later; up to v0.26.0, only the upgrade request was checked). It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
+`ids_enabled` checks each request for attack patterns (such as SQL injection) and unusual behavior, and blocks the client's address for 30 minutes, or permanently for the most severe ones. On `/ws`, it checks each message too, and closes the connection (close code 1008) when it finds an attack (v0.27.0 and later; up to v0.26.0, only the upgrade request was checked). It tells callers apart by the API key or token, or by the client's address without authentication. Up to v0.23.0, it used the `X-User-ID` header, which the client could set to anything. What it remembers about callers and addresses has a limit (10,000 each) and is cleaned up every 5 minutes. A shell command after `;`, `&`, or `|` (such as `; rm -rf /` or `| sh`) counts as an attack, but these characters alone do not, so cookies (`a=b; c=d`), browsers' `User-Agent`, and request bodies with `&` or `<` pass; the word `base64` alone does not count either, only a `data:` URI with HTML or script (such as `data:text/html;base64,`). Likewise, backticks and `$(...)` count only with a shell command inside (`` `cat /etc/hosts` ``, `$(id)`), not Markdown code (`` `id` ``) or jQuery (`$(document)`), and `.env`, `.ini`, `.conf`, and `.config` only at the end of a file name in a path (`/.env`, `/app/config.ini`) or of a whole quoted value (`{"file":".env"}`), not inside words such as `.initial` (v0.30.0 and later; up to v0.29.0, these characters, backticks, `$(...)`, these words, or the word `base64` alone made mcp-rs reject the request with HTTP 403 and block the client's address, permanently for the Critical ones). Behind a reverse proxy, see [Behind a Reverse Proxy](#httpwebsocket-behind-a-reverse-proxy) for `ids_trust_forwarded_for`.
 
 ## Audit Log
 
@@ -391,6 +400,7 @@ The mcp-rs log shows the path at startup (`📝 監査ログ: <path>`), and so d
 ```
 
 - If the file cannot be written (for example, the folder is read-only), mcp-rs logs a warning at startup and keeps entries in memory only. Missing folders are created
+- Several mcp-rs processes can write the same audit log (the default location does not depend on the config file, and Claude Desktop starts two). They take turns through a lock on `audit.log.lock` next to it, so that rotation by one does not overwrite files rotated by another (v0.30.0 and later). The lock file is empty and can be left in place
 - The audit log contains user names and IP addresses. On Linux and macOS, mcp-rs creates missing folders so that only your user can open them (mode `700`) and creates the file so that only your user can read and write it (`600`), whatever the umask. Existing folders and files keep their permissions; to tighten a file created by an older version, run `chmod 600 audit.log*` (and `chmod 700` on its folder). On Windows, the default folder under `%USERPROFILE%` is already limited to your user, SYSTEM, and Administrators
 - Up to version 0.21.0, the default was `audit.log` in the same folder as the config file. With Claude Desktop, that is usually `%APPDATA%\Claude\mcp-rs\audit.log`, inside Claude's own folder, where Claude itself could not read it. mcp-rs does not move that file: entries written before the update stay there, and new entries go to the new location. When the old file exists, mcp-rs says where it is in its log at startup, every time it starts. To stop that message, delete the old file or move it somewhere else once you no longer need it there. To keep using the old location instead, set `file_path = "audit.log"` (relative to the config file's folder)
 - In the Docker image, the default is `/home/nonroot/.local/state/mcp-rs/audit/audit.log` inside the container, which is lost when the container is recreated (and cannot be written at all with a read-only root file system, as in `docker-compose.yml`). Mount a writable volume at `/home/nonroot/.local/state/mcp-rs/audit`, or set `file_path` to an absolute path on a mounted volume

@@ -9,8 +9,9 @@
 //!   おそれもあった）
 //! - `query()`は、毎回、読み取り専用のトランザクション（`SET TRANSACTION
 //!   READ ONLY`）の中で実行し、最後にロールバックする。`WITH … DELETE`・
-//!   書き込む関数・`set_config`等、SELECTに見えて書き込むSQLも、
-//!   データベースが拒否する
+//!   書き込む関数等、SELECTに見えて表に書き込むSQLも、データベースが
+//!   拒否する。`set_config`等のセッションの設定の変更は拒否されないが、
+//!   ロールバックで元に戻る（#737）
 //! - 1つのSQLの時間の上限（`statement_timeout`）と、受け取る行数の上限
 //! - 値は列の型で読み取る。NUMERICは桁を落とさず文字列にし、読めない型は
 //!   NULLにせず、そう分かる文字列にする（以前は黙ってNULLにしていた）
@@ -45,6 +46,9 @@ const DEFAULT_STATEMENT_TIMEOUT_SECS: u64 = 30;
 /// PostgreSQL Database Connection
 pub struct PostgreSqlConnection {
     pool: PgPool,
+    /// この接続だけのプールか（`new`・`from_config`が作る）。それなら
+    /// `close()`で閉じる。共有のプール（`with_pool`）は閉じない（#737）
+    owns_pool: bool,
     database_name: String,
     user_name: String,
     /// 1つのSQLの時間の上限
@@ -76,7 +80,10 @@ impl PostgreSqlConnection {
         let pool = PgPool::connect_with(options)
             .await
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        Ok(Self::with_pool(pool, database_name, user_name))
+        Ok(Self {
+            owns_pool: true,
+            ..Self::with_pool(pool, database_name, user_name)
+        })
     }
 
     /// Create from database config
@@ -85,11 +92,10 @@ impl PostgreSqlConnection {
         let pool = PgPool::connect_with(options)
             .await
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        Ok(Self::with_pool(
-            pool,
-            config.database.clone(),
-            config.username.clone(),
-        ))
+        Ok(Self {
+            owns_pool: true,
+            ..Self::with_pool(pool, config.database.clone(), config.username.clone())
+        })
     }
 
     /// 既にあるプールを使う接続（`PostgreSqlEngine`が、1つのプールを接続の
@@ -97,6 +103,7 @@ impl PostgreSqlConnection {
     pub fn with_pool(pool: PgPool, database_name: String, user_name: String) -> Self {
         Self {
             pool,
+            owns_pool: false,
             database_name,
             user_name,
             statement_timeout: Duration::from_secs(DEFAULT_STATEMENT_TIMEOUT_SECS),
@@ -442,6 +449,16 @@ impl PgParam {
                     Self::Numeric(string_to_numeric(&text).ok_or_else(|| out_of_range("numeric"))?)
                 }
                 "INT2" | "INT4" | "INT8" if f.fract() == 0.0 => {
+                    // `as i64`は範囲の外を`i64::MAX`・`MIN`に丸めて、違う値を
+                    // 書き込むので、範囲の外は断る（#737）。-2^63は範囲の中
+                    const LIMIT: f64 = 9_223_372_036_854_775_808.0; // 2^63
+                    if !(-LIMIT..LIMIT).contains(&f) {
+                        return Err(out_of_range(match expected {
+                            "INT2" => "smallint",
+                            "INT4" => "integer",
+                            _ => "bigint",
+                        }));
+                    }
                     Self::Int(f as i64).coerce(Some(expected), position)?
                 }
                 _ if is_text => Self::Text(f.to_string()),
@@ -616,9 +633,11 @@ fn parse_datetime_tz(text: &str) -> Option<chrono::DateTime<Utc>> {
 /// 10進の文字列を、`numeric_send`の形式にする（`numeric_to_string`の逆）。
 /// `-123.4500`・`.5`・`NaN`・`Infinity`。指数（`1e5`）は受け付けない
 pub fn string_to_numeric(text: &str) -> Option<Vec<u8>> {
-    let header = |ndigits: i16, weight: i16, sign: u16, dscale: i16| -> Vec<u8> {
+    // 桁の数（`ndigits`）は符号なしで書く（#737。PostgreSQLの最大の
+    // 131072桁は、32768個の桁になり、`i16`に入らない）
+    let header = |ndigits: u16, weight: i16, sign: u16, dscale: i16| -> Vec<u8> {
         let mut bytes = Vec::new();
-        for value in [ndigits, weight, sign as i16, dscale] {
+        for value in [ndigits as i16, weight, sign as i16, dscale] {
             bytes.extend_from_slice(&value.to_be_bytes());
         }
         bytes
@@ -652,11 +671,11 @@ pub fn string_to_numeric(text: &str) -> Option<Vec<u8>> {
         .chain(frac_padded.as_bytes().chunks(4))
         .map(|chunk| std::str::from_utf8(chunk).ok()?.parse::<i16>().ok())
         .collect::<Option<_>>()?;
-    let mut weight = i16::try_from(int_padded.len() / 4).ok()? - 1;
-    // 先頭と末尾の0の桁を除く
+    // 先頭と末尾の0の桁を除く。`weight`は、引いてから`i16`の範囲を確かめる
     let leading = groups.iter().take_while(|g| **g == 0).count();
     groups.drain(..leading);
-    weight -= i16::try_from(leading).ok()?;
+    let weight = i64::try_from(int_padded.len() / 4).ok()? - 1 - i64::try_from(leading).ok()?;
+    let weight = i16::try_from(weight).ok()?;
     while groups.last() == Some(&0) {
         groups.pop();
     }
@@ -664,7 +683,7 @@ pub fn string_to_numeric(text: &str) -> Option<Vec<u8>> {
         return Some(header(0, 0, 0, dscale));
     }
     let mut bytes = header(
-        i16::try_from(groups.len()).ok()?,
+        u16::try_from(groups.len()).ok()?,
         weight,
         if negative { 0x4000 } else { 0 },
         dscale,
@@ -721,22 +740,50 @@ pub fn connect_options(config: &ConnectionConfig) -> Result<PgConnectOptions, Da
     Ok(options)
 }
 
+/// ループバック（`localhost`・`127.0.0.1`・`::1`）かUnixソケットか
+fn is_local(options: &PgConnectOptions) -> bool {
+    let host = options.get_host();
+    options.get_socket().is_some() || host.starts_with('/') || super::super::is_loopback_host(host)
+}
+
+/// `PGSSLMODE`（`value`）に、使える値が書いてあるか（#722、PR #734の
+/// レビュー）。空・無しは`false`。読めない値は、sqlxが黙って`prefer`にする
+/// ので、エラーにする
+pub fn pgsslmode_is_set(value: Option<&std::ffi::OsStr>) -> Result<bool, String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+    let invalid = || {
+        format!(
+            "PGSSLMODE = \"{}\" is not valid (use one of: disable, allow, prefer, require, \
+             verify-full), so it would be ignored. Fix or unset PGSSLMODE, or set \
+             database.ssl_mode",
+            value.to_string_lossy()
+        )
+    };
+    let mode = value.to_str().ok_or_else(invalid)?;
+    PgSslMode::from_str(mode).map_err(|_| invalid())?;
+    Ok(true)
+}
+
+/// ループバック・Unixソケット以外で、`ssl_mode`を設定ファイルにも
+/// `PGSSLMODE`にも書いていなければ、起動しない理由を返す（#722）。
+/// `explicit`は、どちらかに書いたか
+pub fn check_ssl_mode_set(explicit: bool, options: &PgConnectOptions) -> Result<(), String> {
+    if !explicit && !is_local(options) {
+        return Err(super::super::ssl_mode_missing(options.get_host()));
+    }
+    Ok(())
+}
+
 /// TLSが、通信の盗み見・なりすましを防げない設定のとき、その理由を返す
 /// （#539）。ループバック（`localhost`・`127.0.0.1`・`::1`）とUnixソケット
 /// では返さない。`options`は、環境変数（`PGSSLMODE`等）を反映した後の値
 pub fn weak_tls_warning(options: &PgConnectOptions) -> Option<String> {
-    let host = options.get_host();
-    let loopback = options.get_socket().is_some()
-        || host.starts_with('/')
-        || host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if loopback {
+    if is_local(options) {
         return None;
     }
+    let host = options.get_host();
     let unencrypted = "the connection may not be encrypted";
     let mode = options.get_ssl_mode();
     let risk = match mode {
@@ -831,7 +878,8 @@ pub fn numeric_to_string(bytes: &[u8]) -> Option<String> {
             .get(i * 2..i * 2 + 2)
             .map(|b| i16::from_be_bytes([b[0], b[1]]))
     };
-    let ndigits = usize::try_from(read(0)?).ok()?;
+    // 桁の数は符号なし（#737。32768個以上もある）
+    let ndigits = usize::from(read(0)? as u16);
     let weight = i32::from(read(1)?);
     let sign = read(2)? as u16;
     let dscale = usize::try_from(read(3)?).ok()?;
@@ -1184,8 +1232,12 @@ impl DatabaseConnection for PostgreSqlConnection {
     }
 
     async fn close(&self) -> Result<(), DatabaseError> {
-        // プールは`PostgreSqlEngine`の接続の間で共有しているので、1つの
-        // 接続を返すだけでは閉じない（閉じると、他の接続も使えなくなる）
+        // `PostgreSqlEngine`の共有のプールは、1つの接続を返すだけでは閉じない
+        // （閉じると、他の接続も使えなくなる）。この接続だけのプールは閉じる
+        // （#737）
+        if self.owns_pool {
+            self.pool.close().await;
+        }
         Ok(())
     }
 
@@ -1275,6 +1327,28 @@ mod tests {
         for invalid in ["", "-", ".", "1e5", "1.2.3", "abc", "1,000"] {
             assert_eq!(string_to_numeric(invalid), None, "{invalid}");
         }
+        // PostgreSQLの最大の整数部（131072桁）は、桁が32768個になる（#737）
+        let largest = format!("1{}", "1".repeat(131_071));
+        let bytes = string_to_numeric(&largest).unwrap();
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 32_768);
+        assert_eq!(numeric_to_string(&bytes).as_deref(), Some(largest.as_str()));
+    }
+
+    /// 小数部の無い小数を整数の列に渡すとき、範囲の外は丸めずに断る（#737）
+    #[test]
+    fn test_float_out_of_integer_range_is_refused() {
+        let coerce = |f: f64, expected: &str| PgParam::Float(f).coerce(Some(expected), 1);
+        assert!(matches!(coerce(2.0, "INT8"), Ok(PgParam::Int(2))));
+        assert!(matches!(
+            coerce(-9_223_372_036_854_775_808.0, "INT8"),
+            Ok(PgParam::Int(i64::MIN))
+        ));
+        for f in [1e20, -1e20, 9_223_372_036_854_775_808.0] {
+            let err = coerce(f, "INT8").unwrap_err().to_string();
+            assert!(err.contains("bigint"), "{f}: {err}");
+        }
+        let err = coerce(1e20, "INT4").unwrap_err().to_string();
+        assert!(err.contains("integer"), "{err}");
     }
 
     /// 文字列のパラメーターを、PostgreSQLが期待する型に合わせる
@@ -1434,6 +1508,40 @@ mod tests {
         }
     }
 
+    /// ループバック・Unixソケット以外では、`ssl_mode`（か`PGSSLMODE`）を
+    /// 省略できない（#722）
+    #[test]
+    fn test_check_ssl_mode_set() {
+        let options = |host: &str| {
+            let config = ConnectionConfig {
+                host: host.to_string(),
+                ..ConnectionConfig::default()
+            };
+            connect_options(&config).unwrap()
+        };
+        for host in ["localhost", "127.0.0.1", "::1", "/var/run/postgresql"] {
+            assert!(check_ssl_mode_set(false, &options(host)).is_ok(), "{host}");
+        }
+        assert!(check_ssl_mode_set(true, &options("db.example.com")).is_ok());
+        // PGSSLMODE: 使える値だけを「書いた」とみなす。読めない値はエラー
+        use std::ffi::OsStr;
+        assert_eq!(pgsslmode_is_set(None), Ok(false));
+        assert_eq!(pgsslmode_is_set(Some(OsStr::new(""))), Ok(false));
+        for mode in ["disable", "prefer", "require", "verify-full"] {
+            assert_eq!(pgsslmode_is_set(Some(OsStr::new(mode))), Ok(true), "{mode}");
+        }
+        let error = pgsslmode_is_set(Some(OsStr::new("strict"))).unwrap_err();
+        assert!(
+            error.contains("\"strict\"") && !error.contains("  "),
+            "{error}"
+        );
+        let error = check_ssl_mode_set(false, &options("db.example.com")).unwrap_err();
+        assert!(
+            error.contains("not set for db.example.com") && error.contains("verify-full"),
+            "{error}"
+        );
+    }
+
     /// `verify-ca`は使えない（#594）。sqlxが、ssl_root_certがあっても公開の
     /// CAを信頼し、ホスト名を見ないので、どのホストの証明書でも受け入れる
     #[test]
@@ -1488,6 +1596,25 @@ mod tests {
         let warning = weak_tls_warning(&options("prefer")).unwrap();
         assert!(!warning.contains("  "), "{warning}");
         assert!(!RESET_SESSION_SQL.contains("  "), "{RESET_SESSION_SQL}");
+    }
+
+    /// `close()`は、この接続だけのプールを閉じ、共有のプールは閉じない（#737）
+    #[tokio::test]
+    async fn test_close_closes_only_an_owned_pool() {
+        let pool = || {
+            PgPoolOptions::new()
+                .connect_lazy("postgres://localhost/x")
+                .unwrap()
+        };
+        let shared = PostgreSqlConnection::with_pool(pool(), "x".into(), "x".into());
+        shared.close().await.unwrap();
+        assert!(!shared.pool.is_closed());
+        let owned = PostgreSqlConnection {
+            owns_pool: true,
+            ..PostgreSqlConnection::with_pool(pool(), "x".into(), "x".into())
+        };
+        owned.close().await.unwrap();
+        assert!(owned.pool.is_closed());
     }
 
     /// `FETCH`の行数は、行数・バイト数の上限の残りに合わせる（#539）

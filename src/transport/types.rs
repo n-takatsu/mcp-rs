@@ -55,7 +55,34 @@ impl fmt::Display for TransportType {
         match self {
             TransportType::Stdio => write!(f, "stdio"),
             TransportType::Http { addr } => write!(f, "http://{}", addr),
-            TransportType::WebSocket { url } => write!(f, "ws://{}", url),
+            // URLにスキームがあれば、そのまま出す（#760。以前は必ず`ws://`を
+            // 付け、`ws://wss://...`になっていた）
+            TransportType::WebSocket { url } => {
+                if url.starts_with("ws://") || url.starts_with("wss://") {
+                    write!(f, "{}", url)
+                } else {
+                    write!(f, "ws://{}", url)
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WebSocketのURLのスキームを重ねない（#760）
+    #[test]
+    fn test_websocket_display_keeps_the_scheme() {
+        let display = |url: &str| {
+            TransportType::WebSocket {
+                url: url.to_string(),
+            }
+            .to_string()
+        };
+        assert_eq!(display("wss://example.com/mcp"), "wss://example.com/mcp");
+        assert_eq!(display("ws://example.com/mcp"), "ws://example.com/mcp");
+        assert_eq!(display("example.com/mcp"), "ws://example.com/mcp");
     }
 }

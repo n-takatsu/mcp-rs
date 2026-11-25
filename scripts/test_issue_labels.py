@@ -80,6 +80,16 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(apply.calls, [])
         self.assertEqual(r.problems, [])
 
+    def test_fix_checks_the_labels_after_adding(self):
+        # 読んでから付けるまでの間に、ほかの人が優先度を付けていたら、付けた
+        # 後の実際のラベルで、2つになったことを見つける（#724）
+        r = il.check(
+            issue("bug"),
+            lambda number, add: ["bug", "priority: high"] + add,
+        )
+        self.assertEqual(r.added, ["priority: medium"])
+        self.assertTrue(any("優先度" in p for p in r.problems), r.problems)
+
     def test_without_fix_does_not_edit(self):
         r = il.check(issue("bug"), None)
         self.assertEqual(r.added, [])

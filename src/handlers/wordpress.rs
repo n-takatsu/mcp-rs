@@ -128,18 +128,43 @@ const MAX_LIST_PAGES: u32 = 100;
 /// 一覧の全件取得で読む、応答の合計の大きさの上限（#598）
 const MAX_LIST_BYTES: usize = 64 * 1024 * 1024;
 
+/// リビジョンの書いた人の名前を読むのに、全体で待つ長さ（#684）。過ぎたら
+/// 読めなかった人は`user {ID}`のまま出す
+const AUTHOR_NAMES_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// 応答の本文を、`limit`バイトまで読む（#598）。超えたら、読むのをやめて
 /// エラーにする（`Content-Length`が上限を超えていれば、読まずに）
-async fn read_body_limited(
-    mut response: reqwest::Response,
+async fn read_body_limited(response: reqwest::Response, limit: usize) -> Result<String, McpError> {
+    let body = read_body_bytes_limited(response, limit).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// `read_body_limited`と同じだが、受け取ったバイトのまま返す。JSONとして
+/// 読むなら、文字列に直さず`serde_json::from_slice`に渡す（PR #763の
+/// レビュー。不正なUTF-8を置き換え文字にして読み進めないように）
+async fn read_body_bytes_limited(
+    response: reqwest::Response,
     limit: usize,
-) -> Result<String, McpError> {
-    let too_large = || {
+) -> Result<Vec<u8>, McpError> {
+    read_body_counted(response, limit, &mut 0, || {
         McpError::ExternalApi(format!(
             "the WordPress response is larger than {} MB, the most mcp-rs reads for one request",
             limit / (1024 * 1024)
         ))
-    };
+    })
+    .await
+}
+
+/// `read_body_limited`と同じだが、受け取ったバイト数を`received`に足す
+/// （途中で失敗しても、それまでに受け取った分を足す）。超えたときのエラーは
+/// `too_large`で作る。一覧の全件取得で、合計の上限を読む前に当てるのに使う
+/// （#759）
+async fn read_body_counted(
+    mut response: reqwest::Response,
+    limit: usize,
+    received: &mut usize,
+    too_large: impl Fn() -> McpError,
+) -> Result<Vec<u8>, McpError> {
     if response
         .content_length()
         .is_some_and(|length| length > limit as u64)
@@ -148,12 +173,13 @@ async fn read_body_limited(
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(McpError::Http)? {
+        *received += chunk.len();
         if body.len() + chunk.len() > limit {
             return Err(too_large());
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    Ok(body)
 }
 
 /// エラーの応答の本文を、`MAX_ERROR_BODY_BYTES`まで読む。読めなければ空。
@@ -170,18 +196,27 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// POST・DELETEを再送しなかったときに、エラーメッセージに添える注意。
-/// MCPクライアントが結果を確かめずに同じ呼び出しを繰り返さないように。
+/// `send_with_retry`が受け取った、成功（2xx）の応答のヘッダーと本文
+struct ReceivedResponse {
+    headers: reqwest::header::HeaderMap,
+    body: Vec<u8>,
+}
+
+/// POST・DELETE（本文の受信の失敗ではPUTも）を再送しなかったときに、
+/// エラーメッセージに添える注意。MCPクライアントが結果を確かめずに同じ
+/// 呼び出しを繰り返さないように。
 const NOT_RESENT_NOTE: &str = ". Not retried automatically: WordPress may have already processed this request. Check whether it took effect before trying again";
 
 /// 成功（2xx）応答の本文を解析する。失敗しても再送しない：WordPressは
 /// 既にリクエストを処理済みであり、再送すると作成の重複や、削除済みの
 /// 対象への2回目の削除（404）を招くため。
-fn parse_success_body<T>(text: &str) -> Result<T, McpError>
+/// 本文はバイトのまま読む。不正なUTF-8を置き換え文字にして読み進めない
+/// ように（#774）
+fn parse_success_body<T>(body: &[u8]) -> Result<T, McpError>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
-    serde_json::from_str::<T>(text).map_err(|e| {
+    serde_json::from_slice::<T>(body).map_err(|e| {
         warn!(
             "JSON parse error on a successful response (not retried): {}",
             e
@@ -210,6 +245,18 @@ fn format_wp_error(status: reqwest::StatusCode, body: &str) -> String {
         "WordPress API error {}: {}",
         status,
         truncate_chars_with_ellipsis(body, 200)
+    )
+}
+
+/// 一覧のページが範囲の外だという、WordPressの400のエラーか（PR #763の
+/// レビュー）。投稿は`rest_post_invalid_page_number`、コメント・ユーザー等は
+/// `rest_<種類>_invalid_page_number`
+fn is_invalid_page_number_error(error: &McpError) -> bool {
+    matches!(
+        error,
+        McpError::ExternalApi(msg)
+            if msg.starts_with("WordPress API error 400 ")
+                && msg.contains("_invalid_page_number)")
     )
 }
 
@@ -275,8 +322,13 @@ fn post_content_for_display(content: &WordPressContent, format: PostContentForma
 /// （タイトルと本文は同じ応答から取るため、どちらかだけが原文になる
 /// ことはない）。
 fn post_format_label(post: &WordPressPost, format: PostContentFormat) -> &'static str {
+    // 本文のない投稿タイプ（#684）ではタイトルで見る
+    let has_raw = post
+        .content
+        .as_ref()
+        .map_or(post.title.raw.is_some(), |content| content.raw.is_some());
     match format {
-        PostContentFormat::Raw if post.content.raw.is_some() => "raw",
+        PostContentFormat::Raw if has_raw => "raw",
         PostContentFormat::Raw => {
             "rendered HTML (raw source unavailable: it requires credentials with edit permission)"
         }
@@ -289,18 +341,148 @@ fn post_format_label(post: &WordPressPost, format: PostContentFormat) -> &'stati
 /// 本文を空にして返す。空の本文を見たエージェントが投稿を上書きして
 /// しまわないよう、その場合に添える注意書き。
 fn protected_content_note(post: &WordPressPost) -> Option<&'static str> {
-    (post.content.protected && post.content.raw.is_none()).then_some(
+    let content = post.content.as_ref()?;
+    (content.protected && content.raw.is_none()).then_some(
         "This post is password-protected, so its content is hidden. Do not treat the content as empty or overwrite it.",
     )
 }
 
-/// post_type（"post" | "page"）からREST APIのエンドポイントセグメントを
-/// 決定する。"post"・未知の値はすべて"posts"として扱う。
-fn endpoint_for_post_type(post_type: &str) -> &'static str {
-    match post_type {
-        "page" => "pages",
-        _ => "posts",
+/// 本文のない投稿タイプ（`editor`に対応していないカスタム投稿タイプ）の
+/// 投稿に添える注意書き（#684）。空の本文と取り違えて書き込まないように
+const NO_CONTENT_FIELD_NOTE: &str =
+    "This post type has no content field, so there is no content to show or update.";
+
+/// `create_post_with_embeds`で動画プレーヤーにするYouTubeのホスト（#680）。
+/// どれも完全に一致するものだけを受け付ける（部分一致・後ろの一致では見ない）。
+/// 増やすときは、ここに足す
+const YOUTUBE_HOSTS: &[&str] = &["youtube.com", "www.youtube.com", "m.youtube.com"];
+/// `/embed/<ID>`だけを受け付ける、プライバシー強化モードのホスト
+const YOUTUBE_NOCOOKIE_HOSTS: &[&str] = &["youtube-nocookie.com", "www.youtube-nocookie.com"];
+/// `/<ID>`の短いリンクのホスト
+const YOUTUBE_SHORT_LINK_HOST: &str = "youtu.be";
+
+/// `create_post_with_embeds`で本文に足すSNSのURL（#680）。サービスの名前・
+/// 受け付けるホスト（完全に一致するもの）・パスの頭。増やすときは、ここに足す
+const SOCIAL_EMBED_HOSTS: &[(&str, &[&str], &str)] = &[
+    (
+        "twitter",
+        &[
+            "twitter.com",
+            "www.twitter.com",
+            "mobile.twitter.com",
+            "x.com",
+            "www.x.com",
+            "mobile.x.com",
+        ],
+        "/",
+    ),
+    ("instagram", &["instagram.com", "www.instagram.com"], "/p/"),
+    (
+        "facebook",
+        &["facebook.com", "www.facebook.com", "m.facebook.com"],
+        "/",
+    ),
+    (
+        "tiktok",
+        &[
+            "tiktok.com",
+            "www.tiktok.com",
+            "m.tiktok.com",
+            "vm.tiktok.com",
+            "vt.tiktok.com",
+        ],
+        "/",
+    ),
+];
+
+/// `http`・`https`のURLだけを分解する。ホストの大文字は小文字になる
+fn parse_web_url(url: &str) -> Option<url::Url> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then_some(parsed)
+}
+
+/// YouTubeの動画プレーヤーのHTML。`host`は`www.youtube.com`か、プライバシー
+/// 強化モードの`www.youtube-nocookie.com`（#759）
+fn youtube_iframe(host: &str, video_id: &str, width: Option<u32>, height: Option<u32>) -> String {
+    let w = width.unwrap_or(560);
+    let h = height.unwrap_or(315);
+    format!(
+        r#"<iframe width="{}" height="{}" src="https://{}/embed/{}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>"#,
+        w, h, host, video_id
+    )
+}
+
+/// YouTubeの動画のIDとして使える文字（英数字・`_`・`-`）だけなら、そのまま返す。
+/// 埋め込みのHTMLに入れるので、ほかの文字は受け付けない
+fn youtube_video_id(id: &str) -> Option<String> {
+    (!id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+    .then(|| id.to_string())
+}
+
+/// リソースのテンプレートで読むもの（#644）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceKind {
+    Post,
+    Page,
+    Media,
+}
+
+/// テンプレートの`{id}`か、埋めたID
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceId {
+    Placeholder,
+    Id(u64),
+}
+
+/// `wordpress://post/{id}`・`wordpress://post/123`等を読む（#644）。IDは
+/// 正の整数だけ（先頭の0・符号・空白等は受けない）
+fn resource_template_target(uri: &str) -> Option<(ResourceKind, ResourceId)> {
+    let rest = uri.strip_prefix("wordpress://")?;
+    let (kind, id) = rest.split_once('/')?;
+    let kind = match kind {
+        "post" => ResourceKind::Post,
+        "page" => ResourceKind::Page,
+        "media" => ResourceKind::Media,
+        _ => return None,
+    };
+    let id = if id == "{id}" {
+        ResourceId::Placeholder
+    } else if !id.is_empty()
+        && id.len() <= 20
+        && !id.starts_with('0')
+        && id.chars().all(|c| c.is_ascii_digit())
+    {
+        ResourceId::Id(id.parse().ok()?)
+    } else {
+        return None;
+    };
+    Some((kind, id))
+}
+
+/// WordPressが「無い」（404）と答えたら、リソースが無い（`-32002`）にする（#644）。
+/// 応答の状態コードで判定する（`format_wp_error`が先頭に付ける）。本文に
+/// ` 404 `を含むかで見ると、503の本文の`upstream 404 from proxy`等でも
+/// 「無い」にしてしまう（#759）
+fn not_found_as_resource(error: McpError, uri: &str) -> McpError {
+    match &error {
+        McpError::ExternalApi(message) if message.starts_with("WordPress API error 404 ") => {
+            McpError::ResourceNotFound(uri.to_string())
+        }
+        _ => error,
     }
+}
+
+/// WordPressの投稿タイプ・タクソノミーの名前の形か（#642）。URLに入れるので、
+/// 英小文字・数字・`_`・`-`だけを受ける
+fn is_slug(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// カテゴリ/タグのIDリストを、id→name対応表を使って名前のリストに
@@ -478,8 +660,7 @@ fn post_list_query_arg(
         values
             .iter()
             .map(|v| {
-                v.as_u64()
-                    .filter(|n| *n > 0)
+                positive_integer_id(v)
                     .ok_or_else(|| invalid(format!("{name} must be positive integer IDs")))
             })
             .collect()
@@ -655,7 +836,7 @@ const RATE_LIMIT_CLIENT_ID: &str = "wordpress-tool-calls";
 /// - 変更しないツール（`get_*`等）: 読み取り専用
 /// - `create_*`・`upload_*`: 新しく作る。既存のものは変えないが、繰り返すと
 ///   その分作られる
-/// - `update_*`・`set_*`・`delete_*`: 既存のものを上書き・削除する。同じ引数で
+/// - `update_*`・`set_*`・`delete_*`・`restore_*`: 既存のものを上書き・削除する。同じ引数で
 ///   繰り返しても、追加の影響は無い
 ///
 /// どのツールも、設定したWordPressサイトとだけやり取りする（開かれた世界では
@@ -681,9 +862,11 @@ fn wordpress_tool_annotations(name: &str) -> ToolAnnotations {
 }
 
 /// 変更系ツールのツール名接頭辞。本ファイルのツール命名規則
-/// （`create_*`/`update_*`/`delete_*`/`upload_*`/`set_*`）に合わせており、
+/// （`create_*`/`update_*`/`delete_*`/`upload_*`/`set_*`/`restore_*`）に合わせており、
 /// 新規ツール追加時も個別対応なしに自動的に監査ログ対象へ含まれる。
-const MUTATING_TOOL_PREFIXES: &[&str] = &["create_", "update_", "delete_", "upload_", "set_"];
+const MUTATING_TOOL_PREFIXES: &[&str] = &[
+    "create_", "update_", "delete_", "upload_", "set_", "restore_",
+];
 
 /// ツール名が変更系（WordPress側の状態を変更する）かどうかを判定する。
 fn is_mutating_tool(name: &str) -> bool {
@@ -923,6 +1106,11 @@ fn canonicalize_upload_dirs(dirs: &[String]) -> Result<Vec<PathBuf>, String> {
 /// `..`やリンクで許可フォルダの外に出ることはできない。許可フォルダの外を
 /// 指す場合と、ファイルが存在しない場合は同じエラーにする（許可フォルダ
 /// 外のファイルの有無が分からないように）。
+///
+/// Windowsでは、ドライブ名で始まるパス（`C:\…`・`\\?\C:\…`）だけ受け付ける。
+/// UNC（`\\host\share\…`）・デバイス（`\\.\…`）のパスは、正規化の時点で
+/// SMB等の接続が始まり、Windowsの資格情報が送られうるので、正規化の前に
+/// 断る（#750）。
 fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<PathBuf, McpError> {
     if allowed_dirs.is_empty() {
         return Err(McpError::InvalidParams(
@@ -937,6 +1125,14 @@ fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<Path
         return Err(McpError::InvalidParams(
             "file_path must be an absolute path".to_string(),
         ));
+    }
+    if let Some(std::path::Component::Prefix(prefix)) = path.components().next() {
+        use std::path::Prefix;
+        if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+            return Err(McpError::InvalidParams(
+                "file_path must be a path on a local drive (such as C:\\...), not a network (UNC) or device path".to_string(),
+            ));
+        }
     }
 
     std::fs::canonicalize(path)
@@ -962,15 +1158,96 @@ fn mime_type_for_filename(filename: &str) -> Option<&'static str> {
         .map(|(mime_type, _)| *mime_type)
 }
 
-/// アップロードするファイルを読み込む。上限を超える分は読まない
+/// `resolve_upload_path`で確かめたファイル（正規化済みのパス）を開き、
+/// 開いたものが、確かめたファイルかを比べる（#750）。確かめた後に、許可
+/// フォルダの中の項目をシンボリックリンク・ジャンクションに差し替えて、
+/// 外のファイルを読ませないように。
+///
+/// - Windows: 開いたハンドルの実際のパス（`GetFinalPathNameByHandleW`。
+///   `std::fs::canonicalize`と同じ形）が、確かめたパスと同じか
+/// - Unix: 最後の項目のリンクはたどらずに開き（`O_NOFOLLOW`）、パスを
+///   正規化し直して同じか、そのパスのファイルと開いたファイルが同じ
+///   （デバイス・inode）かを比べる。途中のフォルダを、開く前と、比べる
+///   間とで2回差し替えられる場合は防げない
+fn open_checked_upload_file(canonical: &Path) -> Result<std::fs::File, McpError> {
+    let read_error =
+        |e: std::io::Error| McpError::InvalidParams(format!("Failed to read file_path: {}", e));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(canonical).map_err(read_error)?;
+
+    #[cfg(windows)]
+    let same = final_path_of(&file).map_err(read_error)? == canonical;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt as _;
+        let opened = file.metadata().map_err(read_error)?;
+        std::fs::canonicalize(canonical).is_ok_and(|again| again == canonical)
+            && std::fs::metadata(canonical)
+                .is_ok_and(|now| now.dev() == opened.dev() && now.ino() == opened.ino())
+    };
+    #[cfg(not(any(unix, windows)))]
+    let same = std::fs::canonicalize(canonical).is_ok_and(|again| again == canonical);
+
+    if !same {
+        return Err(McpError::InvalidParams(
+            "file_path changed while it was being opened (for example, replaced with a link), so it was not read".to_string(),
+        ));
+    }
+    Ok(file)
+}
+
+/// 開いたファイルの実際のパス（`\\?\C:\…`）。リンク・ジャンクションは
+/// 解決済み。`std::fs::canonicalize`も同じ関数・同じ形で返す
+#[cfg(windows)]
+fn final_path_of(file: &std::fs::File) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+
+    let mut buffer = vec![0u16; 512];
+    loop {
+        // SAFETY: 開いているファイルのハンドルと、`buffer.len()`文字を
+        // 書けるバッファーを渡す。フラグの0は、正規化した名前・ドライブ名
+        // の形（FILE_NAME_NORMALIZED | VOLUME_NAME_DOS）
+        let len = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                0,
+            )
+        } as usize;
+        if len == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // 足りなければ、要る大きさ（終わりの0を含む）が返る
+        if len >= buffer.len() {
+            buffer.resize(len, 0);
+            continue;
+        }
+        buffer.truncate(len);
+        return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+    }
+}
+
+/// アップロードするファイルを読み込む。`path`は`resolve_upload_path`が
+/// 返した正規化済みのパス。上限を超える分は読まない
 /// （確認後にファイルが大きくなった場合も含め、メモリに載せる量を
 /// 上限+1バイトに抑える）。
 async fn read_upload_file(path: &Path) -> Result<Vec<u8>, McpError> {
     use tokio::io::AsyncReadExt as _;
 
-    let file = tokio::fs::File::open(path)
+    let canonical = path.to_path_buf();
+    let file = tokio::task::spawn_blocking(move || open_checked_upload_file(&canonical))
         .await
-        .map_err(|e| McpError::InvalidParams(format!("Failed to read file_path: {}", e)))?;
+        .map_err(|e| McpError::Other(format!("Failed to read file_path: {}", e)))??;
+    let file = tokio::fs::File::from_std(file);
     let mut data = Vec::new();
     file.take(MAX_UPLOAD_SIZE_BYTES as u64 + 1)
         .read_to_end(&mut data)
@@ -985,26 +1262,43 @@ async fn read_upload_file(path: &Path) -> Result<Vec<u8>, McpError> {
     Ok(data)
 }
 
-/// 引数からベストエフォートで対象リソースのIDを抽出する（監査ログの
-/// 補助情報用）。ツールごとに異なるキー名（`post_id`・`media_id`等）を
-/// 優先順位付きで試す。見つからない場合は`None`（例: 新規作成系ツールは
+/// ツールが操作の対象のIDに使う引数のキー（監査ログ用。#755）。対象の
+/// IDを持たないツール（作成・一覧等）は`None`。`get_comments`の`post_id`は
+/// 絞り込み、`create_comment`の`post_id`は作るコメントの関連先で、操作の
+/// 対象ではないので記録しない（PR #757のレビュー）
+fn target_id_key(tool_name: &str) -> Option<&'static str> {
+    Some(match tool_name {
+        "get_post"
+        | "update_post"
+        | "delete_post"
+        | "update_post_categories_tags"
+        | "set_featured_image"
+        | "get_revisions"
+        | "get_revision"
+        | "restore_revision" => "post_id",
+        "get_media_item" | "update_media" | "delete_media" => "media_id",
+        "update_category" | "delete_category" => "category_id",
+        "update_tag" | "delete_tag" => "tag_id",
+        "update_comment" | "delete_comment" => "comment_id",
+        "set_front_page" => "page_id",
+        "set_front_page_to_posts" => "posts_page_id",
+        _ => return None,
+    })
+}
+
+/// 引数から対象リソースのIDを取り出す（監査ログの補助情報用）。ツールが
+/// 実際に使うキー（`target_id_key`）だけを見る。決まった順のキー（`id`が
+/// 先）で探すと、知らない引数`id`を渡されたとき、操作したものと違うIDを
+/// 記録してしまうため（#755）。無ければ`None`（例: 新規作成系ツールは
 /// 呼び出し時点では対象IDを持たない）。
-fn extract_target_id(arguments: &Option<HashMap<String, serde_json::Value>>) -> Option<String> {
-    const ID_KEYS: &[&str] = &[
-        "id",
-        "post_id",
-        "media_id",
-        "category_id",
-        "tag_id",
-        "page_id",
-        "posts_page_id",
-    ];
-    let args = arguments.as_ref()?;
-    ID_KEYS.iter().find_map(|key| {
-        args.get(*key).map(|v| match v {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        })
+fn extract_target_id(
+    tool_name: &str,
+    arguments: &Option<HashMap<String, serde_json::Value>>,
+) -> Option<String> {
+    let key = target_id_key(tool_name)?;
+    arguments.as_ref()?.get(key).map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
     })
 }
 
@@ -1043,9 +1337,379 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
+/// `<?`の後の`instruction`で、処理命令が終わる位置（`?>`の`>`の次）。PHPの
+/// `strip_tags`と同じく、`"`の中（`'`は数えるが、終わりは止めない）と、
+/// `(`が`)`で閉じていない間は終えない。`\`の後の引用符は数えない。
+/// 終わらなければ`None`（PR #781のレビュー）。引用符と括弧は、PHPと同じく
+/// 最後の1文字（`lc`）だけで追う（入れ子にしない。`'"'`の後は`'`の中とみ
+/// なし、`(`を数えない）
+fn processing_instruction_end(instruction: &str) -> Option<usize> {
+    // PHPの`lc`。`<`で始まり、引用符が閉じたら空（`\0`）
+    let mut last = '<';
+    let mut parentheses = 0i64;
+    let mut previous = '?';
+    for (i, c) in instruction.char_indices() {
+        match c {
+            '"' | '\'' if previous != '\\' => {
+                last = if last == c { '\0' } else { c };
+            }
+            '(' if last != '"' && last != '\'' => {
+                last = '(';
+                parentheses += 1;
+            }
+            ')' if last != '"' && last != '\'' => {
+                last = ')';
+                parentheses -= 1;
+            }
+            '>' if parentheses == 0 && last != '"' && previous == '?' => {
+                return Some(i + 1);
+            }
+            _ => {}
+        }
+        previous = c;
+    }
+    None
+}
+
+/// WordPressがスラッグを作るときに取り除く、HTMLのタグを除いた文字列
+/// （#750）。PHPの`strip_tags`と同じく、引用符の中の`>`ではタグを閉じず
+/// （`<a title='>→'>`は全部消える）、入れ子の`<`は数え、`<!--`は`-->`まで
+/// 消し、`<?`は`?>`まで消す。閉じないタグは、残りを全部消す。`<`の後が
+/// 空白なら、タグではない
+/// （PR #781のレビュー）
+fn slug_without_tags(slug: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = slug;
+    while let Some(i) = rest.find('<') {
+        kept.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        if after.starts_with(|c: char| c.is_ascii_whitespace()) {
+            kept.push('<');
+            rest = after;
+            continue;
+        }
+        // `<?`（PHPの処理命令）は、`?>`まで消す（PR #781のレビュー）。
+        // `strip_tags`と同じく、`"`の中と、括弧が閉じていない間は終えない
+        // `<?xml`は、PHPでは普通のタグに戻る（PR #781のレビュー）
+        let xml = after
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case("?xml"));
+        if let Some(instruction) = after.strip_prefix('?').filter(|_| !xml) {
+            match processing_instruction_end(instruction) {
+                Some(end) => {
+                    rest = &instruction[end..];
+                    continue;
+                }
+                None => return kept,
+            }
+        }
+        if let Some(comment) = after.strip_prefix("!--") {
+            match comment.find("-->") {
+                Some(end) => {
+                    rest = &comment[end + 3..];
+                    continue;
+                }
+                None => return kept,
+            }
+        }
+        let mut depth = 0usize;
+        let mut quote: Option<char> = None;
+        let mut previous = '<';
+        let mut closed_at = None;
+        for (j, c) in after.char_indices() {
+            match quote {
+                Some(q) => {
+                    if c == q && previous != '\\' {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    '"' | '\'' if previous != '\\' => quote = Some(c),
+                    '<' => depth += 1,
+                    '>' if depth > 0 => depth -= 1,
+                    '>' => {
+                        closed_at = Some(j);
+                        break;
+                    }
+                    _ => {}
+                },
+            }
+            previous = c;
+        }
+        match closed_at {
+            Some(j) => rest = &after[j + 1..],
+            // 閉じないタグは、残りを全部消す（`strip_tags`と同じ）
+            None => return kept,
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// WordPressがスラッグを作るときに取り除く、エンティティ（`&…;`。
+/// `sanitize_title_with_dashes`の`&.+?;`）を除いた文字列（#750）。`&amp;`等
+/// だけのスラッグも、WordPressでは空になるため。WordPressは、符号化して
+/// 200文字に切り詰めた後に取り除く（#781）
+fn slug_without_entities(slug: &str) -> String {
+    let mut rest = slug;
+    let mut kept = String::new();
+    while let Some(i) = rest.find('&') {
+        kept.push_str(&rest[..i]);
+        // `;`が無ければ、残りはそのまま（WordPressも取り除かない）。後ろの
+        // `&`ごとに残り全体を探し直すと、長い入力で時間が2乗で増えるため、
+        // ここで終える
+        let Some(end) = rest[i + 1..].find(';') else {
+            rest = &rest[i..];
+            break;
+        };
+        if end == 0 {
+            kept.push('&');
+            rest = &rest[i + 1..];
+        } else {
+            rest = &rest[i + 1 + end + 1..];
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// WordPressがスラッグを符号化するとき（`utf8_uri_encode`）の長さの上限（#781）
+const SLUG_ENCODED_MAX_LENGTH: usize = 200;
+
+/// WordPressがスラッグを保存するとき（`sanitize_title_with_dashes`の`save`）に、
+/// ハイフンにする文字（NBSP・ダッシュ）のUTF-8（#779）
+/// `%e2%80%91`（ノーブレークハイフン）は、WordPress 6.9から（PR #781のレビュー。
+/// それより前のWordPressでも、これだけのスラッグを断るだけ）
+const SLUG_DASH_OCTETS: &[&str] = &["%c2%a0", "%e2%80%91", "%e2%80%93", "%e2%80%94"];
+
+/// 同じく、取り除く文字（ソフトハイフン・¡¿・山括弧・曲がった引用符・
+/// •・©・®・°・…・™・アクセント・幅の無い制御文字等）のUTF-8（#779）
+const SLUG_STRIPPED_OCTETS: &[&str] = &[
+    "%c2%ad",
+    "%c2%a1",
+    "%c2%bf",
+    "%c2%ab",
+    "%c2%bb",
+    "%e2%80%b9",
+    "%e2%80%ba",
+    "%e2%80%98",
+    "%e2%80%99",
+    "%e2%80%9c",
+    "%e2%80%9d",
+    "%e2%80%9a",
+    "%e2%80%9b",
+    "%e2%80%9e",
+    "%e2%80%9f",
+    "%e2%80%a2",
+    "%c2%a9",
+    "%c2%ae",
+    "%c2%b0",
+    "%e2%80%a6",
+    "%e2%84%a2",
+    "%c2%b4",
+    "%cb%8a",
+    "%cc%81",
+    "%cd%81",
+    "%cc%80",
+    "%cc%84",
+    "%cc%8c",
+    "%e2%80%8b",
+    "%e2%80%8c",
+    "%e2%80%8d",
+    "%e2%80%8e",
+    "%e2%80%8f",
+    "%e2%80%aa",
+    "%e2%80%ab",
+    "%e2%80%ac",
+    "%e2%80%ad",
+    "%e2%80%ae",
+    "%ef%bb%bf",
+    "%ef%bf%bc",
+];
+
+/// 同じく、ハイフンにする幅のある空白（En quad〜Hair space・行区切り等）の
+/// UTF-8（#779）
+const SLUG_SPACE_OCTETS: &[&str] = &[
+    "%e2%80%80",
+    "%e2%80%81",
+    "%e2%80%82",
+    "%e2%80%83",
+    "%e2%80%84",
+    "%e2%80%85",
+    "%e2%80%86",
+    "%e2%80%87",
+    "%e2%80%88",
+    "%e2%80%89",
+    "%e2%80%8a",
+    "%e2%80%a8",
+    "%e2%80%a9",
+    "%e2%80%af",
+];
+
+/// WordPressが保存するとき（`sanitize_title`の`remove_accents`）に、ASCIIの
+/// 文字にする文字なら、その文字（#781）。Latin-1・ラテン文字拡張Aの文字
+/// （×・÷を除く）、`ª`・`º`、ラテン文字拡張Bの一部（`Ơ`・`Ư`・`Ǎ`〜`ǜ`・
+/// `Ș`〜`ț`）、ベトナム語の文字、`€`（`E`になる）。小文字で返す（WordPressも
+/// 後で小文字にする）。`%`の後で16進の数字になりうるので、文字そのものを
+/// 返す（PR #781のレビュー）。ここに無い文字は`None`で、符号化した長さで
+/// 数える（長いスラッグで、残る文字を見落として断ることはあっても、誤って
+/// 通さない）。言語ごとの変換（ドイツ語の`ä`→`ae`等）は扱わない
+fn remove_accents_ascii(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{c6}' | '\u{e6}' => "ae",
+        '\u{de}' | '\u{fe}' => "th",
+        '\u{132}' | '\u{133}' => "ij",
+        '\u{152}' | '\u{153}' => "oe",
+        '\u{aa}'
+        | '\u{c0}'..='\u{c5}'
+        | '\u{e0}'..='\u{e5}'
+        | '\u{100}'..='\u{105}'
+        | '\u{1cd}'
+        | '\u{1ce}'
+        | '\u{1ea0}'..='\u{1eb7}' => "a",
+        '\u{c7}' | '\u{e7}' | '\u{106}'..='\u{10d}' => "c",
+        '\u{d0}' | '\u{f0}' | '\u{10e}'..='\u{111}' => "d",
+        '\u{c8}'..='\u{cb}'
+        | '\u{e8}'..='\u{eb}'
+        | '\u{112}'..='\u{11b}'
+        | '\u{18f}'
+        | '\u{1dd}'
+        | '\u{1eb8}'..='\u{1ec7}'
+        | '\u{20ac}' => "e",
+        '\u{11c}'..='\u{123}' => "g",
+        '\u{124}'..='\u{127}' => "h",
+        '\u{cc}'..='\u{cf}'
+        | '\u{ec}'..='\u{ef}'
+        | '\u{128}'..='\u{131}'
+        | '\u{1cf}'
+        | '\u{1d0}'
+        | '\u{1ec8}'..='\u{1ecb}' => "i",
+        '\u{134}' | '\u{135}' => "j",
+        '\u{136}'..='\u{138}' => "k",
+        '\u{139}'..='\u{142}' => "l",
+        '\u{d1}' | '\u{f1}' | '\u{143}'..='\u{14b}' => "n",
+        '\u{ba}'
+        | '\u{d2}'..='\u{d6}'
+        | '\u{d8}'
+        | '\u{f2}'..='\u{f6}'
+        | '\u{f8}'
+        | '\u{14c}'..='\u{151}'
+        | '\u{1a0}'
+        | '\u{1a1}'
+        | '\u{1d1}'
+        | '\u{1d2}'
+        | '\u{1ecc}'..='\u{1ee3}' => "o",
+        '\u{154}'..='\u{159}' => "r",
+        '\u{df}' | '\u{15a}'..='\u{161}' | '\u{17f}' | '\u{218}' | '\u{219}' => "s",
+        '\u{162}'..='\u{167}' | '\u{21a}' | '\u{21b}' => "t",
+        '\u{d9}'..='\u{dc}'
+        | '\u{f9}'..='\u{fc}'
+        | '\u{168}'..='\u{173}'
+        | '\u{1af}'
+        | '\u{1b0}'
+        | '\u{1d3}'..='\u{1dc}'
+        | '\u{1ee4}'..='\u{1ef1}' => "u",
+        '\u{174}' | '\u{175}' => "w",
+        '\u{dd}' | '\u{fd}' | '\u{ff}' | '\u{176}'..='\u{178}' | '\u{1ef2}'..='\u{1ef9}' => "y",
+        '\u{179}'..='\u{17e}' => "z",
+        _ => return None,
+    })
+}
+
+/// WordPressが保存するとき、スラッグに何か残るか（#779）。WordPressは、
+/// RESTの引数としてスラッグを1回整え（`sanitize_title`）、保存するときに
+/// もう1回整える。1回目で取り除かれた記号の後に`%xx`ができる（`%c2!%a0`は
+/// `%c2%a0`になり、2回目で空になる）ので、2回なぞる（PR #781のレビュー）
+fn slug_survives_sanitizing(slug: &str) -> bool {
+    sanitized_slug(&sanitized_slug(slug))
+        .chars()
+        .any(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// WordPressがスラッグを1回整えた結果（`sanitize_title`の`save`）。
+/// `sanitize_title_with_dashes`（`save`）と同じく、ASCIIでない文字を
+/// `%xx`にし、パーセントエンコード（`%xx`）はそのまま残して、決まった
+/// 記号を取り除く・ハイフンにする。`%c3%97`（×）は`x`になる。残るのは
+/// 英数字・`_`・`%xx`だけ（ほかのASCIIの記号・空白・ハイフンは消える）。
+/// その前の`remove_accents`が消す`£`は先に取り除き、`utf8_uri_encode`と
+/// 同じく、符号化した後の200文字（ASCIIは1文字、ほかはUTF-8のバイト数×3）
+/// に収まる文字までを見る。`remove_accents`がASCIIの文字にする文字（`é`等）
+/// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）。
+/// 最後に、`%`・英数字・空白・`_`・`-`のほかを取り除く（空白をハイフンに
+/// する等の、残るかに関わらない処理はしない）
+fn sanitized_slug(slug: &str) -> String {
+    let stripped = slug_without_tags(&slug.replace('£', ""));
+    // `remove_accents`は、`%xx`を探す前・小文字にする前に、アクセントの
+    // ある文字をASCIIの文字にする（`İ`は`i`＋結合文字ではなく`i`。
+    // `%c2%À0`は`%c2%a0`になる。PR #781のレビュー）
+    let mut converted = String::new();
+    for c in stripped.chars() {
+        match remove_accents_ascii(c) {
+            Some(ascii) => converted.push_str(ascii),
+            None => converted.push(c),
+        }
+    }
+    // WordPressが符号化する前の文字。`%xx`は、ASCIIの3文字として数える
+    let mut lowered = String::new();
+    let mut chars = converted.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let octet: String = chars.clone().take(2).collect();
+            if octet.len() == 2 && octet.chars().all(|h| h.is_ascii_hexdigit()) {
+                lowered.push('%');
+                lowered.push_str(&octet);
+                chars.nth(1);
+            }
+            // オクテットでない`%`は、WordPressが取り除く
+        } else {
+            lowered.extend(c.to_lowercase());
+        }
+    }
+    let mut encoded = String::new();
+    let mut length = 0;
+    for c in lowered.chars() {
+        if c.is_ascii() {
+            if length >= SLUG_ENCODED_MAX_LENGTH {
+                break;
+            }
+            encoded.push(c.to_ascii_lowercase());
+            length += 1;
+        } else {
+            let mut buf = [0u8; 4];
+            let bytes = c.encode_utf8(&mut buf).as_bytes();
+            if length + bytes.len() * 3 > SLUG_ENCODED_MAX_LENGTH {
+                break;
+            }
+            for byte in bytes {
+                encoded.push_str(&format!("%{byte:02x}"));
+            }
+            length += bytes.len() * 3;
+        }
+    }
+    for octets in SLUG_DASH_OCTETS {
+        encoded = encoded.replace(octets, "-");
+    }
+    for octets in SLUG_STRIPPED_OCTETS {
+        encoded = encoded.replace(octets, "");
+    }
+    for octets in SLUG_SPACE_OCTETS {
+        encoded = encoded.replace(octets, "-");
+    }
+    // 切り詰めで`%xx`の途中が切れた`%`は残るが、2回目で消える（PR #781の
+    // レビュー）
+    slug_without_entities(&encoded)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '%' | ' ' | '_' | '-'))
+        .collect()
+}
+
 /// ツール引数の`slug`を取り出す。省略時は`None`（WordPressに送らない）。
 /// 空文字列はWordPressにとって「自動生成に戻す」意味になり、意図せず
-/// 既存のスラッグを消しうるため受け付けない。
+/// 既存のスラッグを消しうるため受け付けない。WordPressが保存のときに
+/// 記号を取り除いて空にするスラッグ（`!!!`・`%c2%a0`等）も、同じく
+/// 受け付けない（#750、#774）。HTMLのタグ・エンティティ（`&amp;`等）も、
+/// 取り除いた後で確かめる。WordPressが残す値（日本語・`%c3%97`・`→`等の
+/// 記号）は通す（#779）
 fn optional_slug_arg(
     args: &HashMap<String, serde_json::Value>,
 ) -> Result<Option<String>, McpError> {
@@ -1057,11 +1721,45 @@ fn optional_slug_arg(
                 Err(McpError::InvalidParams(
                     "slug must not be empty. Omit it to let WordPress generate one".to_string(),
                 ))
+            } else if !slug_survives_sanitizing(slug) {
+                Err(McpError::InvalidParams(
+                    "slug must contain at least one letter or digit (or another character WordPress keeps): WordPress removes spaces, dashes, quotes and similar symbols, which would leave it empty. Omit it to let WordPress generate one".to_string(),
+                ))
             } else {
                 Ok(Some(slug.to_string()))
             }
         }
         Some(_) => Err(McpError::InvalidParams("slug must be a string".to_string())),
+    }
+}
+
+/// 1つの一覧で読んだ量（`fetch_all_pages`の読み直しも含める。PR #757の
+/// レビュー）。`bytes`には、受信に失敗して読み直したページの、失敗した
+/// 試行で受け取った分も含める（#759）
+struct ListReadBudget {
+    pages: u32,
+    bytes: usize,
+    /// 読む合計の上限（ふつうは`MAX_LIST_BYTES`。テストで小さくする）
+    max_bytes: usize,
+}
+
+impl Default for ListReadBudget {
+    fn default() -> Self {
+        Self {
+            pages: 0,
+            bytes: 0,
+            max_bytes: MAX_LIST_BYTES,
+        }
+    }
+}
+
+impl ListReadBudget {
+    /// 合計の上限を超えたときのエラー
+    fn too_large(&self) -> McpError {
+        McpError::ExternalApi(format!(
+            "the WordPress list is larger than {} MB in total, the most mcp-rs reads for one list",
+            self.max_bytes / (1024 * 1024)
+        ))
     }
 }
 
@@ -1092,25 +1790,13 @@ fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
         post_data["date"] = serde_json::Value::String(publish_date);
     }
 
-    // カテゴリーを設定（投稿のみ）
-    if params.post_type == "post" {
-        if let Some(cats) = params.categories {
-            post_data["categories"] = serde_json::Value::Array(
-                cats.iter()
-                    .map(|&id| serde_json::Value::Number(id.into()))
-                    .collect(),
-            );
-        }
-
-        // タグを設定（投稿のみ）
-        if let Some(tag_ids) = params.tags {
-            post_data["tags"] = serde_json::Value::Array(
-                tag_ids
-                    .iter()
-                    .map(|&id| serde_json::Value::Number(id.into()))
-                    .collect(),
-            );
-        }
+    // カテゴリー・タグを設定。投稿タイプがその分類を持つことは、
+    // `create_advanced_post`が送る前に確かめる（持たなければ断る。#755）
+    if let Some(cats) = params.categories {
+        post_data["categories"] = serde_json::json!(cats);
+    }
+    if let Some(tag_ids) = params.tags {
+        post_data["tags"] = serde_json::json!(tag_ids);
     }
 
     // アイキャッチ画像を設定
@@ -1123,6 +1809,11 @@ fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
         post_data["slug"] = serde_json::Value::String(slug);
     }
 
+    // 抜粋を設定（未指定ならWordPressが本文から作る。#759）
+    if let Some(excerpt) = params.excerpt {
+        post_data["excerpt"] = serde_json::Value::String(excerpt);
+    }
+
     // メタデータを設定（SEO等）
     if let Some(metadata) = params.meta {
         post_data["meta"] = serde_json::Value::Object(
@@ -1131,6 +1822,13 @@ fn advanced_post_body(params: PostCreateParams) -> serde_json::Value {
                 .map(|(k, v)| (k, serde_json::Value::String(v)))
                 .collect(),
         );
+    }
+
+    // タクソノミーの項目（#642）
+    if let Some(terms) = params.terms {
+        for (taxonomy, ids) in terms {
+            post_data[taxonomy] = serde_json::json!(ids);
+        }
     }
 
     post_data
@@ -1164,6 +1862,10 @@ pub struct WordPressHandler {
     /// `upload_media`の`file_path`で読み込みを許可するフォルダ（起動時に
     /// 正規化済み）。空なら`file_path`は使えない。
     upload_allowed_dirs: Arc<Vec<PathBuf>>,
+    /// `post`・`page`のほかに使ってよいカスタム投稿タイプ（#642）
+    allowed_post_types: Arc<Vec<String>>,
+    /// カスタム投稿タイプのREST APIの場所（`rest_base`）。サイトに1回だけ聞く
+    type_endpoints: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -1196,13 +1898,22 @@ pub struct WordPressPost {
     #[serde(rename = "type")]
     pub post_type: Option<String>,
     pub link: Option<String>,
+    /// タイトル。`title`に対応していない投稿タイプ（#642で使えるようにした
+    /// カスタム投稿タイプ等）では応答にないため、空として読む（#684）
+    #[serde(default)]
     pub title: WordPressContent,
-    pub content: WordPressContent,
+    /// 本文。`editor`に対応していない投稿タイプでは応答にないため`None`
+    /// （空の本文とは区別する。#684）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<WordPressContent>,
     pub excerpt: Option<WordPressContent>,
     pub author: Option<u64>,
     pub featured_media: Option<u64>,
     pub categories: Option<Vec<u64>>,
     pub tags: Option<Vec<u64>>,
+    /// ほかの項目（独自のタクソノミーの項目等、#642）。読むだけで、書き出さない
+    #[serde(flatten, default, skip_serializing)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1210,7 +1921,7 @@ pub struct WordPressGuid {
     pub rendered: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct WordPressContent {
     pub rendered: String,
     /// 編集用の原文（Gutenbergのブロック区切り等を含む）。WordPressは
@@ -1222,13 +1933,325 @@ pub struct WordPressContent {
     pub protected: bool,
 }
 
+/// 投稿・固定ページのリビジョン（#641）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordPressRevision {
+    pub id: u64,
+    /// リビジョンの元の投稿のID
+    #[serde(default)]
+    pub parent: u64,
+    /// 書いた人（ユーザーのID）
+    #[serde(default)]
+    pub author: u64,
+    #[serde(default)]
+    pub date: Option<String>,
+    /// タイトル・本文。WordPressは、親の投稿タイプが対応する項目だけを返す
+    /// ので、`title`・`editor`に対応していない型では無い（#774）
+    #[serde(default)]
+    pub title: Option<WordPressContent>,
+    #[serde(default)]
+    pub content: Option<WordPressContent>,
+    #[serde(default)]
+    pub excerpt: Option<WordPressContent>,
+}
+
+/// リビジョンを1行で表す（#641）。本文は、タグを除いた文字数と、先頭の
+/// 100文字。本文の項目が無ければ、そう書く（#774）
+fn revision_summary(revision: &WordPressRevision, author: &str) -> String {
+    let title = revision
+        .title
+        .as_ref()
+        .map(|title| html_to_plain_text(&title.rendered).trim().to_string())
+        .unwrap_or_default();
+    let content = match &revision.content {
+        Some(content) => {
+            let text = html_to_plain_text(&content.rendered);
+            let text = text.trim();
+            format!(
+                "{} characters: {}",
+                text.chars().count(),
+                truncate_chars_with_ellipsis(text, 100)
+            )
+        }
+        None => "no content field".to_string(),
+    };
+    format!(
+        "ID {} (Date: {}, Author: {}): {} — {}",
+        revision.id,
+        revision.date.as_deref().unwrap_or("unknown"),
+        author,
+        title,
+        content
+    )
+}
+
+/// WordPressのコメント。コメントした人のメールアドレス・IPアドレスは、
+/// 管理（承認・スパム・返信）に要らないので、読まない・出さない（#639）
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WordPressComment {
     pub id: Option<u64>,
     pub post: u64,
+    /// 返信先のコメントのID（返信でなければ0）
+    #[serde(default)]
+    pub parent: u64,
+    /// `approved`・`hold`・`spam`・`trash`
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
     pub content: HashMap<String, String>,
+    #[serde(default)]
     pub author_name: String,
-    pub author_email: String,
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+/// `get_comments`の`status`で受ける、コメントの状態（#639）。`all`は、
+/// 承認済みと承認待ち
+const COMMENT_LIST_STATUSES: &[&str] = &["approve", "hold", "spam", "trash", "all"];
+
+/// `create_comment`・`update_comment`の`status`で受ける、コメントの状態（#639）
+const COMMENT_SET_STATUSES: &[&str] = &["approve", "hold", "spam", "trash"];
+
+/// `create_comment`の既定の状態（#639）。WordPressのコメントには下書きが
+/// 無いので、AIが書いた返信は承認待ちで作り、人が確かめてから公開する
+const DEFAULT_REPLY_STATUS: &str = "hold";
+
+/// 引数`key`の、コメントの状態を読む（#639）。`allowed`の中の値だけを受ける
+fn comment_status_arg(
+    args: &HashMap<String, serde_json::Value>,
+    key: &str,
+    allowed: &[&str],
+) -> Result<Option<String>, McpError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .filter(|s| allowed.contains(s))
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| {
+                McpError::InvalidParams(format!("{key} must be one of: {}", allowed.join(", ")))
+            }),
+    }
+}
+
+/// リビジョンのツールの`post_type`（#641）。`post`か`page`だけを受ける
+fn revision_post_type_arg(args: &HashMap<String, serde_json::Value>) -> Result<&str, McpError> {
+    match args.get("post_type") {
+        None | Some(serde_json::Value::Null) => Ok("post"),
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| McpError::InvalidParams("post_type must be a string".to_string())),
+    }
+}
+
+/// 投稿の項目として送れない名前（#642）。`terms`で、ほかの項目を上書きしない
+const RESERVED_POST_FIELDS: &[&str] = &[
+    "id",
+    "date",
+    "date_gmt",
+    "slug",
+    "status",
+    "type",
+    "password",
+    "title",
+    "content",
+    "excerpt",
+    "author",
+    "featured_media",
+    "comment_status",
+    "ping_status",
+    "format",
+    "meta",
+    "sticky",
+    "template",
+    "parent",
+    "menu_order",
+];
+
+/// 引数`terms`（#642）。`{"<タクソノミーのrest_base>": [項目のID, ...]}`
+fn terms_arg(
+    args: &HashMap<String, serde_json::Value>,
+) -> Result<Option<std::collections::BTreeMap<String, Vec<u64>>>, McpError> {
+    let invalid = |message: String| McpError::InvalidParams(message);
+    let Some(value) = args.get("terms").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let object = value.as_object().ok_or_else(|| {
+        invalid("terms must be an object such as {\"product_cat\": [12, 15]}".to_string())
+    })?;
+    let mut terms = std::collections::BTreeMap::new();
+    for (taxonomy, ids) in object {
+        if !is_slug(taxonomy) || RESERVED_POST_FIELDS.contains(&taxonomy.as_str()) {
+            return Err(invalid(format!(
+                "terms: '{}' is not a taxonomy (use the rest_base from get_taxonomies)",
+                truncate_chars_with_ellipsis(taxonomy, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
+        let ids = ids
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(positive_integer_id)
+                    .collect::<Option<Vec<u64>>>()
+            })
+            .ok_or_else(|| invalid(format!("terms.{taxonomy} must be a list of term IDs")))?;
+        terms.insert(taxonomy.clone(), ids);
+    }
+    Ok(Some(terms))
+}
+
+/// 項目・投稿等のIDとして、正の整数を読む。JSONの`7`と`7.0`を同じIDと
+/// する（スキーマの`integer`は`7.0`も整数とみなすため。PR #757のレビュー）。
+/// 端数のある値・0以下・浮動小数点で正確に表せない大きさ（2^53超）は
+/// 丸めずに`None`
+fn positive_integer_id(value: &serde_json::Value) -> Option<u64> {
+    const MAX_EXACT_F64_INTEGER: f64 = 9_007_199_254_740_992.0; // 2^53
+    if let Some(n) = value.as_u64() {
+        return (n > 0).then_some(n);
+    }
+    let f = value.as_f64()?;
+    (f.fract() == 0.0 && f > 0.0 && f <= MAX_EXACT_F64_INTEGER).then_some(f as u64)
+}
+
+/// `categories`・`tags`と、`terms`の`categories`・`tags`を一緒に渡したら
+/// 断る（PR #757のレビュー）。同じ分類に2つの値があると、どちらを送るかが
+/// 作成と更新でずれ、片方を黙って捨てていた
+fn check_terms_conflict(
+    terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
+    categories: bool,
+    tags: bool,
+) -> Result<(), McpError> {
+    for (key, given) in [("categories", categories), ("tags", tags)] {
+        if given && terms.is_some_and(|terms| terms.contains_key(key)) {
+            return Err(McpError::InvalidParams(format!(
+                "{key} is given both as {key} and as terms.{key}. Give it only once (as {key})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 引数`categories`・`tags`（#755）。項目のIDの配列。正の整数でない要素が
+/// 1つでもあれば断る（`[7, 7.5]`を`[7]`として送ると、置き換えで今の項目が
+/// 外れる）。`[]`は今までどおり受け付ける（すべて外す）
+fn term_ids_arg(
+    args: &HashMap<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<Vec<u64>>, McpError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(positive_integer_id)
+                    .collect::<Option<Vec<u64>>>()
+            })
+            .map(Some)
+            .ok_or_else(|| {
+                McpError::InvalidParams(format!(
+                    "{key} must be a list of {} IDs (positive integers), such as [12, 15]",
+                    if key == "tags" { "tag" } else { "category" }
+                ))
+            }),
+    }
+}
+
+/// `post_type`の引数の説明で、許したカスタム投稿タイプを並べる前の文
+/// （#684。複数のサイトでは、全サイトのものに置き換える）
+pub(crate) const CUSTOM_POST_TYPES_NOTE: &str = "Custom post types allowed in the config";
+
+/// ツールの`post_type`の引数（`enum`が`post`・`page`のもの）に、設定で
+/// 許したカスタム投稿タイプを足す（#642）。AIには、使える型だけを見せる
+fn with_allowed_post_types(tool: &mut Tool, allowed: &[String]) {
+    if allowed.is_empty() {
+        return;
+    }
+    // get_postsは、カスタム投稿タイプを許したときだけ`post_type`を持つ
+    if tool.name == "get_posts" {
+        if let Some(properties) = tool
+            .input_schema
+            .get_mut("properties")
+            .and_then(|p| p.as_object_mut())
+        {
+            properties.insert(
+                "post_type".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "enum": ["post"],
+                    "description": "Post type to list. Defaults to 'post'.",
+                    "default": "post"
+                }),
+            );
+        }
+    }
+    let Some(post_type) = tool
+        .input_schema
+        .get_mut("properties")
+        .and_then(|p| p.get_mut("post_type"))
+        .and_then(|p| p.as_object_mut())
+    else {
+        return;
+    };
+    let Some(values) = post_type.get_mut("enum").and_then(|e| e.as_array_mut()) else {
+        return;
+    };
+    for name in allowed {
+        values.push(serde_json::json!(name));
+    }
+    let description = post_type
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("Content type")
+        .to_string();
+    post_type.insert(
+        "description".to_string(),
+        serde_json::json!(format!(
+            "{description} {CUSTOM_POST_TYPES_NOTE}: {}",
+            allowed.join(", ")
+        )),
+    );
+}
+
+/// 引数`key`の、正の整数のIDを読む（#639）
+fn positive_id_arg(
+    args: &HashMap<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<u64>, McpError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| *n > 0)
+            .map(Some)
+            .ok_or_else(|| McpError::InvalidParams(format!("{key} must be a positive integer"))),
+    }
+}
+
+/// コメントを1行で表す（#639）。本文は、タグを除いて200文字まで
+fn comment_summary(comment: &WordPressComment) -> String {
+    let content = comment
+        .content
+        .get("rendered")
+        .map(|c| truncate_chars_with_ellipsis(html_to_plain_text(c).trim(), 200))
+        .unwrap_or_default();
+    format!(
+        "ID {} on post {}{} (Status: {}, Author: {}, Date: {}): {}",
+        display_opt_id(comment.id),
+        comment.post,
+        if comment.parent > 0 {
+            format!(", reply to {}", comment.parent)
+        } else {
+            String::new()
+        },
+        comment.status.as_deref().unwrap_or("unknown"),
+        comment.author_name,
+        comment.date.as_deref().unwrap_or("unknown"),
+        content
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1274,12 +2297,41 @@ pub struct WordPressHealthCheck {
     pub rest_api_available: bool,
     pub authentication_valid: bool,
     pub permissions_adequate: bool,
+    /// メディアの一覧を読めたか。名前に反して、アップロードの権限
+    /// （`upload_files`）は確かめていない（#759）
     pub media_upload_possible: bool,
     pub error_details: Vec<String>,
     pub site_info: Option<WordPressSiteInfo>,
     /// mcp-rs自身のログ出力先の状態（WordPressサイトとは無関係だが、
     /// 接続トラブル時の切り分けに有用なため含める）
     pub log_destination: String,
+}
+
+/// サイトに届いた後に確かめる項目（REST API・サインイン）の印。サイトに
+/// 届かなければ、試していないと示す（PR #713のレビュー）
+fn health_mark_after_reaching_site(health: &WordPressHealthCheck, ok: bool) -> &'static str {
+    if ok {
+        "✅"
+    } else if !health.site_accessible {
+        "⏭️ not checked (the site could not be reached)"
+    } else {
+        "❌"
+    }
+}
+
+/// サインインの後に確かめる項目（権限・メディア）の印。サインインが
+/// 通らなければ、確かめていないと示す（#710。`mcp-rs check`と同じ）。
+/// サイトに届かなければ、サインインも試していない（PR #713のレビュー）
+fn health_mark_after_sign_in(health: &WordPressHealthCheck, ok: bool) -> &'static str {
+    if ok {
+        "✅"
+    } else if !health.site_accessible {
+        "⏭️ not checked (the site could not be reached)"
+    } else if !health.authentication_valid {
+        "⏭️ not checked (the sign-in failed)"
+    } else {
+        "❌"
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1365,6 +2417,11 @@ pub struct PostCreateParams {
     pub meta: Option<HashMap<String, String>>, // SEOメタデータ等
     /// URLのスラッグ。`None`のときは送らず、WordPressがタイトルから作る
     pub slug: Option<String>,
+    /// 抜粋（#759）。`None`のときは送らず、WordPressが本文から作る
+    pub excerpt: Option<String>,
+    /// タクソノミーの項目（#642）。キーはタクソノミーの`rest_base`
+    /// （例: `product_cat`）、値は項目のID
+    pub terms: Option<std::collections::BTreeMap<String, Vec<u64>>>,
 }
 
 /// WordPress post update parameters
@@ -1372,6 +2429,8 @@ pub struct PostCreateParams {
 pub struct PostUpdateParams {
     pub title: Option<String>,
     pub content: Option<String>,
+    /// 抜粋（#774。`review_post_seo`のプロンプトが直させる）
+    pub excerpt: Option<String>,
     pub status: Option<String>,
     /// 公開日時（ISO8601、サイトのタイムゾーン、#625）。未来の日時と
     /// `status: "future"`で、既存の投稿を予約投稿にする
@@ -1382,6 +2441,9 @@ pub struct PostUpdateParams {
     pub meta: Option<HashMap<String, String>>,
     /// URLのスラッグ。WordPressはタイトルを変えてもスラッグを変えない
     pub slug: Option<String>,
+    /// タクソノミーの項目（#642）。`PostCreateParams::terms`と同じ。渡した
+    /// タクソノミーの項目を、この一覧に置き換える
+    pub terms: Option<std::collections::BTreeMap<String, Vec<u64>>>,
 }
 
 impl Default for PostCreateParams {
@@ -1398,6 +2460,8 @@ impl Default for PostCreateParams {
             featured_media_id: None,
             meta: None,
             slug: None,
+            excerpt: None,
+            terms: None,
         }
     }
 }
@@ -1420,6 +2484,34 @@ impl WordPressHandler {
     }
 
     pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
+        // URLにユーザー名・パスワード（`https://user:pass@…`）を書くと、状態の
+        // 表示・エラーにそのまま出るので断る（#746。`mcp-rs init`と同じ）。
+        // エラーには、URLを出さない
+        // 読めないURLも断る（読めないと、ユーザー名・パスワードがあるか確かめ
+        // られないため。PR #747のレビュー）
+        match url::Url::parse(config.url.trim()) {
+            Ok(url) if !url.username().is_empty() || url.password().is_some() => {
+                return Err(
+                    "handlers.wordpress.url must not contain a user name or password (https://user:pass@...): write the site address only, and put the credentials in username and password (or keyring)"
+                        .to_string(),
+                );
+            }
+            // REST APIのパス（`/wp-json/wp/v2/...`）はURLの後ろに付けるので、
+            // `?lang=ja`・`#...`があると、パスが問い合わせ・フラグメントの一部に
+            // なり、REST APIに届かない（#759）。`/blog`等のサブディレクトリはよい
+            Ok(url) if url.query().is_some() || url.fragment().is_some() => {
+                return Err(
+                    "handlers.wordpress.url must not contain a query (?...) or fragment (#...): write the site address only, such as https://example.com or https://example.com/blog"
+                        .to_string(),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(format!(
+                    "handlers.wordpress.url is not a valid URL ({e}): write the site address, such as https://example.com"
+                ));
+            }
+        }
         // URL検証 - HTTPS強制
         if !config.url.starts_with("https://") {
             return Err(format!(
@@ -1449,12 +2541,22 @@ impl WordPressHandler {
         // セキュア認証情報の作成
         let secure_credentials = Some(config.create_secure_credentials());
 
-        let upload_allowed_dirs = canonicalize_upload_dirs(&config.upload_allowed_dirs)?;
+        let upload_allowed_dirs =
+            canonicalize_upload_dirs(config.upload_allowed_dirs.as_deref().unwrap_or_default())?;
         if !upload_allowed_dirs.is_empty() {
             info!(
                 "upload_media file_path is enabled for: {:?}",
                 upload_allowed_dirs
             );
+        }
+
+        let allowed_post_types = config.post_types.clone().unwrap_or_default();
+        for post_type in &allowed_post_types {
+            if !is_slug(post_type) || matches!(post_type.as_str(), "post" | "page") {
+                return Err(format!(
+                    "post_types: '{post_type}' is not a custom post type name (lowercase letters, digits, '_' and '-'; post and page are always allowed)"
+                ));
+            }
         }
 
         Ok(Self {
@@ -1466,6 +2568,8 @@ impl WordPressHandler {
             rate_limiter,
             audit_logger,
             upload_allowed_dirs: Arc::new(upload_allowed_dirs),
+            allowed_post_types: Arc::new(allowed_post_types),
+            type_endpoints: Default::default(),
         })
     }
 
@@ -1480,7 +2584,11 @@ impl WordPressHandler {
         result: &Result<serde_json::Value, McpError>,
         started: std::time::Instant,
     ) {
-        let success = result.is_ok();
+        // `Ok`でも、結果が`isError: true`なら失敗として記録する（#759。
+        // 例: サイトが503を返した`wordpress_health_check`）
+        let success = result
+            .as_ref()
+            .is_ok_and(|value| value.get("isError") != Some(&serde_json::Value::Bool(true)));
         let level = if success {
             AuditLevel::Info
         } else {
@@ -1509,15 +2617,19 @@ impl WordPressHandler {
         }
     }
 
-    /// リクエストを送り、成功（2xx）の応答を返す。一時的な失敗は最大
-    /// `MAX_RETRIES`回まで再送するが、再送するかどうかは失敗の種類と
-    /// HTTPメソッドで決める（#388）。
+    /// リクエストを送り、成功（2xx）の応答の本文まで受け取る。一時的な
+    /// 失敗は最大`MAX_RETRIES`回まで再送するが、再送するかどうかは失敗の
+    /// 種類とHTTPメソッドで決める（#388）。
     ///
     /// - 接続できなかった・429: リクエストはWordPressで処理されていない
     ///   ため、メソッドを問わず再送する
     /// - タイムアウト・送信後のエラー・5xx: WordPressで処理済みの可能性が
     ///   ある。GET・PUT等の繰り返しても結果が変わらないメソッドだけ再送し、
     ///   POST（作成の重複）・DELETE（2回目が404）は再送しない
+    /// - 成功の状態コードの後、本文の受信が途中で失敗した（期限切れ・接続の
+    ///   切断）: 再送してよいメソッドなら再送する（#750）。POST・DELETEは
+    ///   処理済みなので再送せず、結果を確かめる案内（`NOT_RESENT_NOTE`）を
+    ///   付ける。受信しきった本文の解析の失敗は、呼び出し元で扱い、再送しない
     ///
     /// `build_request`は試行ごとに呼ばれる。`multipart::Form`を使う
     /// リクエストは`try_clone()`で複製できない（内部でストリームを保持して
@@ -1525,43 +2637,114 @@ impl WordPressHandler {
     async fn send_with_retry(
         &self,
         build_request: impl Fn() -> Result<reqwest::RequestBuilder, McpError>,
-    ) -> Result<reqwest::Response, McpError> {
+    ) -> Result<ReceivedResponse, McpError> {
+        self.send_with_retry_within(build_request, None).await
+    }
+
+    /// `send_with_retry`と同じだが、一覧の全件取得（`fetch_all_pages`）の
+    /// 1ページとして、成功の応答の本文を一覧の残りの量（`budget`）までしか
+    /// 読まない。受け取った分は、失敗した試行の分も`budget`に足す（#759。
+    /// 以前は1ページを読み終えてから合計を確かめ、受信に失敗した分は数えて
+    /// いなかった）
+    async fn send_with_retry_within(
+        &self,
+        build_request: impl Fn() -> Result<reqwest::RequestBuilder, McpError>,
+        mut budget: Option<&mut ListReadBudget>,
+    ) -> Result<ReceivedResponse, McpError> {
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY: Duration = Duration::from_millis(1000);
 
         for attempt in 1..=MAX_RETRIES {
+            // 一覧の残りが無ければ、送らない。本文の受信に失敗した試行で
+            // 残りを使い切ったときに、同じページを送り直さないように
+            // （PR #763のレビュー）
+            if let Some(budget) = budget.as_deref() {
+                if budget.bytes >= budget.max_bytes {
+                    return Err(budget.too_large());
+                }
+            }
             let request = build_request()?.build().map_err(McpError::Http)?;
             let method = request.method().clone();
             let resend_safe = is_safe_to_resend(&method);
+            let body_resend_safe = resend_safe && method != reqwest::Method::PUT;
             let is_last = attempt == MAX_RETRIES;
 
             match self.client.execute(request).await {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        return Ok(response);
-                    }
-
-                    let transient = is_retryable_status(status);
-                    let retry = status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || (transient && resend_safe);
-                    if retry && !is_last {
-                        warn!(
-                            "HTTP error {} on attempt {} ({}), retrying...",
-                            status, attempt, method
-                        );
+                        let headers = response.headers().clone();
+                        // 一覧の残りが1回の上限より少なければ、残りまでしか読まない
+                        let remaining = budget
+                            .as_deref()
+                            .map(|budget| budget.max_bytes.saturating_sub(budget.bytes));
+                        let list_limited =
+                            remaining.is_some_and(|remaining| remaining < MAX_RESPONSE_BYTES);
+                        let limit = remaining.map_or(MAX_RESPONSE_BYTES, |remaining| {
+                            remaining.min(MAX_RESPONSE_BYTES)
+                        });
+                        let mut received = 0;
+                        let read = read_body_counted(response, limit, &mut received, || {
+                            match budget.as_deref() {
+                                Some(budget) if list_limited => budget.too_large(),
+                                _ => McpError::ExternalApi(format!(
+                                    "the WordPress response is larger than {} MB, the most mcp-rs reads for one request",
+                                    MAX_RESPONSE_BYTES / (1024 * 1024)
+                                )),
+                            }
+                        })
+                        .await;
+                        if let Some(budget) = budget.as_deref_mut() {
+                            budget.bytes += received;
+                        }
+                        match read {
+                            Ok(body) => return Ok(ReceivedResponse { headers, body }),
+                            // 本文の受信の途中で失敗した。再送するのは読むだけの
+                            // 要求に限る。PUTは成功が分かっていて、送り直しても
+                            // 書き込みを繰り返すだけなので、POSTと同じく案内する
+                            // （#774）
+                            Err(McpError::Http(e)) if body_resend_safe => {
+                                warn!(
+                                    "Failed to receive the response body on attempt {} ({}): {}",
+                                    attempt, method, e
+                                );
+                                if is_last {
+                                    return Err(McpError::Http(e));
+                                }
+                            }
+                            // POST・PUT・DELETEは、WordPressで処理済み（作成・
+                            // 変更・削除された）なので、やり直さないよう案内する
+                            Err(e) if !body_resend_safe => {
+                                return Err(McpError::ExternalApi(format!(
+                                    "WordPress accepted the request ({}), but receiving its response failed: {}{}",
+                                    status, e, NOT_RESENT_NOTE
+                                )));
+                            }
+                            // 大きすぎる応答は、再送しても同じ
+                            Err(e) => return Err(e),
+                        }
                     } else {
-                        // 本文のcode/messageを診断用に含める
-                        // （例: rest_post_invalid_id）
-                        let body = read_error_body(response).await;
-                        let mut message = format_wp_error(status, &body);
-                        if attempt > 1 {
-                            message.push_str(&format!(" (after {} attempts)", attempt));
+                        let transient = is_retryable_status(status);
+                        let retry = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || (transient && resend_safe);
+                        if retry && !is_last {
+                            warn!(
+                                "HTTP error {} on attempt {} ({}), retrying...",
+                                status, attempt, method
+                            );
+                        } else {
+                            // 本文のcode/messageを診断用に含める
+                            // （例: rest_post_invalid_id）
+                            let body = read_error_body(response).await;
+                            let mut message = format_wp_error(status, &body);
+                            if attempt > 1 {
+                                message.push_str(&format!(" (after {} attempts)", attempt));
+                            }
+                            if transient && !retry {
+                                message.push_str(NOT_RESENT_NOTE);
+                            }
+                            return Err(McpError::ExternalApi(message));
                         }
-                        if transient && !retry {
-                            message.push_str(NOT_RESENT_NOTE);
-                        }
-                        return Err(McpError::ExternalApi(message));
                     }
                 }
                 Err(e) => {
@@ -1614,9 +2797,8 @@ impl WordPressHandler {
             .await?;
         // 本文はログに出さない。context=editの応答には投稿の
         // 閲覧パスワードや未公開の下書き等が含まれうるため
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        debug!("Response body: {} bytes", text.len());
-        parse_success_body(&text)
+        debug!("Response body: {} bytes", response.body.len());
+        parse_success_body(&response.body)
     }
 
     /// `execute_request_with_retry`と同じだが、リクエストを`try_clone()`で
@@ -1631,43 +2813,46 @@ impl WordPressHandler {
         T: for<'de> serde::Deserialize<'de>,
     {
         let response = self.send_with_retry(|| Ok(build_request())).await?;
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        parse_success_body(&text)
+        parse_success_body(&response.body)
     }
 
     /// `execute_request_with_retry`と同じリトライ処理に加え、
     /// WordPress REST APIのページネーションヘッダー（`X-WP-TotalPages`）
-    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。最後の値は、
-    /// 読んだ本文の大きさ（バイト）
+    /// を読み取って返す。一覧系エンドポイントの全件取得に使う。`budget`を
+    /// 渡せば、本文を一覧の残りの量までしか読まず、読んだ分を足す
+    /// （`send_with_retry_within`）
     async fn execute_request_with_retry_capturing_total_pages<T>(
         &self,
         request_builder: reqwest::RequestBuilder,
-    ) -> Result<(T, u32, u64, usize), McpError>
+        budget: Option<&mut ListReadBudget>,
+    ) -> Result<(T, u32, u64), McpError>
     where
         T: for<'de> serde::Deserialize<'de>,
     {
         let response = self
-            .send_with_retry(|| {
-                request_builder
-                    .try_clone()
-                    .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))
-            })
+            .send_with_retry_within(
+                || {
+                    request_builder
+                        .try_clone()
+                        .ok_or_else(|| McpError::Other("Failed to clone request".to_string()))
+                },
+                budget,
+            )
             .await?;
         let total_pages = response
-            .headers()
+            .headers
             .get("x-wp-totalpages")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(1);
         let total_items = response
-            .headers()
+            .headers
             .get("x-wp-total")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        let data = parse_success_body(&text)?;
-        Ok((data, total_pages, total_items, text.len()))
+        let data = parse_success_body(&response.body)?;
+        Ok((data, total_pages, total_items))
     }
 
     /// 一覧系エンドポイントを`per_page=100`かつ`X-WP-TotalPages`に基づく
@@ -1678,6 +2863,17 @@ impl WordPressHandler {
     /// `items.len()`と一致するはずで、食い違う場合はページネーション
     /// 自体に問題がある可能性を示す（呼び出し側で打ち切りの有無を
     /// 判別する材料として使える）。
+    ///
+    /// 読んでいる間に一覧が変わると（先頭に1件増え、末尾が1件減る等）、
+    /// 前のページの最後が次のページに再び現れ、件数も合うので気付けない
+    /// （#755）。ページをまたいで同じIDが現れたら、初めから1度だけ読み直し、
+    /// それでも重なればエラーにする。総件数・総ページ数が1ページ目から
+    /// 変わったときも同じ（#759。消えた分だけ後ろがずれ、1件欠ける）
+    ///
+    /// 同じ時点の一覧であることは保証しない（#774）。読んだページで1件消え、
+    /// 読んでいないページで1件増えると、件数も変わらず重なりも無いまま1件
+    /// 欠ける。既定の並び（日付の新しい順）では新しい項目は1ページ目に入る
+    /// ので起きにくい。全件を返すツールの説明にも書く
     async fn fetch_all_pages<T>(
         &self,
         url_for_page: impl Fn(u32) -> String,
@@ -1685,45 +2881,26 @@ impl WordPressHandler {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        let mut all_items: Vec<T> = Vec::new();
-        let mut page: u32 = 1;
-        let mut read_bytes: usize = 0;
-
-        let total_items: u64 = loop {
-            let url = url_for_page(page);
-            let mut request = self.client.get(&url);
-
-            if let (Some(username), Some(password)) = (&self.username, &self.password) {
-                request = request.basic_auth(username, Some(password));
-            }
-
-            let (items, total_pages, reported_total, bytes): (Vec<T>, u32, u64, usize) = self
-                .execute_request_with_retry_capturing_total_pages(request)
-                .await?;
-
-            all_items.extend(items);
-            read_bytes += bytes;
-            if read_bytes > MAX_LIST_BYTES {
-                return Err(McpError::ExternalApi(format!(
-                    "the WordPress list is larger than {} MB in total, the most mcp-rs reads for one list",
-                    MAX_LIST_BYTES / (1024 * 1024)
-                )));
-            }
-
-            if page >= total_pages.max(1) {
-                break reported_total;
-            }
-            // `X-WP-TotalPages`をそのまま信じない（#598）
-            if page >= MAX_LIST_PAGES {
+        // 読み直しも、1つの一覧で読む量の上限（ページ数・バイト数）に含める
+        // （PR #757のレビュー。読み直しで上限の2倍を読まないように）
+        let mut budget = ListReadBudget::default();
+        let (all_items, total_items) = match self
+            .fetch_all_pages_once(&url_for_page, &mut budget)
+            .await?
+        {
+            Some(read) => read,
+            None => {
                 warn!(
-                    "fetch_all_pages: WordPress reports {} pages; read only the first {} ({} items)",
-                    total_pages,
-                    MAX_LIST_PAGES,
-                    all_items.len()
+                    "fetch_all_pages: the list changed while it was being read; reading it again"
                 );
-                break reported_total;
+                self.fetch_all_pages_once(&url_for_page, &mut budget)
+                    .await?
+                    .ok_or_else(|| {
+                        McpError::ExternalApi(
+                            "the WordPress list changed while mcp-rs was reading it page by page (the same item appeared on two pages, the total changed, or a page went out of range, even after reading it again), so the list would be inaccurate. Try again later".to_string(),
+                        )
+                    })?
             }
-            page += 1;
         };
 
         if total_items != all_items.len() as u64 {
@@ -1734,7 +2911,120 @@ impl WordPressHandler {
             );
         }
 
+        let all_items = all_items
+            .into_iter()
+            .map(serde_json::from_value::<T>)
+            .collect::<Result<Vec<T>, _>>()
+            .map_err(|e| {
+                warn!(
+                    "JSON parse error on a successful response (not retried): {}",
+                    e
+                );
+                McpError::ExternalApi(format!(
+                    "WordPress processed the request, but its response could not be parsed: {}",
+                    e
+                ))
+            })?;
         Ok((all_items, total_items))
+    }
+
+    /// `fetch_all_pages`の1回分の読み込み。項目は、IDを確かめるため、型に
+    /// する前の形で返す。ページをまたいで同じIDが現れたら`None`（#755）。
+    /// 総件数・総ページ数が1ページ目から変わったときも`None`（#759）
+    async fn fetch_all_pages_once(
+        &self,
+        url_for_page: &impl Fn(u32) -> String,
+        budget: &mut ListReadBudget,
+    ) -> Result<Option<(Vec<serde_json::Value>, u64)>, McpError> {
+        let mut all_items: Vec<serde_json::Value> = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        // 1ページ目の`X-WP-TotalPages`・`X-WP-Total`
+        let mut first_totals: Option<(u32, u64)> = None;
+        let mut page: u32 = 1;
+
+        let total_items: u64 = loop {
+            // 読み直しで、前の読み込みの分と合わせて上限に達していれば、次の
+            // ページを要求しない（PR #757のレビュー。応答の後で確かめるだけ
+            // だと、上限を超えて1ページ読む）。最初の読み込みでは、応答の後の
+            // 確かめで先に止まるので、ここには来ない
+            if budget.pages >= MAX_LIST_PAGES {
+                return Err(McpError::ExternalApi(format!(
+                    "the WordPress list changed while mcp-rs was reading it, and reading it again would go over the {MAX_LIST_PAGES} pages mcp-rs reads for one list. Try again later"
+                )));
+            }
+            // 合計の上限まで読み終えていれば、次のページを要求しない（#759）
+            if budget.bytes >= budget.max_bytes {
+                return Err(budget.too_large());
+            }
+            let url = url_for_page(page);
+            let mut request = self.client.get(&url);
+
+            if let (Some(username), Some(password)) = (&self.username, &self.password) {
+                request = request.basic_auth(username, Some(password));
+            }
+
+            // 本文は一覧の残りの量までしか読まず、読んだ分（受信に失敗した
+            // 試行の分も）は`budget.bytes`に足される（#759）
+            let (items, total_pages, reported_total): (Vec<serde_json::Value>, u32, u64) =
+                match self
+                    .execute_request_with_retry_capturing_total_pages(request, Some(&mut *budget))
+                    .await
+                {
+                    Ok(read) => read,
+                    // 読んでいる間に一覧が減り、このページが範囲の外になった
+                    // （WordPressは400の`rest_post_invalid_page_number`等を
+                    // 返す）。一覧が変わったとして、初めから読み直す（PR #763の
+                    // レビュー）
+                    Err(e) if page > 1 && is_invalid_page_number_error(&e) => {
+                        budget.pages += 1;
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(e),
+                };
+
+            // 重なりを見つけて捨てるページも、読んだ量に数える
+            budget.pages += 1;
+            // IDの無い項目は確かめない
+            if items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_u64()))
+                .any(|id| !seen_ids.insert(id))
+            {
+                return Ok(None);
+            }
+            // 読んでいる間に、読み終えたページの項目が消える（増える）と、
+            // 後ろのページがずれて1件欠ける（重なる）。欠けたときは、件数の
+            // 照合も通ってしまうので、1ページ目の総件数・総ページ数から
+            // 変わったら読み直す（#759）
+            match first_totals {
+                None => first_totals = Some((total_pages, reported_total)),
+                Some(first) if first != (total_pages, reported_total) => return Ok(None),
+                Some(_) => {}
+            }
+            all_items.extend(items);
+
+            if page >= total_pages.max(1) {
+                break reported_total;
+            }
+            // `X-WP-TotalPages`をそのまま信じない（#598）。途中までの一覧を
+            // 全件として返さず、エラーにする（呼び出し元は件数しか出さない
+            // ので、欠けていることが伝わらない。#692）
+            if budget.pages >= MAX_LIST_PAGES {
+                if total_pages <= MAX_LIST_PAGES {
+                    // 一覧は上限に収まるが、読み直しの分で上限に達した
+                    return Err(McpError::ExternalApi(format!(
+                        "the WordPress list changed while mcp-rs was reading it, and reading it again would go over the {MAX_LIST_PAGES} pages mcp-rs reads for one list. Try again later"
+                    )));
+                }
+                return Err(McpError::ExternalApi(format!(
+                    "WordPress reports {total_pages} pages ({reported_total} items) for this list, more than the {MAX_LIST_PAGES} pages ({} items) mcp-rs reads for one list, so the list would be incomplete. For posts and pages, read one page at a time with per_page and page, or narrow the list with search or other filters",
+                    MAX_LIST_PAGES * 100
+                )));
+            }
+            page += 1;
+        };
+
+        Ok(Some((all_items, total_items)))
     }
 
     /// 投稿の一覧。`status`が無ければ、公開済みの投稿だけ（WordPressの
@@ -1792,8 +3082,8 @@ impl WordPressHandler {
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
-        let (items, total_pages, total, _bytes): (Vec<WordPressPost>, u32, u64, usize) = self
-            .execute_request_with_retry_capturing_total_pages(request)
+        let (items, total_pages, total): (Vec<WordPressPost>, u32, u64) = self
+            .execute_request_with_retry_capturing_total_pages(request, None)
             .await?;
         Ok((
             items,
@@ -1831,7 +3121,7 @@ impl WordPressHandler {
         post_type: &str,
         include_raw: bool,
     ) -> Result<WordPressPost, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Fetching WordPress {}: {}", post_type, post_id);
@@ -1893,32 +3183,42 @@ impl WordPressHandler {
         validate_post_status(&params.status, params.date.as_deref())?;
 
         // 投稿タイプに応じてエンドポイントを決定
-        let endpoint = endpoint_for_post_type(&params.post_type);
+        let endpoint = self.post_type_endpoint(&params.post_type).await?;
+        check_terms_conflict(
+            params.terms.as_ref(),
+            params.categories.is_some(),
+            params.tags.is_some(),
+        )?;
+        self.check_terms_taxonomies(
+            &params.post_type,
+            params.terms.as_ref(),
+            params.categories.as_deref(),
+            params.tags.as_deref(),
+            true,
+        )
+        .await?;
         let url = format!("{}/wp-json/wp/v2/{}", self.base_url, endpoint);
         let post_data = advanced_post_body(params);
 
-        let mut request = self.client.post(&url);
+        let mut request = self.client.post(&url).json(&post_data);
 
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             request = request.basic_auth(username, Some(password));
         }
 
-        let response = request.json(&post_data).send().await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            // WordPressのエラーコード（empty_content等）を含めないと、
-            // 失敗の原因が分からない
-            let body = read_error_body(response).await;
-            return Err(McpError::ExternalApi(format_wp_error(status, &body)));
-        }
-
-        let text = read_body_limited(response, MAX_RESPONSE_BYTES).await?;
-        let created_post: WordPressPost = serde_json::from_str(&text)?;
-        Ok(created_post)
+        // 429・接続の失敗だけ再送する（POSTなので、5xx・期限切れは再送せず、
+        // 確かめる案内を付ける。#750）。WordPressのエラーコード
+        // （empty_content等）は`format_wp_error`でエラーに含まれる
+        self.execute_request_with_retry(request).await
     }
 
-    async fn get_comments(&self, post_id: Option<u64>) -> Result<Vec<WordPressComment>, McpError> {
+    /// コメントの一覧。`status`を渡せば、その状態のコメント（#639）。
+    /// 渡さなければ、WordPressの既定（承認済み）
+    async fn get_comments(
+        &self,
+        post_id: Option<u64>,
+        status: Option<&str>,
+    ) -> Result<Vec<WordPressComment>, McpError> {
         let (items, _total) = self
             .fetch_all_pages(|page| {
                 let mut url = format!(
@@ -1928,10 +3228,577 @@ impl WordPressHandler {
                 if let Some(post_id) = post_id {
                     url = format!("{}&post={}", url, post_id);
                 }
+                if let Some(status) = status {
+                    url = format!("{}&status={}", url, status);
+                }
                 url
             })
             .await?;
         Ok(items)
+    }
+
+    /// コメントを1件読む（#639）
+    async fn get_comment(&self, comment_id: u64) -> Result<WordPressComment, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments/{}", self.base_url, comment_id);
+        let mut request = self.client.get(&url);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        self.execute_request_with_retry(request).await
+    }
+
+    /// コメントを作る（返信は`parent`付き）（#639）。書いた人は、設定した
+    /// WordPressのユーザーになる
+    async fn create_comment(
+        &self,
+        post_id: u64,
+        parent: Option<u64>,
+        content: &str,
+        status: &str,
+    ) -> Result<WordPressComment, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments", self.base_url);
+        let mut body = serde_json::json!({
+            "post": post_id,
+            "content": content,
+            "status": status,
+        });
+        if let Some(parent) = parent {
+            body["parent"] = serde_json::json!(parent);
+        }
+        let mut request = self.client.post(&url).json(&body);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Creating WordPress comment on post {} (parent: {:?}, status: {})",
+            post_id, parent, status
+        );
+        // `status`を送るには`moderate_comments`の権限が要る（#759）。無ければ
+        // WordPressは`rest_comment_invalid_status`で断る。`status`を外して
+        // 送り直すと、すぐに公開されうるので、そうせず権限を案内する
+        self.execute_request_with_retry(request)
+            .await
+            .map_err(|e| match e {
+                McpError::ExternalApi(message)
+                    if message.contains("(rest_comment_invalid_status)") =>
+                {
+                    McpError::ExternalApi(format!(
+                        "{message}. The configured WordPress user cannot set a comment's status: create_comment always sets it ('{status}'), which needs the moderate_comments capability (Editor or Administrator role). Use a user with that capability, or reply in the WordPress admin"
+                    ))
+                }
+                other => other,
+            })
+    }
+
+    /// コメントの状態・本文を変える（#639）
+    async fn update_comment(
+        &self,
+        comment_id: u64,
+        status: Option<&str>,
+        content: Option<&str>,
+    ) -> Result<WordPressComment, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments/{}", self.base_url, comment_id);
+        let mut body = serde_json::Map::new();
+        if let Some(status) = status {
+            body.insert("status".to_string(), serde_json::json!(status));
+        }
+        if let Some(content) = content {
+            body.insert("content".to_string(), serde_json::json!(content));
+        }
+        let mut request = self.client.post(&url).json(&body);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Updating WordPress comment {} (status: {:?}, content: {})",
+            comment_id,
+            status,
+            content.is_some()
+        );
+        self.execute_request_with_retry(request).await
+    }
+
+    /// コメントを消す（#639）。`force`が偽ならゴミ箱へ
+    async fn delete_comment(
+        &self,
+        comment_id: u64,
+        force: bool,
+    ) -> Result<serde_json::Value, McpError> {
+        let url = format!("{}/wp-json/wp/v2/comments/{}", self.base_url, comment_id);
+        let mut request = self.client.delete(&url);
+        if force {
+            request = request.query(&[("force", "true")]);
+        }
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Deleting WordPress comment {} (force: {})",
+            comment_id, force
+        );
+        self.execute_request_with_retry(request).await
+    }
+
+    /// 投稿タイプのREST APIの場所（#642）。`post`・`page`はそのまま。
+    /// カスタム投稿タイプは、設定の`post_types`にあるものだけを、サイトの
+    /// `/wp/v2/types/<名前>`の`rest_base`で（`wp/v2`にあるものだけ）
+    async fn post_type_endpoint(&self, post_type: &str) -> Result<String, McpError> {
+        match post_type {
+            "post" => return Ok("posts".to_string()),
+            "page" => return Ok("pages".to_string()),
+            _ => {}
+        }
+        if !is_slug(post_type) {
+            return Err(McpError::InvalidParams(format!(
+                "post_type '{}' is not a post type name",
+                truncate_chars_with_ellipsis(post_type, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
+        if !self.allowed_post_types.iter().any(|t| t == post_type) {
+            return Err(McpError::InvalidParams(format!(
+                "post_type '{post_type}' is not allowed: mcp-rs uses only post, page{}. To use it, add it to post_types in [handlers.wordpress] (see get_post_types)",
+                self.allowed_post_types
+                    .iter()
+                    .map(|t| format!(", {t}"))
+                    .collect::<String>()
+            )));
+        }
+        if let Some(endpoint) = self.type_endpoints.lock().await.get(post_type) {
+            return Ok(endpoint.clone());
+        }
+        let url = format!("{}/wp-json/wp/v2/types/{}", self.base_url, post_type);
+        let info: serde_json::Value = self.fetch_json(&url, None).await.map_err(|e| {
+            McpError::ExternalApi(format!(
+                "post type '{post_type}' was not found in the site's REST API: {e}"
+            ))
+        })?;
+        let namespace = info
+            .get("rest_namespace")
+            .and_then(|v| v.as_str())
+            .unwrap_or("wp/v2");
+        let endpoint = info
+            .get("rest_base")
+            .and_then(|v| v.as_str())
+            .filter(|base| is_slug(base) && namespace == "wp/v2")
+            .ok_or_else(|| {
+                McpError::ExternalApi(format!(
+                    "post type '{post_type}' is not available under /wp/v2 of the REST API (namespace '{namespace}'), so mcp-rs cannot use it"
+                ))
+            })?
+            .to_string();
+        self.type_endpoints
+            .lock()
+            .await
+            .insert(post_type.to_string(), endpoint.clone());
+        Ok(endpoint)
+    }
+
+    /// `terms`のタクソノミーが、投稿タイプに登録されているかを確かめる（#684）。
+    /// WordPressは登録されていないタクソノミーの項目を黙って無視するため、
+    /// 送る前に`/wp/v2/taxonomies?type=<投稿タイプ>`で調べて、無いものは断る。
+    /// `terms`が空なら調べない。
+    ///
+    /// `categories`・`tags`（空でないIDを渡したか）も同じく確かめる（#755）。
+    /// 固定ページ等、その分類の無い投稿タイプに送ると、WordPressは黙って
+    /// 無視し、成功と返してしまうため。空の配列は、無視されても結果が同じ
+    /// なので断らない（クライアントが空の配列を送ることがある）。投稿
+    /// （`post`）はいつも両方を持つので、タクソノミーの一覧は読まない。
+    ///
+    /// `check_ids`なら、`terms`・`categories`・`tags`の項目IDが、サイトに
+    /// あるかも確かめる（#774、#779）。WordPressは無いIDを黙って飛ばし、
+    /// ほかの項目を外して成功と返すため。投稿（`post`）でも確かめる。空の
+    /// 配列（全部外す）は調べない。一覧の絞り込みでは、無いIDは結果が
+    /// 減るだけなので調べない
+    async fn check_terms_taxonomies(
+        &self,
+        post_type: &str,
+        terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
+        categories: Option<&[u64]>,
+        tags: Option<&[u64]>,
+        check_ids: bool,
+    ) -> Result<(), McpError> {
+        let terms = terms.filter(|terms| !terms.is_empty());
+        let builtin: Vec<(&str, &[u64])> = [("categories", categories), ("tags", tags)]
+            .into_iter()
+            .filter_map(|(name, ids)| ids.filter(|ids| !ids.is_empty()).map(|ids| (name, ids)))
+            .collect();
+        // 投稿（`post`）の`categories`・`tags`は、`/wp/v2`の標準のタクソノミー。
+        // ほかの投稿タイプでは、一覧で名前空間を確かめてから調べる（PR #781の
+        // レビュー）
+        if post_type == "post" {
+            if terms.is_some() {
+                self.check_taxonomies_of_type(post_type, terms, &[], check_ids)
+                    .await?;
+            }
+            if check_ids {
+                for (name, ids) in builtin {
+                    self.check_term_ids(name, name, ids).await?;
+                }
+            }
+        } else if terms.is_some() || !builtin.is_empty() {
+            self.check_taxonomies_of_type(post_type, terms, &builtin, check_ids)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// `check_terms_taxonomies`のうち、`/wp/v2/taxonomies?type=<投稿タイプ>`を
+    /// 読んで確かめる部分。`builtin`は、確かめる`categories`・`tags`の名前と
+    /// ID
+    async fn check_taxonomies_of_type(
+        &self,
+        post_type: &str,
+        terms: Option<&std::collections::BTreeMap<String, Vec<u64>>>,
+        builtin: &[(&str, &[u64])],
+        check_ids: bool,
+    ) -> Result<(), McpError> {
+        let url = format!(
+            "{}/wp-json/wp/v2/taxonomies?type={}",
+            self.base_url, post_type
+        );
+        let taxonomies: serde_json::Map<String, serde_json::Value> =
+            self.fetch_json(&url, None).await.map_err(|e| {
+                McpError::ExternalApi(format!(
+                    "could not check the taxonomies of post type '{post_type}' for {}: {e}",
+                    if terms.is_some() {
+                        "terms".to_string()
+                    } else {
+                        builtin
+                            .iter()
+                            .map(|(name, _)| *name)
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    }
+                ))
+            })?;
+        let valid: Vec<&str> = taxonomies
+            .values()
+            .filter_map(|info| info.get("rest_base").and_then(|b| b.as_str()))
+            .collect();
+        let valid_label = if valid.is_empty() {
+            "none".to_string()
+        } else {
+            valid.join(", ")
+        };
+        if let Some((missing, _)) = builtin.iter().find(|(name, _)| !valid.contains(name)) {
+            return Err(McpError::InvalidParams(format!(
+                "{missing}: post type '{post_type}' has no {missing} taxonomy, so WordPress would ignore them. Remove {missing}. Taxonomies of '{post_type}': {valid_label}"
+            )));
+        }
+        if let Some(unknown) = terms
+            .into_iter()
+            .flat_map(|terms| terms.keys())
+            .find(|key| !valid.contains(&key.as_str()))
+        {
+            return Err(McpError::InvalidParams(format!(
+                "terms: '{unknown}' is not a taxonomy of post type '{post_type}'. Valid: {valid_label}"
+            )));
+        }
+        if !check_ids {
+            return Ok(());
+        }
+        // 項目のIDが、そのタクソノミーにあるかを確かめる（#774）。WordPressは
+        // 無いIDを黙って飛ばし、ほかの項目を外して成功と返すため。空の配列
+        // （全部外す）は調べない。`/wp/v2`の外のタクソノミーは、一覧の形が
+        // 違いうるので調べない（`categories`・`tags`も同じ。PR #781のレビュー）
+        let in_wp_v2 = |rest_base: &str| {
+            taxonomies.values().any(|info| {
+                info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base)
+                    && info
+                        .get("rest_namespace")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("wp/v2")
+                        == "wp/v2"
+            })
+        };
+        for (rest_base, ids) in terms.into_iter().flatten() {
+            if in_wp_v2(rest_base) && !ids.is_empty() {
+                self.check_term_ids(&format!("terms.{rest_base}"), rest_base, ids)
+                    .await?;
+            }
+        }
+        for (name, ids) in builtin {
+            if in_wp_v2(name) {
+                self.check_term_ids(name, name, ids).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 1つのタクソノミーの項目IDが、サイトにあるかを確かめる（#774）。
+    /// `/wp/v2/<rest_base>?include=<ID>`で読み、返らなかったIDは断る。1回に
+    /// 読めるのは100件なので、100件ずつ読む。`field`は、エラーに出す引数の
+    /// 名前（`terms.<rest_base>`・`categories`・`tags`。#779）
+    async fn check_term_ids(
+        &self,
+        field: &str,
+        rest_base: &str,
+        ids: &[u64],
+    ) -> Result<(), McpError> {
+        let ids: Vec<u64> = ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<u64>>()
+            .into_iter()
+            .collect();
+        let mut missing = Vec::new();
+        for chunk in ids.chunks(100) {
+            let include = chunk
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let url = format!(
+                "{}/wp-json/wp/v2/{}?include={}&per_page=100&_fields=id",
+                self.base_url, rest_base, include
+            );
+            let found: Vec<serde_json::Value> = self.fetch_json(&url, None).await.map_err(|e| {
+                McpError::ExternalApi(format!("could not check the IDs in {field}: {e}"))
+            })?;
+            let found: std::collections::HashSet<u64> = found
+                .iter()
+                .filter_map(|term| term.get("id").and_then(|id| id.as_u64()))
+                .collect();
+            missing.extend(chunk.iter().filter(|id| !found.contains(id)));
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let list_tool = match field {
+            "categories" => "get_categories",
+            "tags" => "get_tags",
+            _ => "get_terms",
+        };
+        Err(McpError::InvalidParams(format!(
+            "{field}: no term with ID {} in '{rest_base}'. WordPress would skip it and still remove the other terms. See {list_tool}",
+            missing
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
+
+    /// 投稿の、独自のタクソノミーの項目（#642）。例: `product_cat: 12, 15`。
+    /// タクソノミーが読めなければ`None`
+    async fn custom_terms_label(&self, post_type: &str, post: &WordPressPost) -> Option<String> {
+        let url = format!(
+            "{}/wp-json/wp/v2/taxonomies?type={}",
+            self.base_url, post_type
+        );
+        let taxonomies: serde_json::Map<String, serde_json::Value> =
+            self.fetch_json(&url, None).await.ok()?;
+        let parts: Vec<String> = taxonomies
+            .values()
+            .filter_map(|info| info.get("rest_base").and_then(|b| b.as_str()))
+            .filter_map(|base| {
+                let ids = post.extra.get(base)?.as_array()?;
+                let ids: Vec<String> = ids
+                    .iter()
+                    .filter_map(|id| id.as_u64())
+                    .map(|id| id.to_string())
+                    .collect();
+                Some(format!(
+                    "{base}: {}",
+                    if ids.is_empty() {
+                        "none".to_string()
+                    } else {
+                        ids.join(", ")
+                    }
+                ))
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
+
+    /// タクソノミーの項目の一覧（#642）。`taxonomy`は、タクソノミーの名前か
+    /// `rest_base`。サイトの`/wp/v2/taxonomies`で、`wp/v2`の場所を確かめる。
+    /// 名前と`rest_base`が別々のタクソノミーに合うときは、`rest_base`の合う方を
+    /// 読む（#774。`terms`の鍵も`rest_base`で、`rest_base`は重ならないので、
+    /// どのタクソノミーも`rest_base`で選べる）。応答の先に出た方を黙って選ばない
+    async fn get_terms(&self, taxonomy: &str) -> Result<Vec<serde_json::Value>, McpError> {
+        if !is_slug(taxonomy) {
+            return Err(McpError::InvalidParams(format!(
+                "taxonomy '{}' is not a taxonomy name",
+                truncate_chars_with_ellipsis(taxonomy, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
+        let taxonomies: serde_json::Map<String, serde_json::Value> = self
+            .fetch_json(&format!("{}/wp-json/wp/v2/taxonomies", self.base_url), None)
+            .await?;
+        let in_wp_v2: Vec<(&String, &str)> = taxonomies
+            .iter()
+            .filter_map(|(slug, info)| {
+                let base = info.get("rest_base").and_then(|b| b.as_str())?;
+                let namespace = info
+                    .get("rest_namespace")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("wp/v2");
+                (namespace == "wp/v2" && is_slug(base)).then_some((slug, base))
+            })
+            .collect();
+        let rest_base = in_wp_v2
+            .iter()
+            .find(|(_, base)| *base == taxonomy)
+            .or_else(|| in_wp_v2.iter().find(|(slug, _)| *slug == taxonomy))
+            .map(|(_, base)| base.to_string())
+            .ok_or_else(|| {
+                McpError::InvalidParams(format!(
+                    "taxonomy '{taxonomy}' was not found under /wp/v2 of the site's REST API (see get_taxonomies)"
+                ))
+            })?;
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/{}?per_page=100&page={}",
+                    self.base_url, rest_base, page
+                )
+            })
+            .await?;
+        Ok(items)
+    }
+
+    /// 投稿・固定ページのリビジョンの一覧（#641）。新しい順
+    async fn get_revisions(
+        &self,
+        post_id: u64,
+        post_type: &str,
+    ) -> Result<Vec<WordPressRevision>, McpError> {
+        let endpoint = self.post_type_endpoint(post_type).await?;
+        let (items, _total) = self
+            .fetch_all_pages(|page| {
+                format!(
+                    "{}/wp-json/wp/v2/{}/{}/revisions?per_page=100&page={}",
+                    self.base_url, endpoint, post_id, page
+                )
+            })
+            .await?;
+        Ok(items)
+    }
+
+    /// リビジョンを1つ、編集用の原文（`context=edit`）も含めて読む（#641）
+    async fn get_revision(
+        &self,
+        post_id: u64,
+        revision_id: u64,
+        post_type: &str,
+    ) -> Result<WordPressRevision, McpError> {
+        let endpoint = self.post_type_endpoint(post_type).await?;
+        let url = format!(
+            "{}/wp-json/wp/v2/{}/{}/revisions/{}",
+            self.base_url, endpoint, post_id, revision_id
+        );
+        let revision: WordPressRevision = self.fetch_json(&url, Some("edit")).await?;
+        // 別の投稿のリビジョンを、この投稿に書き戻さない
+        if revision.parent != 0 && revision.parent != post_id {
+            return Err(McpError::InvalidParams(format!(
+                "revision {} belongs to {} {}, not {}",
+                revision_id, post_type, revision.parent, post_id
+            )));
+        }
+        Ok(revision)
+    }
+
+    /// 投稿を、リビジョンのタイトル・本文・抜粋に書き戻す（#641）。状態・
+    /// 公開日時・スラッグ等は変えない。リビジョンが有効なサイトでは、
+    /// WordPressが書き戻す前の内容をリビジョンとして残すので、たいていは
+    /// 元に戻せる。サイトの設定（`WP_POST_REVISIONS`で無効・1件だけ等）に
+    /// よっては残らないので、必ず残したいときは先に`get_post`で読んでおく（#684）
+    async fn restore_revision(
+        &self,
+        post_id: u64,
+        revision_id: u64,
+        post_type: &str,
+    ) -> Result<(WordPressRevision, WordPressPost, Vec<&'static str>), McpError> {
+        let revision = self.get_revision(post_id, revision_id, post_type).await?;
+        // 項目が無い（投稿タイプが対応していない）ものは送らない。項目が
+        // あって原文が無ければ、表示用のHTMLで上書きしないよう断る（#774）
+        let mut body = serde_json::Map::new();
+        let mut restored = Vec::new();
+        for (field, content) in [
+            ("title", &revision.title),
+            ("content", &revision.content),
+            ("excerpt", &revision.excerpt),
+        ] {
+            let Some(content) = content else {
+                continue;
+            };
+            let raw = content.raw.clone().ok_or_else(|| {
+                McpError::ExternalApi(format!(
+                    "WordPress did not return the {field} of revision {revision_id} as source: restoring needs credentials with edit permission"
+                ))
+            })?;
+            body.insert(field.to_string(), serde_json::json!(raw));
+            restored.push(field);
+        }
+        if restored.is_empty() {
+            return Err(McpError::ExternalApi(format!(
+                "revision {revision_id} has no title, content or excerpt to restore"
+            )));
+        }
+
+        let endpoint = self.post_type_endpoint(post_type).await?;
+        let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
+        let mut request = self.client.post(&url).json(&body);
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        info!(
+            "Restoring WordPress {} {} to revision {}",
+            post_type, post_id, revision_id
+        );
+        let post = self.execute_request_with_retry(request).await?;
+        Ok((revision, post, restored))
+    }
+
+    /// 投稿者の名前をまとめて読む（#684）。重ならないIDごとに同時に聞き、
+    /// 全体で`limit`（ふつうは`AUTHOR_NAMES_TIMEOUT`）までしか待たない。
+    /// 読めなかった人は`user {ID}`にする
+    async fn user_names(
+        &self,
+        user_ids: impl IntoIterator<Item = u64>,
+        limit: Duration,
+    ) -> HashMap<u64, String> {
+        let mut ids: Vec<u64> = user_ids.into_iter().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let deadline = tokio::time::Instant::now() + limit;
+        let names = futures::future::join_all(
+            ids.iter()
+                .map(|&id| tokio::time::timeout_at(deadline, self.user_name(id))),
+        )
+        .await;
+        ids.into_iter()
+            .zip(names)
+            .map(|(id, name)| {
+                let name = name.ok().flatten().unwrap_or_else(|| format!("user {id}"));
+                (id, name)
+            })
+            .collect()
+    }
+
+    /// 投稿者の名前（#641）。読めなければ`None`
+    async fn user_name(&self, user_id: u64) -> Option<String> {
+        let url = format!("{}/wp-json/wp/v2/users/{}", self.base_url, user_id);
+        let user: serde_json::Value = self.fetch_json(&url, None).await.ok()?;
+        user.get("name")
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+    }
+
+    /// GETして、JSONとして読む。`context`があれば付ける
+    async fn fetch_json<T>(&self, url: &str, context: Option<&str>) -> Result<T, McpError>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        let mut request = self.client.get(url);
+        if let Some(context) = context {
+            request = request.query(&[("context", context)]);
+        }
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            request = request.basic_auth(username, Some(password));
+        }
+        self.execute_request_with_retry(request).await
     }
 
     /// Upload media file to WordPress
@@ -2200,32 +4067,72 @@ impl WordPressHandler {
         self.update_settings(params).await
     }
 
-    // YouTube video URL validation
+    /// 動画プレーヤーにできるYouTubeのURLかどうか。`extract_youtube_id`で
+    /// 動画のIDを取り出せるものだけを受け付ける（#680）
     pub fn validate_youtube_url(url: &str) -> bool {
-        url.contains("youtube.com/watch?v=")
-            || url.contains("youtu.be/")
-            || url.contains("youtube.com/embed/")
+        Self::extract_youtube_id(url).is_some()
     }
 
-    // Extract YouTube video ID from URL
+    /// YouTubeのURLから動画のIDを取り出す（#680）。URLを分解し、ホストは
+    /// 下の一覧と完全に一致するものだけを受け付ける（`https://example.org/youtube.com/…`
+    /// のように、パスの中の文字列に引っかからないため）。受け付ける形は
+    /// `youtube.com/watch?v=`（`v`は問い合わせのどこにあってもよい）・`youtu.be/`・
+    /// `youtube.com/embed/`・`youtube.com/shorts/`・`youtube.com/live/`・
+    /// `youtube-nocookie.com/embed/`。パスはこの形と同じ数の要素だけを受け付け
+    /// （末尾の`/`はよい）、`/shorts/<ID>/extra`のような余分な要素があれば断る
     pub fn extract_youtube_id(url: &str) -> Option<String> {
-        // YouTube URL patterns
-        let patterns = [
-            r"(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]+)",
-            r"(?:youtu\.be/)([a-zA-Z0-9_-]+)",
-            r"(?:youtube\.com/embed/)([a-zA-Z0-9_-]+)",
-        ];
-
-        for pattern in &patterns {
-            if let Ok(regex) = Regex::new(pattern) {
-                if let Some(caps) = regex.captures(url) {
-                    if let Some(video_id) = caps.get(1) {
-                        return Some(video_id.as_str().to_string());
-                    }
-                }
-            }
+        let parsed = parse_web_url(url)?;
+        let host = parsed.host_str()?;
+        let segments: Vec<&str> = parsed.path_segments()?.collect();
+        // 末尾の`/`による空の要素を1つだけ外す
+        let path = match segments.as_slice() {
+            [rest @ .., ""] if !rest.is_empty() => rest,
+            all => all,
+        };
+        if host == YOUTUBE_SHORT_LINK_HOST {
+            return match path {
+                [id] => youtube_video_id(id),
+                _ => None,
+            };
         }
-        None
+        if YOUTUBE_NOCOOKIE_HOSTS.contains(&host) {
+            return match path {
+                ["embed", id] => youtube_video_id(id),
+                _ => None,
+            };
+        }
+        if !YOUTUBE_HOSTS.contains(&host) {
+            return None;
+        }
+        match path {
+            ["watch"] => parsed
+                .query_pairs()
+                .find(|(key, _)| key == "v")
+                .and_then(|(_, id)| youtube_video_id(&id)),
+            ["embed" | "shorts" | "live", id] => youtube_video_id(id),
+            _ => None,
+        }
+    }
+
+    /// YouTubeのURLから、動画プレーヤーのHTMLを作る。プライバシー強化モード
+    /// （`youtube-nocookie.com`）のURLなら、そのホストのまま埋め込む（#759。
+    /// 以前は動画のIDだけを取り出し、`www.youtube.com`で埋め込んでいた）。
+    /// 動画のIDを取り出せなければ`None`
+    pub fn youtube_embed_for_url(url: &str) -> Option<String> {
+        let video_id = Self::extract_youtube_id(url)?;
+        let nocookie = parse_web_url(url)
+            .and_then(|parsed| {
+                parsed
+                    .host_str()
+                    .map(|host| YOUTUBE_NOCOOKIE_HOSTS.contains(&host))
+            })
+            .unwrap_or(false);
+        let host = if nocookie {
+            "www.youtube-nocookie.com"
+        } else {
+            "www.youtube.com"
+        };
+        Some(youtube_iframe(host, &video_id, None, None))
     }
 
     // Generate YouTube embed HTML
@@ -2234,27 +4141,37 @@ impl WordPressHandler {
         width: Option<u32>,
         height: Option<u32>,
     ) -> String {
-        let w = width.unwrap_or(560);
-        let h = height.unwrap_or(315);
-        format!(
-            r#"<iframe width="{}" height="{}" src="https://www.youtube.com/embed/{}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>"#,
-            w, h, video_id
-        )
+        youtube_iframe("www.youtube.com", video_id, width, height)
     }
 
-    // Validate social media URLs
+    /// 本文に足すSNSのURLなら、そのサービスの名前を返す。URLを分解し、ホストが
+    /// `SOCIAL_EMBED_HOSTS`と完全に一致し、パスが決まった形で始まるものだけを
+    /// 受け付ける（#680。以前は文字列を含むかだけを見ていて、`netflix.com/`も
+    /// `x.com/`として受け付けていた）
     pub fn validate_social_url(url: &str) -> Option<&'static str> {
-        if url.contains("twitter.com/") || url.contains("x.com/") {
-            Some("twitter")
-        } else if url.contains("instagram.com/p/") {
-            Some("instagram")
-        } else if url.contains("facebook.com/") {
-            Some("facebook")
-        } else if url.contains("tiktok.com/") {
-            Some("tiktok")
-        } else {
-            None
-        }
+        let parsed = parse_web_url(url)?;
+        let host = parsed.host_str()?;
+        SOCIAL_EMBED_HOSTS
+            .iter()
+            .find(|(_, hosts, path_prefix)| {
+                hosts.contains(&host) && parsed.path().starts_with(path_prefix)
+            })
+            .map(|(service, _, _)| *service)
+    }
+
+    /// `create_post_with_embeds`が本文に足さないURL（受け付けない形のYouTubeの
+    /// URLと、対応しないサービスのURL）。黙って捨てずに応答で知らせる（#680）
+    fn skipped_embed_urls<'a>(youtube_urls: &[&'a str], social_urls: &[&'a str]) -> Vec<&'a str> {
+        youtube_urls
+            .iter()
+            .filter(|url| !Self::validate_youtube_url(url))
+            .chain(
+                social_urls
+                    .iter()
+                    .filter(|url| Self::validate_social_url(url).is_none()),
+            )
+            .copied()
+            .collect()
     }
 
     // Create post with embedded content (YouTube, social media)
@@ -2269,15 +4186,10 @@ impl WordPressHandler {
         let mut full_content = content.to_string();
 
         // Add YouTube embeds
+        // 動画のIDを取り出せないURLは足さない（`skipped_embed_urls`で応答に出す）
         for url in youtube_urls {
-            if Self::validate_youtube_url(url) {
-                if let Some(video_id) = Self::extract_youtube_id(url) {
-                    let embed = Self::generate_youtube_embed(&video_id, None, None);
-                    full_content.push_str(&format!("\n\n{}", embed));
-                } else {
-                    // Fallback: just add the URL for WordPress oEmbed
-                    full_content.push_str(&format!("\n\n{}", url));
-                }
+            if let Some(embed) = Self::youtube_embed_for_url(url) {
+                full_content.push_str(&format!("\n\n{}", embed));
             }
         }
 
@@ -2310,9 +4222,9 @@ impl WordPressHandler {
     /// 読み取り用の`WordPressPost`をそのまま送っており、タイトル・本文が
     /// WordPressに読まれず常にHTTP 400になっていた。
     ///
-    /// 以前は`execute_request_with_retry`で5xx・429を再送していたが、
-    /// `create_advanced_post`は再送しない。投稿の作成（POST）を再送すると、
-    /// 1回目が実は成功していた場合に投稿が重複しうるため、意図的にそろえている。
+    /// 再送は`create_advanced_post`（`send_with_retry`）に任せる。POSTなので、
+    /// WordPressに届いていない`429`・接続の失敗だけ再送し、5xx・期限切れは
+    /// 再送しない（1回目が実は成功していた場合に、投稿が重複しうるため）。
     async fn create_post_with_featured_image(
         &self,
         title: String,
@@ -2355,6 +4267,8 @@ impl WordPressHandler {
             featured_media_id,
             meta: None,
             slug: None,
+            excerpt: None,
+            terms: None,
         })
         .await
     }
@@ -2386,17 +4300,41 @@ impl WordPressHandler {
         post_type: &str,
         params: PostUpdateParams,
     ) -> Result<WordPressPost, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
+        check_terms_conflict(
+            params.terms.as_ref(),
+            params.categories.is_some(),
+            params.tags.is_some(),
+        )?;
+        self.check_terms_taxonomies(
+            post_type,
+            params.terms.as_ref(),
+            params.categories.as_deref(),
+            params.tags.as_deref(),
+            true,
+        )
+        .await?;
+        // この確認は、書き込むときにもIDがあることまでは保証しない。確認の後、
+        // 書き込みの前に別の管理者が項目を消すと、WordPressはそのIDを黙って
+        // 飛ばし、ほかの項目を外して成功と返す（PR #781のレビュー。確認と
+        // 書き込みを1つにする方法がREST APIに無いため、そのままにする）
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Updating WordPress {}: {}", post_type, post_id);
 
         // 日付の無い`future`は、すぐに公開されてしまう（#625）。既に予約
-        // 済みの投稿（公開日時が未来）なら、日付を送らなくても予約のまま
-        if params.status.as_deref() == Some("future") {
+        // 済みの投稿（公開日時が未来）なら、日付を送らなくても予約のまま。
+        // そのときは`status`を送らない（#759）。読んだ後に別の編集者が予約を
+        // 取り消していると、`future`を送り直すことで、予約が戻るか、すぐに
+        // 公開されてしまうため
+        let mut status = params.status;
+        if status.as_deref() == Some("future") {
             let has_date = params.date.as_deref().is_some_and(|d| !d.trim().is_empty());
-            if !has_date && self.get_post(post_id, post_type, false).await?.status != "future" {
-                validate_post_status("future", None)?;
+            if !has_date {
+                if self.get_post(post_id, post_type, false).await?.status != "future" {
+                    validate_post_status("future", None)?;
+                }
+                status = None;
             }
         }
 
@@ -2410,12 +4348,23 @@ impl WordPressHandler {
             update_data.insert("content".to_string(), serde_json::Value::String(content));
         }
 
-        if let Some(status) = params.status {
+        if let Some(excerpt) = params.excerpt {
+            update_data.insert("excerpt".to_string(), serde_json::Value::String(excerpt));
+        }
+
+        if let Some(status) = status {
             update_data.insert("status".to_string(), serde_json::Value::String(status));
         }
 
         if let Some(slug) = params.slug {
             update_data.insert("slug".to_string(), serde_json::Value::String(slug));
+        }
+
+        // タクソノミーの項目（#642）
+        if let Some(terms) = params.terms {
+            for (taxonomy, ids) in terms {
+                update_data.insert(taxonomy, serde_json::json!(ids));
+            }
         }
 
         if let Some(date) = params.date.filter(|d| !d.trim().is_empty()) {
@@ -2480,7 +4429,7 @@ impl WordPressHandler {
         post_type: &str,
         force: bool,
     ) -> Result<serde_json::Value, McpError> {
-        let endpoint = endpoint_for_post_type(post_type);
+        let endpoint = self.post_type_endpoint(post_type).await?;
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         let mut request = self.client.delete(&url);
@@ -2826,15 +4775,15 @@ impl WordPressHandler {
             info!("✅ Permissions: OK");
         }
 
-        // 5. Check media upload capability
+        // 5. Check that the media library is readable (upload permission is not checked)
         if let Err(e) = self.check_media_upload_capability().await {
             health
                 .error_details
-                .push(format!("Media upload check failed: {}", e));
-            warn!("❌ Media upload capability: FAILED - {}", e);
+                .push(format!("Media read check failed: {}", e));
+            warn!("❌ Media read: FAILED - {}", e);
         } else {
             health.media_upload_possible = true;
-            info!("✅ Media upload capability: OK");
+            info!("✅ Media read: OK");
         }
 
         if health.error_details.is_empty() {
@@ -2871,9 +4820,10 @@ impl WordPressHandler {
             )));
         }
 
-        let index: serde_json::Value = response
-            .json()
-            .await
+        // 大きな応答でメモリーを使い切らせないよう、上限まで読む（#759）。
+        // 受け取ったバイトのまま解析する（PR #763のレビュー）
+        let body = read_body_bytes_limited(response, MAX_RESPONSE_BYTES).await?;
+        let index: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| McpError::ExternalApi(format!("Failed to parse site info: {}", e)))?;
         let text = |value: &serde_json::Value, key: &str| {
             value
@@ -2976,9 +4926,10 @@ impl WordPressHandler {
         }
 
         // Check if response contains expected namespace
-        let api_info: serde_json::Value = response
-            .json()
-            .await
+        // 大きな応答でメモリーを使い切らせないよう、上限まで読む（#759）。
+        // 受け取ったバイトのまま解析する（PR #763のレビュー）
+        let body = read_body_bytes_limited(response, MAX_RESPONSE_BYTES).await?;
+        let api_info: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| McpError::ExternalApi(format!("Invalid REST API response: {}", e)))?;
 
         if !api_info
@@ -3071,7 +5022,9 @@ impl WordPressHandler {
         Ok(())
     }
 
-    /// Check if media upload is possible
+    /// メディアの一覧を読めるかを確かめる。アップロードの権限
+    /// （`upload_files`）は確かめない（#759。読めても、アップロードは断られる
+    /// ことがある）
     async fn check_media_upload_capability(&self) -> Result<(), McpError> {
         // Check if user can access media endpoint with GET request
         let url = format!("{}/wp-json/wp/v2/media?per_page=1", self.base_url);
@@ -3081,9 +5034,10 @@ impl WordPressHandler {
             request = request.basic_auth(username, Some(password));
         }
 
-        let response = request.send().await.map_err(|e| {
-            McpError::ExternalApi(format!("Media upload capability check failed: {}", e))
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| McpError::ExternalApi(format!("Media read check failed: {}", e)))?;
 
         if !response.status().is_success() {
             return Err(McpError::ExternalApi(format!(
@@ -3092,8 +5046,6 @@ impl WordPressHandler {
             )));
         }
 
-        // If we can read media, we can likely upload (assuming proper permissions)
-        // We could also check upload_max_filesize but that requires admin access
         Ok(())
     }
 }
@@ -3154,37 +5106,27 @@ impl WordPressHandler {
                     "  • Site Accessible: {}\n",
                     if health.site_accessible { "✅" } else { "❌" }
                 ));
+                // サイトに届かなければ、REST API・サインインは試していない
+                // （PR #713のレビュー）
                 report.push_str(&format!(
                     "  • REST API Available: {}\n",
-                    if health.rest_api_available {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_reaching_site(&health, health.rest_api_available)
                 ));
                 report.push_str(&format!(
                     "  • Authentication Valid: {}\n",
-                    if health.authentication_valid {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_reaching_site(&health, health.authentication_valid)
                 ));
+                // サインインが通らなければ、権限・メディアは確かめていない
+                // （#710。以前は❌と出し、失敗したように見えた）
                 report.push_str(&format!(
                     "  • Permissions Adequate: {}\n",
-                    if health.permissions_adequate {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    health_mark_after_sign_in(&health, health.permissions_adequate)
                 ));
+                // メディアの読み取りだけを確かめる。アップロードの権限
+                // （`upload_files`）は確かめていない（#759）
                 report.push_str(&format!(
-                    "  • Media Upload Possible: {}\n",
-                    if health.media_upload_possible {
-                        "✅"
-                    } else {
-                        "❌"
-                    }
+                    "  • Media Readable: {}\n",
+                    health_mark_after_sign_in(&health, health.media_upload_possible)
                 ));
 
                 if !health.error_details.is_empty() {
@@ -3205,16 +5147,31 @@ impl WordPressHandler {
             "get_posts" | "get_pages" => {
                 let args = params.arguments.unwrap_or_default();
                 let (endpoint, with_taxonomies) = if params.name == "get_posts" {
-                    ("posts", true)
+                    // カスタム投稿タイプ（#642）
+                    let post_type = revision_post_type_arg(&args)?;
+                    (self.post_type_endpoint(post_type).await?, true)
                 } else {
-                    ("pages", false)
+                    ("pages".to_string(), false)
                 };
                 let query = post_list_query_arg(&args, with_taxonomies)?;
-                let (items, page) = self.list(endpoint, &query).await?;
+                // その分類を持たない投稿タイプでは、WordPressは絞り込みを
+                // 無視し、絞り込んでいない一覧を返す。書き込みと同じく、
+                // 送る前に確かめる（#759）
+                if params.name == "get_posts" {
+                    self.check_terms_taxonomies(
+                        revision_post_type_arg(&args)?,
+                        None,
+                        Some(&query.categories),
+                        Some(&query.tags),
+                        false,
+                    )
+                    .await?;
+                }
+                let (items, page) = self.list(&endpoint, &query).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": list_result_text(endpoint, &items, page)
+                        "text": list_result_text(&endpoint, &items, page)
                     }],
                     "isError": false
                 }))
@@ -3254,43 +5211,42 @@ impl WordPressHandler {
                     .await?;
 
                 // カテゴリ/タグIDを名前に解決する。一覧取得に失敗しても
-                // get_post自体は失敗させず、数値IDのまま表示する。
-                let categories_names = match self.get_categories().await {
-                    Ok(categories) => {
-                        let id_to_name: HashMap<u64, String> = categories
-                            .into_iter()
-                            .filter_map(|c| c.id.map(|id| (id, c.name)))
-                            .collect();
-                        post.categories
-                            .as_deref()
-                            .map(|ids| resolve_term_names(ids, &id_to_name))
-                            .unwrap_or_default()
-                    }
-                    Err(e) => {
-                        warn!("Failed to resolve category names for get_post: {}", e);
-                        post.categories
-                            .as_deref()
-                            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
-                            .unwrap_or_default()
+                // get_post自体は失敗させず、数値IDのまま表示する。IDの無い
+                // 分類（固定ページ等）は、サイト全体の一覧を取得しない（#759）
+                let category_ids = post.categories.as_deref().unwrap_or_default();
+                let categories_names = if category_ids.is_empty() {
+                    Vec::new()
+                } else {
+                    match self.get_categories().await {
+                        Ok(categories) => {
+                            let id_to_name: HashMap<u64, String> = categories
+                                .into_iter()
+                                .filter_map(|c| c.id.map(|id| (id, c.name)))
+                                .collect();
+                            resolve_term_names(category_ids, &id_to_name)
+                        }
+                        Err(e) => {
+                            warn!("Failed to resolve category names for get_post: {}", e);
+                            category_ids.iter().map(|id| id.to_string()).collect()
+                        }
                     }
                 };
-                let tags_names = match self.get_tags().await {
-                    Ok(tags) => {
-                        let id_to_name: HashMap<u64, String> = tags
-                            .into_iter()
-                            .filter_map(|t| t.id.map(|id| (id, t.name)))
-                            .collect();
-                        post.tags
-                            .as_deref()
-                            .map(|ids| resolve_term_names(ids, &id_to_name))
-                            .unwrap_or_default()
-                    }
-                    Err(e) => {
-                        warn!("Failed to resolve tag names for get_post: {}", e);
-                        post.tags
-                            .as_deref()
-                            .map(|ids| ids.iter().map(|id| id.to_string()).collect())
-                            .unwrap_or_default()
+                let tag_ids = post.tags.as_deref().unwrap_or_default();
+                let tags_names = if tag_ids.is_empty() {
+                    Vec::new()
+                } else {
+                    match self.get_tags().await {
+                        Ok(tags) => {
+                            let id_to_name: HashMap<u64, String> = tags
+                                .into_iter()
+                                .filter_map(|t| t.id.map(|id| (id, t.name)))
+                                .collect();
+                            resolve_term_names(tag_ids, &id_to_name)
+                        }
+                        Err(e) => {
+                            warn!("Failed to resolve tag names for get_post: {}", e);
+                            tag_ids.iter().map(|id| id.to_string()).collect()
+                        }
                     }
                 };
 
@@ -3315,18 +5271,38 @@ impl WordPressHandler {
                 // タイトルも本文と同じ形で返す（rawならHTMLエンティティ化
                 // されていない原文）
                 let title = post_content_for_display(&post.title, format);
-                let content_body = post_content_for_display(&post.content, format);
-                let note = protected_content_note(&post)
-                    .map(|note| format!("Note: {}\n", note))
-                    .unwrap_or_default();
+                // 抜粋（#774）。抜粋に対応しない投稿タイプでは無い
+                let excerpt = post
+                    .excerpt
+                    .as_ref()
+                    .map(|excerpt| post_content_for_display(excerpt, format))
+                    .unwrap_or_else(|| "(none)".to_string());
+                // 本文のない投稿タイプ（#684）では、空の本文として見せない
+                let content_body = match &post.content {
+                    Some(content) => post_content_for_display(content, format),
+                    None => "(none)".to_string(),
+                };
+                let mut note = match &post.content {
+                    Some(_) => protected_content_note(&post),
+                    None => Some(NO_CONTENT_FIELD_NOTE),
+                }
+                .map(|note| format!("Note: {}\n", note))
+                .unwrap_or_default();
+                // カスタム投稿タイプの、独自のタクソノミーの項目（#642）
+                if !matches!(post_type, "post" | "page") {
+                    if let Some(terms) = self.custom_terms_label(post_type, &post).await {
+                        note = format!("Terms: {terms}\n{note}");
+                    }
+                }
 
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nStatus: {}\nDate: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
+                        "text": format!("Post Details:\nID: {}\nFormat: {}\nTitle: {}\nExcerpt: {}\nStatus: {}\nDate: {}\nSlug: {}\nCategories: {}\nTags: {}\nFeatured Media: {}\n{}Content:\n{}",
                             post.id.map(|id| id.to_string()).unwrap_or_else(|| "N/A".to_string()),
                             post_format_label(&post, format),
                             title,
+                            excerpt,
                             post.status,
                             post_date_label(&post),
                             post_slug_label(&post),
@@ -3397,15 +5373,9 @@ impl WordPressHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let categories = args
-                    .get("categories")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
+                let categories = term_ids_arg(&args, "categories")?;
 
-                let tags = args
-                    .get("tags")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
+                let tags = term_ids_arg(&args, "tags")?;
 
                 let featured_media_id = args.get("featured_media_id").and_then(|v| v.as_u64());
 
@@ -3416,6 +5386,18 @@ impl WordPressHandler {
                 });
 
                 let slug = optional_slug_arg(&args)?;
+
+                // 抜粋（#759。`draft_post`のプロンプトが書かせる）
+                let excerpt = match args.get("excerpt") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::String(excerpt)) => Some(excerpt.clone()),
+                    Some(_) => {
+                        return Err(McpError::InvalidParams(
+                            "excerpt must be a string".to_string(),
+                        ))
+                    }
+                };
+                let excerpt_given = excerpt.is_some();
 
                 let post = self
                     .create_advanced_post(PostCreateParams {
@@ -3429,8 +5411,20 @@ impl WordPressHandler {
                         featured_media_id,
                         meta,
                         slug,
+                        excerpt,
+                        terms: terms_arg(&args)?,
                     })
                     .await?;
+
+                // 抜粋に対応しない投稿タイプ（固定ページ等）では、WordPressは
+                // 抜粋を黙って捨て、応答にも`excerpt`が無い（PR #763のレビュー）。
+                // 作り直させないよう、作ったことと、抜粋は保存されていない
+                // ことを伝える
+                let excerpt_note = if excerpt_given && post.excerpt.is_none() {
+                    ". WordPress did not save the excerpt: this post type does not support excerpts. The item is saved, so do not create it again"
+                } else {
+                    ""
+                };
 
                 // 要求した値ではなく、WordPressが実際に設定したステータスを
                 // 示す（権限不足でpendingに落とされる場合等がある）
@@ -3438,11 +5432,12 @@ impl WordPressHandler {
                     "content": [{
                         "type": "text",
                         "text": format!(
-                            "Created {} with ID: {} (Status: {}, Slug: {})",
+                            "Created {} with ID: {} (Status: {}, Slug: {}){}",
                             if post_type == "page" { "page" } else { "post" },
                             display_opt_id(post.id),
                             post.status,
-                            post_slug_label(&post)
+                            post_slug_label(&post),
+                            excerpt_note
                         )
                     }],
                     "isError": false
@@ -3450,9 +5445,16 @@ impl WordPressHandler {
             }
             "get_comments" => {
                 let args = params.arguments.unwrap_or_default();
-                let post_id = args.get("post_id").and_then(|v| v.as_u64());
+                // 読めない値で、絞らずに全投稿のコメントを返さないように（#774）
+                let post_id = match args.get("post_id") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(positive_integer_id(value).ok_or_else(|| {
+                        McpError::InvalidParams("post_id must be a positive integer".to_string())
+                    })?),
+                };
+                let status = comment_status_arg(&args, "status", COMMENT_LIST_STATUSES)?;
 
-                let comments = self.get_comments(post_id).await?;
+                let comments = self.get_comments(post_id, status.as_deref()).await?;
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3678,10 +5680,30 @@ impl WordPressHandler {
                         slug,
                     )
                     .await?;
+                // 無いメディアのIDでも、WordPressは投稿を保存して201を返す
+                // （#750）。作り直させないよう、成功として投稿のIDを返し、
+                // 画像は付いていないことを伝える
+                let text = if post.featured_media == Some(featured_media_id) {
+                    format!(
+                        "Created post with featured image. Post ID: {}, Status: {}, Slug: {}",
+                        display_opt_id(post.id),
+                        post.status,
+                        post_slug_label(&post)
+                    )
+                } else {
+                    format!(
+                        "Created post, but WordPress did not set media {} as its featured image (featured_media is {}); the media ID may not exist. Post ID: {}, Status: {}, Slug: {}. The post is saved, so do not create it again: check the media ID with get_media, then use set_featured_image with this post ID",
+                        featured_media_id,
+                        display_opt_id(post.featured_media),
+                        display_opt_id(post.id),
+                        post.status,
+                        post_slug_label(&post)
+                    )
+                };
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Created post with featured image. Post ID: {}, Status: {}, Slug: {}", display_opt_id(post.id), post.status, post_slug_label(&post))
+                        "text": text
                     }],
                     "isError": false
                 }))
@@ -3698,6 +5720,23 @@ impl WordPressHandler {
                     .ok_or_else(|| McpError::InvalidParams("Missing media_id".to_string()))?;
 
                 let post = self.set_featured_image(post_id, media_id).await?;
+                // WordPressは、画像を設定できなくても投稿の更新の応答を返す
+                // ことがある（#759）。`create_post_with_featured_image`と
+                // 同じく、応答の`featured_media`で確かめる
+                if post.featured_media != Some(media_id) {
+                    return Ok(serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!(
+                                "WordPress did not set media {} as the featured image of post {} (featured_media is {}); the media ID may not exist. Check the media ID with get_media",
+                                media_id,
+                                post_id,
+                                display_opt_id(post.featured_media)
+                            )
+                        }],
+                        "isError": true
+                    }));
+                }
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
@@ -3867,15 +5906,9 @@ impl WordPressHandler {
 
                 let status = post_status_or_draft(&args)?;
 
-                let categories: Option<Vec<u64>> = args
-                    .get("categories")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                let categories = term_ids_arg(&args, "categories")?;
 
-                let tags: Option<Vec<u64>> = args
-                    .get("tags")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                let tags = term_ids_arg(&args, "tags")?;
 
                 let featured_media_id = args.get("featured_media_id").and_then(|v| v.as_u64());
                 let slug = optional_slug_arg(&args)?;
@@ -3918,15 +5951,9 @@ impl WordPressHandler {
                     .and_then(|v| v.as_str())
                     .unwrap_or("post");
 
-                let categories: Option<Vec<u64>> = args
-                    .get("categories")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                let categories = term_ids_arg(&args, "categories")?;
 
-                let tags: Option<Vec<u64>> = args
-                    .get("tags")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                let tags = term_ids_arg(&args, "tags")?;
 
                 let post = self
                     .update_post_categories_tags(post_id, post_type, categories, tags)
@@ -3972,18 +5999,44 @@ impl WordPressHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let categories = args
-                    .get("categories")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                let categories = term_ids_arg(&args, "categories")?;
 
-                let tags = args
-                    .get("tags")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect());
+                let tags = term_ids_arg(&args, "tags")?;
 
                 let featured_media_id = args.get("featured_media_id").and_then(|v| v.as_u64());
                 let slug = optional_slug_arg(&args)?;
+                // 抜粋（#774）。`create_advanced_post`と同じく、文字列だけ受ける
+                let excerpt = match args.get("excerpt") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::String(excerpt)) => Some(excerpt.clone()),
+                    Some(_) => {
+                        return Err(McpError::InvalidParams(
+                            "excerpt must be a string".to_string(),
+                        ))
+                    }
+                };
+                let excerpt_given = excerpt.is_some();
+                let terms = terms_arg(&args)?;
+                // 抜粋のほかに、WordPressに送る項目があるか（#779）。空の`date`・
+                // 空の`terms`（`{}`）は送らない。日時の無い`future`も、予約済みの
+                // 投稿なら送らない（予約済みでなければ、`update_post`がエラーにする）
+                let date_given = date.as_deref().is_some_and(|d| !d.trim().is_empty());
+                let status_sent = status
+                    .as_deref()
+                    .is_some_and(|s| s != "future" || date_given);
+                // 空の`categories`・`tags`（全部外す）は、投稿タイプに無いかを
+                // 確かめずに送るので、応答にその項目があるときだけ数える
+                // （PR #781のレビュー）
+                let categories_cleared = categories.as_ref().is_some_and(|c| c.is_empty());
+                let tags_cleared = tags.as_ref().is_some_and(|t| t.is_empty());
+                let content_given = content.is_some();
+                let other_given = title.is_some()
+                    || status_sent
+                    || date_given
+                    || categories.as_ref().is_some_and(|c| !c.is_empty())
+                    || tags.as_ref().is_some_and(|t| !t.is_empty())
+                    || slug.is_some()
+                    || terms.as_ref().is_some_and(|t| !t.is_empty());
 
                 let post = self
                     .update_post(
@@ -3992,6 +6045,7 @@ impl WordPressHandler {
                         PostUpdateParams {
                             title,
                             content,
+                            excerpt,
                             status,
                             date,
                             categories,
@@ -3999,15 +6053,421 @@ impl WordPressHandler {
                             featured_media_id,
                             meta: None,
                             slug,
+                            terms,
                         },
                     )
                     .await?;
 
+                // 抜粋に対応しない投稿タイプでは、WordPressは抜粋を黙って捨てる
+                // （`create_advanced_post`と同じ）
+                let excerpt_dropped = excerpt_given && post.excerpt.is_none();
+                // アイキャッチ画像は、応答に反映されたときだけ数える（対応しない
+                // 投稿タイプでは、WordPressは黙って無視する。PR #781のレビュー）
+                // 本文も、応答に本文があるときだけ数える（本文に対応しない投稿
+                // タイプでは、WordPressは黙って無視する。PR #773の3回目のレビュー）
+                let other_given = other_given
+                    || (content_given && post.content.is_some())
+                    || (categories_cleared && post.categories.is_some())
+                    || (tags_cleared && post.tags.is_some())
+                    || featured_media_id.is_some_and(|id| post.featured_media == Some(id));
+                // 抜粋だけを渡したなら、保存したいものが保存されていないので
+                // エラーにする（#779）。WordPressは更新日時だけは変えるので、
+                // 「何も変わっていない」とは言わない（PR #781のレビュー）
+                if excerpt_dropped && !other_given {
+                    return Ok(serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!(
+                                "WordPress did not save the excerpt of {post_type} ID {post_id}, because this post type does not support excerpts. No other change was given"
+                            )
+                        }],
+                        "isError": true
+                    }));
+                }
+                let excerpt_note = if excerpt_dropped {
+                    ". WordPress did not save the excerpt: this post type does not support excerpts. The other changes are saved"
+                } else {
+                    ""
+                };
+
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Date: {}, Slug: {}",
-                            post_type, post_id, post.title.rendered, post.status, post_date_label(&post), post_slug_label(&post))
+                        "text": format!("Updated {} ID {} - Title: '{}', Status: {}, Date: {}, Slug: {}{}",
+                            post_type, post_id, post.title.rendered, post.status, post_date_label(&post), post_slug_label(&post), excerpt_note)
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_post_types" => {
+                let types: serde_json::Map<String, serde_json::Value> = self
+                    .fetch_json(&format!("{}/wp-json/wp/v2/types", self.base_url), None)
+                    .await?;
+                let mut lines = Vec::new();
+                for (slug, info) in &types {
+                    let allowed = matches!(slug.as_str(), "post" | "page")
+                        || self.allowed_post_types.iter().any(|t| t == slug);
+                    let taxonomies = info
+                        .get("taxonomies")
+                        .and_then(|t| t.as_array())
+                        .map(|t| {
+                            t.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "{} ({}): {}; taxonomies: {}",
+                        slug,
+                        info.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                        if allowed {
+                            "usable"
+                        } else {
+                            "not allowed (add it to post_types in [handlers.wordpress] to use it)"
+                        },
+                        if taxonomies.is_empty() {
+                            "none"
+                        } else {
+                            &taxonomies
+                        }
+                    ));
+                }
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} post types:\n{}", lines.len(), lines.join("\n"))
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_taxonomies" => {
+                let args = params.arguments.unwrap_or_default();
+                let mut url = format!("{}/wp-json/wp/v2/taxonomies", self.base_url);
+                if let Some(post_type) = args.get("post_type").and_then(|v| v.as_str()) {
+                    if !is_slug(post_type) {
+                        return Err(McpError::InvalidParams(
+                            "post_type is not a post type name".to_string(),
+                        ));
+                    }
+                    url = format!("{url}?type={post_type}");
+                }
+                let taxonomies: serde_json::Map<String, serde_json::Value> =
+                    self.fetch_json(&url, None).await?;
+                let lines: Vec<String> = taxonomies
+                    .iter()
+                    .map(|(slug, info)| {
+                        let text = |key: &str| {
+                            info.get(key)
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        };
+                        let types = info
+                            .get("types")
+                            .and_then(|t| t.as_array())
+                            .map(|t| {
+                                t.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        format!(
+                            "{} ({}): rest_base {} (the key in terms and in posts), hierarchical: {}, post types: {}",
+                            slug,
+                            text("name"),
+                            text("rest_base"),
+                            info.get("hierarchical")
+                                .and_then(|h| h.as_bool())
+                                .unwrap_or(false),
+                            types
+                        )
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} taxonomies:\n{}", lines.len(), lines.join("\n"))
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_terms" => {
+                let args = params.arguments.unwrap_or_default();
+                let taxonomy = args
+                    .get("taxonomy")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::InvalidParams("Missing taxonomy".to_string()))?;
+                let terms = self.get_terms(taxonomy).await?;
+                let lines: Vec<String> = terms
+                    .iter()
+                    .map(|term| {
+                        let number =
+                            |key: &str| term.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+                        let text = |key: &str| term.get(key).and_then(|v| v.as_str()).unwrap_or("");
+                        format!(
+                            "ID {}: {} (slug: {}, parent: {}, posts: {})",
+                            number("id"),
+                            text("name"),
+                            text("slug"),
+                            number("parent"),
+                            number("count")
+                        )
+                    })
+                    .collect();
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Found {} terms in {}:\n{}", lines.len(), taxonomy, lines.join("\n"))
+                    }],
+                    "isError": false
+                }))
+            }
+            "get_revisions" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = positive_id_arg(&args, "post_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let post_type = revision_post_type_arg(&args)?;
+
+                let revisions = self.get_revisions(post_id, post_type).await?;
+                let authors = self
+                    .user_names(
+                        revisions
+                            .iter()
+                            .map(|revision| revision.author)
+                            .filter(|author| *author > 0),
+                        AUTHOR_NAMES_TIMEOUT,
+                    )
+                    .await;
+                let lines: Vec<String> = revisions
+                    .iter()
+                    .map(|revision| {
+                        let author = authors
+                            .get(&revision.author)
+                            .map(String::as_str)
+                            .unwrap_or("unknown");
+                        revision_summary(revision, author)
+                    })
+                    .collect();
+                let text = if lines.is_empty() {
+                    format!("{post_type} {post_id} has no revisions.")
+                } else {
+                    format!(
+                        "Found {} revisions of {} {} (newest first):\n{}",
+                        lines.len(),
+                        post_type,
+                        post_id,
+                        lines.join("\n")
+                    )
+                };
+                Ok(serde_json::json!({
+                    "content": [{"type": "text", "text": text}],
+                    "isError": false
+                }))
+            }
+            "get_revision" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = positive_id_arg(&args, "post_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let revision_id = positive_id_arg(&args, "revision_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing revision_id".to_string()))?;
+                let post_type = revision_post_type_arg(&args)?;
+                let format = PostContentFormat::parse(args.get("format"))?;
+
+                let revision = self.get_revision(post_id, revision_id, post_type).await?;
+                let author = self
+                    .user_names([revision.author], AUTHOR_NAMES_TIMEOUT)
+                    .await
+                    .remove(&revision.author)
+                    .unwrap_or_else(|| format!("user {}", revision.author));
+                // 本文の無い型では、`get_post`と同じくタイトルで見る（PR #777の
+                // レビュー）。本文もタイトルも無ければ、抜粋で見る（#779）
+                let has_raw = match (&revision.content, &revision.title) {
+                    (Some(content), _) => content.raw.is_some(),
+                    (None, Some(title)) => title.raw.is_some(),
+                    (None, None) => revision
+                        .excerpt
+                        .as_ref()
+                        .is_some_and(|excerpt| excerpt.raw.is_some()),
+                };
+                let format_label = match format {
+                    PostContentFormat::Raw if has_raw => "raw",
+                    PostContentFormat::Raw => "rendered HTML (raw source unavailable)",
+                    PostContentFormat::Rendered => "rendered HTML",
+                    PostContentFormat::Text => "plain text",
+                };
+                let excerpt = revision
+                    .excerpt
+                    .as_ref()
+                    .map(|e| post_content_for_display(e, format))
+                    .unwrap_or_default();
+                // 投稿タイプが対応していない項目は、空として見せない（#774）
+                let field = |content: &Option<WordPressContent>| {
+                    content
+                        .as_ref()
+                        .map(|c| post_content_for_display(c, format))
+                        .unwrap_or_else(|| "(none)".to_string())
+                };
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Revision Details:\nID: {}\nOf: {} {}\nFormat: {}\nDate: {}\nAuthor: {}\nTitle: {}\nExcerpt: {}\nContent:\n{}",
+                            revision.id,
+                            post_type,
+                            post_id,
+                            format_label,
+                            revision.date.as_deref().unwrap_or("unknown"),
+                            author,
+                            field(&revision.title),
+                            excerpt,
+                            field(&revision.content)
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "restore_revision" => {
+                let args = params.arguments.unwrap_or_default();
+                let post_id = positive_id_arg(&args, "post_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing post_id".to_string()))?;
+                let revision_id = positive_id_arg(&args, "revision_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing revision_id".to_string()))?;
+                let post_type = revision_post_type_arg(&args)?;
+
+                let (revision, post, restored) = self
+                    .restore_revision(post_id, revision_id, post_type)
+                    .await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Restored {} {} to revision {} (from {}): {}. Title: {}, Status: {}. The status, date and slug were not changed. When revisions are enabled on the site, WordPress keeps the content before the restore as a revision, so get_revisions and restore_revision can usually undo it.",
+                            post_type,
+                            post_id,
+                            revision.id,
+                            revision.date.as_deref().unwrap_or("unknown"),
+                            restored.join(", "),
+                            post.title.rendered,
+                            post.status
+                        )
+                    }],
+                    "isError": false
+                }))
+            }
+            "create_comment" => {
+                let args = params.arguments.unwrap_or_default();
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| McpError::InvalidParams("Missing content".to_string()))?;
+                let parent = positive_id_arg(&args, "parent")?;
+                let status = comment_status_arg(&args, "status", &["approve", "hold"])?
+                    .unwrap_or_else(|| DEFAULT_REPLY_STATUS.to_string());
+                // 返信なら、投稿は返信先のコメントから決められる
+                let post_id = match (positive_id_arg(&args, "post_id")?, parent) {
+                    (Some(post_id), _) => post_id,
+                    (None, Some(parent)) => self.get_comment(parent).await?.post,
+                    (None, None) => {
+                        return Err(McpError::InvalidParams(
+                            "Missing post_id (or parent, to reply to a comment)".to_string(),
+                        ))
+                    }
+                };
+
+                let comment = self
+                    .create_comment(post_id, parent, content, &status)
+                    .await?;
+                // WordPressは、権限やディスカッション設定で、頼んだ状態と違う
+                // 状態にすることがある。作り直すと重複するので、作成済みで
+                // あることとIDを返し、update_commentでの直し方を示す（#779）
+                let requested = if status == "approve" {
+                    "approved"
+                } else {
+                    status.as_str()
+                };
+                if let Some(actual) = comment
+                    .status
+                    .as_deref()
+                    .filter(|actual| *actual != requested)
+                {
+                    return Ok(serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": format!(
+                                "The comment was created, but WordPress set its status to '{actual}' instead of '{requested}'. Comment ID: {}. Do not create it again; change the status with update_comment (comment_id: {}, status: {status}) if allowed, or in the WordPress admin.\nCreated comment {}",
+                                display_opt_id(comment.id),
+                                display_opt_id(comment.id),
+                                comment_summary(&comment)
+                            )
+                        }],
+                        "isError": true
+                    }));
+                }
+                let note = if comment.status.as_deref() == Some("hold") {
+                    "\nThe comment is held for moderation and not shown on the site. Approve it with update_comment (status: approve) or in the WordPress admin."
+                } else {
+                    ""
+                };
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Created comment {}{}", comment_summary(&comment), note)
+                    }],
+                    "isError": false
+                }))
+            }
+            "update_comment" => {
+                let args = params.arguments.unwrap_or_default();
+                let comment_id = positive_id_arg(&args, "comment_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing comment_id".to_string()))?;
+                let status = comment_status_arg(&args, "status", COMMENT_SET_STATUSES)?;
+                let content = match args.get("content") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .ok_or_else(|| {
+                                McpError::InvalidParams(
+                                    "content must be a non-empty string".to_string(),
+                                )
+                            })?,
+                    ),
+                };
+                if status.is_none() && content.is_none() {
+                    return Err(McpError::InvalidParams(
+                        "Pass status or content to change".to_string(),
+                    ));
+                }
+
+                let comment = self
+                    .update_comment(comment_id, status.as_deref(), content)
+                    .await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Updated comment {}", comment_summary(&comment))
+                    }],
+                    "isError": false
+                }))
+            }
+            "delete_comment" => {
+                let args = params.arguments.unwrap_or_default();
+                let comment_id = positive_id_arg(&args, "comment_id")?
+                    .ok_or_else(|| McpError::InvalidParams("Missing comment_id".to_string()))?;
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                self.delete_comment(comment_id, force).await?;
+                Ok(serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Deleted comment ID {} ({})",
+                            comment_id,
+                            if force { "permanently" } else { "moved to trash" }
+                        )
                     }],
                     "isError": false
                 }))
@@ -4069,15 +6529,9 @@ impl WordPressHandler {
 
                 let status = post_status_or_draft(&args)?;
 
-                let categories = args
-                    .get("categories")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
+                let categories = term_ids_arg(&args, "categories")?;
 
-                let tags = args
-                    .get("tags")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect::<Vec<u64>>());
+                let tags = term_ids_arg(&args, "tags")?;
 
                 let slug = optional_slug_arg(&args)?;
 
@@ -4092,6 +6546,8 @@ impl WordPressHandler {
                     ..Default::default()
                 };
 
+                let skipped = Self::skipped_embed_urls(&youtube_urls, &social_urls);
+
                 let post = self
                     .create_post_with_embeds(
                         title,
@@ -4102,17 +6558,29 @@ impl WordPressHandler {
                     )
                     .await?;
 
+                let mut text = format!(
+                    "Created {} with embedded content - ID: {}, Title: {}, Status: {}, Slug: {}",
+                    if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" {
+                        "page"
+                    } else {
+                        "post"
+                    },
+                    display_opt_id(post.id),
+                    post.title.rendered,
+                    post.status,
+                    post_slug_label(&post)
+                );
+                if !skipped.is_empty() {
+                    text.push_str(&format!(
+                        "\nNot embedded (unsupported URL): {}",
+                        skipped.join(", ")
+                    ));
+                }
+
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",
-                        "text": format!(
-                            "Created {} with embedded content - ID: {}, Title: {}, Status: {}, Slug: {}",
-                            if post.post_type.as_ref().unwrap_or(&"post".to_string()) == "page" { "page" } else { "post" },
-                            display_opt_id(post.id),
-                            post.title.rendered,
-                            post.status,
-                            post_slug_label(&post)
-                        )
+                        "text": text
                     }],
                     "isError": false
                 }))
@@ -4253,7 +6721,8 @@ impl McpHandler for WordPressHandler {
         let tools = vec![
             Tool {
                 name: "wordpress_health_check".to_string(),
-                description: "Perform comprehensive WordPress environment health check".to_string(),
+                title: Some("Check the WordPress connection".to_string()),
+                description: "Check that mcp-rs can use the WordPress site: whether the site and its REST API answer, whether the credentials sign in, whether the user has the permissions the tools need, and whether the media library can be read. Changes nothing. Use it first when other tools fail. Returns a report with the site name and URL, each check's result, and the reason for each failure.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -4263,7 +6732,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_posts".to_string(),
-                description: "Retrieve WordPress posts (published ones by default). Without search, filters or page options, it returns all posts; with them, one page and the total".to_string(),
+                title: Some("List posts".to_string()),
+                description: "List WordPress posts (or the posts of an allowed custom post type), published ones by default. Use search, categories, tags, author, after and before to narrow them, and get_post to read one post's full content. Any argument other than status (search, a filter, sorting, per_page or page) makes it return one page and the total. With none of them, or with status alone, it returns all posts, but at most 10,000, without the total; on larger sites pass page and per_page and read page after page. The full list is read 100 items at a time, not as one snapshot: if items are added, removed or re-dated while it is read, mcp-rs reads it again when the total changes or an item appears twice, but an item can still be missed in rare cases. Each post has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4277,12 +6747,12 @@ impl McpHandler for WordPressHandler {
                         },
                         "categories": {
                             "type": "array",
-                            "items": {"type": "number"},
+                            "items": {"type": "integer", "minimum": 1},
                             "description": "Only posts in any of these category IDs (optional; get_categories lists them)"
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "number"},
+                            "items": {"type": "integer", "minimum": 1},
                             "description": "Only posts with any of these tag IDs (optional; get_tags lists them)"
                         },
                         "author": {
@@ -4309,7 +6779,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "per_page": {
                             "type": "number",
-                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                            "description": "Items per page, 1-100 (optional). With any argument other than status, only one page is read (default 20 per page), and the result shows the total"
                         },
                         "page": {
                             "type": "number",
@@ -4322,7 +6792,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_pages".to_string(),
-                description: "Retrieve WordPress pages. Without search, filters or page options, it returns all pages; with them, one page and the total".to_string(),
+                title: Some("List pages".to_string()),
+                description: "List WordPress pages (static pages such as About or Contact, not blog posts), published ones by default. Use get_posts for posts and get_post with post_type 'page' to read one page's full content. Any argument other than status (search, a filter, sorting, per_page or page) makes it return one page and the total. With none of them, or with status alone, it returns all pages, but at most 10,000, without the total; on larger sites pass page and per_page and read page after page. The full list is read 100 items at a time, not as one snapshot: if items are added, removed or re-dated while it is read, mcp-rs reads it again when the total changes or an item appears twice, but an item can still be missed in rare cases. Each page has its ID, title, status, date, link, slug and excerpt.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4358,7 +6829,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "per_page": {
                             "type": "number",
-                            "description": "Items per page, 1-100 (optional). With any of search, filters or page options, only one page is read (default 20 per page), and the result shows the total"
+                            "description": "Items per page, 1-100 (optional). With any argument other than status, only one page is read (default 20 per page), and the result shows the total"
                         },
                         "page": {
                             "type": "number",
@@ -4371,7 +6842,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_all_content".to_string(),
-                description: "Retrieve both WordPress posts and pages".to_string(),
+                title: Some("List all posts and pages".to_string()),
+                description: "List the published WordPress posts and the published pages in one call (at most 10,000 of each), for an overview of the whole site. Returns each item's ID, title, status, date, link, slug and excerpt, posts and pages separately. On large sites prefer get_posts or get_pages with search, filters or per_page, which return one page at a time. The full list is read 100 items at a time, not as one snapshot: if items are added, removed or re-dated while it is read, mcp-rs reads it again when the total changes or an item appears twice, but an item can still be missed in rare cases.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -4381,7 +6853,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_post".to_string(),
-                description: "Retrieve a single WordPress post or page by ID, including its full content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged.".to_string(),
+                title: Some("Read a post or page".to_string()),
+                description: "Read one WordPress post, page, or custom post type item by ID, with its full content. Returns the ID, title, status, date, slug, categories, tags, featured image and content. By default the content is the editable source (with Gutenberg block markup), which can be passed back to update_post unchanged. If the credentials cannot edit the item, the content is rendered HTML instead and is labeled so; do not write that back with update_post, because it would replace the blocks. Use get_posts or get_pages to find the ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4408,7 +6881,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post".to_string(),
-                description: "Create a new WordPress post (basic). Defaults to draft status so nothing is published unintentionally.".to_string(),
+                title: Some("Create a post".to_string()),
+                description: "Create a WordPress post with a title and content only. It is a draft unless status says otherwise, so nothing is published by accident. Use create_post_with_categories_tags to also set categories, tags or a featured image, and create_advanced_post for pages, custom post types, scheduling, custom taxonomies or SEO fields. Returns the new post's ID, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4418,12 +6892,11 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post content"
+                            "description": "Body of the post as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "pending", "private"],
-                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "description": "Post status: 'draft' (the default, to avoid accidental publication), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "slug": {
@@ -4437,29 +6910,33 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_advanced_post".to_string(),
-                description: "Create a new WordPress post or page with advanced options"
-                    .to_string(),
+                title: Some("Create a post or page with all options".to_string()),
+                description: "Create a WordPress post, page, or custom post type item with every option: categories, tags, terms of custom taxonomies, featured image, SEO meta fields, slug, excerpt, and a publish date for scheduling (status 'future'). It is a draft unless status says otherwise. Use it to schedule a post or to create a page; create_post is enough for a plain draft post. Returns the new item's ID, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "terms": {
+                            "type": "object",
+                            "description": "Terms of taxonomies, such as a custom post type's own categories: {\"<taxonomy rest_base>\": [term IDs]}, e.g. {\"product_cat\": [12, 15]}. Each listed taxonomy's terms are replaced with the given ones. See get_taxonomies and get_terms",
+                            "additionalProperties": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+                        },
                         "title": {
                             "type": "string",
                             "description": "The post/page title"
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post/page content"
+                            "description": "Body as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "post_type": {
                             "type": "string",
-                            "description": "Post type: 'post' (投稿) or 'page' (固定ページ)",
+                            "description": "'post' (a blog post, the default), 'page' (a static page), or an allowed custom post type.",
                             "enum": ["post", "page"],
                             "default": "post"
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status: 'publish' (公開), 'draft' (下書き), 'pending' (レビュー待ち), 'private' (非公開), 'future' (予約投稿、'date'が必須). Defaults to 'draft' so nothing is published unintentionally.",
-                            "enum": ["publish", "draft", "pending", "private", "future"],
+                            "description": "'draft' (the default, not shown on the site), 'publish' (shown at once), 'pending' (awaiting review), 'private' (only for signed-in editors), 'future' (scheduled; needs date), or a custom status registered on the site (for example by a plugin).",
                             "default": "draft"
                         },
                         "date": {
@@ -4468,13 +6945,13 @@ impl McpHandler for WordPressHandler {
                         },
                         "categories": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Category IDs (posts only)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Category IDs (optional). A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Tag IDs (posts only)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Tag IDs (optional). A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -4488,6 +6965,10 @@ impl McpHandler for WordPressHandler {
                         "slug": {
                             "type": "string",
                             "description": "URL slug (optional). If omitted, WordPress generates one from the title (a Japanese title gives a Japanese slug). Use it to set an ASCII slug, e.g. 'my-first-post'. WordPress may change it (for example, appending '-2' if the slug is already used); the result shows the actual slug"
+                        },
+                        "excerpt": {
+                            "type": "string",
+                            "description": "A short summary of the post (optional), shown in post lists and often used as the meta description. If omitted, WordPress makes one from the content. Custom post types without excerpt support do not keep it: the result then says that the excerpt was not saved (posts and pages keep it)"
                         }
                     },
                     "required": ["title", "content"]
@@ -4496,13 +6977,19 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_comments".to_string(),
-                description: "Retrieve WordPress comments".to_string(),
+                title: Some("List comments".to_string()),
+                description: "List WordPress comments, optionally for one post: ID, post, parent, status, author name, date and content. Only approved comments by default; use status 'hold' to find comments awaiting moderation. Commenters' email and IP addresses are never returned. Use update_comment to approve, hold or mark as spam, create_comment to reply, and delete_comment to delete.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "post_id": {
                             "type": "number",
                             "description": "Optional post ID to filter comments"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": COMMENT_LIST_STATUSES,
+                            "description": "Comment status: 'approve' (approved, the default), 'hold' (awaiting moderation), 'spam', 'trash', or 'all' (approved and awaiting moderation)"
                         }
                     },
                     "required": []
@@ -4510,9 +6997,204 @@ impl McpHandler for WordPressHandler {
                 ..Default::default()
             },
             Tool {
+                name: "get_post_types".to_string(),
+                title: Some("List post types".to_string()),
+                description: "List the site's post types (post, page, and custom ones such as products or events) with their taxonomies, and whether mcp-rs may use each. Custom post types are used only when listed in post_types in the mcp-rs config. Use it before working with custom post types, then get_taxonomies and get_terms for their categories.".to_string(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}, "required": []}),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_taxonomies".to_string(),
+                title: Some("List taxonomies".to_string()),
+                description: "List the site's taxonomies (categories, tags, and custom ones such as product categories) with the post types they belong to and the rest_base to use as the key in the terms argument of create_advanced_post and update_post. Use get_terms next to get the term IDs of one taxonomy.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_type": {
+                            "type": "string",
+                            "description": "Only the taxonomies of this post type"
+                        }
+                    },
+                    "required": []
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_terms".to_string(),
+                title: Some("List the terms of a taxonomy".to_string()),
+                description: "List the terms of one taxonomy (for example the product categories of a shop): ID, name, slug, parent and number of posts. Use the IDs in the terms argument of create_advanced_post and update_post. For the built-in categories and tags, get_categories and get_tags return the same with descriptions.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "taxonomy": {
+                            "type": "string",
+                            "description": "Taxonomy name or rest_base, from get_taxonomies. If it is the name of one taxonomy and the rest_base of another, the one with that rest_base is read"
+                        }
+                    },
+                    "required": ["taxonomy"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_revisions".to_string(),
+                title: Some("List revisions".to_string()),
+                description: "List the revisions (saved earlier versions) of a post or page, newest first: revision ID, date, author, title, length and the start of the content. Needs credentials with edit permission on the post. Use get_revision to read one in full, and restore_revision to go back to it.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Post type of post_id: 'post' (the default), 'page', or an allowed custom post type.",
+                            "default": "post"
+                        }
+                    },
+                    "required": ["post_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "get_revision".to_string(),
+                title: Some("Read a revision".to_string()),
+                description: "Read one revision (an earlier saved version) of a post or page: its title, excerpt and full content, as editable source by default. Use it to compare an old version with the current one (get_post) before restore_revision. Get the revision ID from get_revisions.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID"
+                        },
+                        "revision_id": {
+                            "type": "number",
+                            "description": "Revision ID, from get_revisions"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Post type of post_id: 'post' (the default), 'page', or an allowed custom post type.",
+                            "default": "post"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["raw", "rendered", "text"],
+                            "description": "'raw' (editable source, the default), 'rendered' (HTML), or 'text' (plain text)",
+                            "default": "raw"
+                        }
+                    },
+                    "required": ["post_id", "revision_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "restore_revision".to_string(),
+                title: Some("Restore a revision".to_string()),
+                description: "Restore a post or page to one of its revisions: its title, content and excerpt are replaced with the revision's. The status, publish date, slug, categories and tags are not changed, so a published post stays published with the restored content. The restore can usually be undone the same way, because WordPress keeps the previous content as a revision when revisions are enabled; depending on the site's revision settings it may not be kept, so read the current content with get_post first if it must be kept. Returns the post's ID, title and the restored revision.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID"
+                        },
+                        "revision_id": {
+                            "type": "number",
+                            "description": "Revision ID to restore, from get_revisions"
+                        },
+                        "post_type": {
+                            "type": "string",
+                            "enum": ["post", "page"],
+                            "description": "Post type of post_id: 'post' (the default), 'page', or an allowed custom post type.",
+                            "default": "post"
+                        }
+                    },
+                    "required": ["post_id", "revision_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "create_comment".to_string(),
+                title: Some("Create a comment or reply".to_string()),
+                description: "Create a comment, usually a reply to another comment (parent), as the configured WordPress user. WordPress comments have no drafts, so by default the comment is held for moderation and is not shown on the site until approved (update_comment with status 'approve', or in the WordPress admin). Pass status 'approve' to publish it at once. The status is always sent, so the configured user needs the moderate_comments capability (Editor or Administrator role); without it WordPress refuses the comment. WordPress saves a new comment as approved and then sets the requested status within the same request, so plugins that run when a comment is saved may briefly see a held comment as approved. Returns the new comment's ID, post, parent and status.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "post_id": {
+                            "type": "number",
+                            "description": "Post or page ID to comment on. Optional when parent is given (the post of the parent comment is used)"
+                        },
+                        "parent": {
+                            "type": "number",
+                            "description": "ID of the comment to reply to"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Comment text"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["hold", "approve"],
+                            "description": "'hold' (held for moderation, the default) or 'approve' (published at once)",
+                            "default": DEFAULT_REPLY_STATUS
+                        }
+                    },
+                    "required": ["content"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "update_comment".to_string(),
+                title: Some("Moderate or edit a comment".to_string()),
+                description: "Change a comment's status (approve, hold for moderation, mark as spam, move to trash) or its text. Approving a comment publishes it on the site; marking it as spam or moving it to the trash takes it off the site. Use delete_comment to delete it permanently. Returns the comment's ID, post, parent and new status.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {
+                            "type": "number",
+                            "description": "Comment ID"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": COMMENT_SET_STATUSES,
+                            "description": "'approve' (published), 'hold' (back to awaiting moderation), 'spam', or 'trash'"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "New comment text"
+                        }
+                    },
+                    "required": ["comment_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "delete_comment".to_string(),
+                title: Some("Delete a comment".to_string()),
+                description: "Delete a comment. By default it is moved to the trash, where it can be restored in the WordPress admin; with force: true it is deleted permanently and cannot be restored. To only hide a comment, use update_comment with status 'hold' or 'spam' instead. Returns the comment ID and whether it was trashed or deleted.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {
+                            "type": "number",
+                            "description": "Comment ID"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Delete permanently instead of moving to the trash"
+                        }
+                    },
+                    "required": ["comment_id"]
+                }),
+                ..Default::default()
+            },
+            Tool {
                 name: "upload_media".to_string(),
+                title: Some("Upload a media file".to_string()),
                 description: format!(
-                    "Upload media file to WordPress. Pass either file_data (base64) or file_path. The filename extension and file content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first",
+                    "Upload an image, PDF, video or audio file to the WordPress media library. Pass either file_data (base64, with filename and mime_type) or file_path (a file on the machine where mcp-rs runs, when allowed by upload_allowed_dirs). The filename extension and the file's content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first. Returns the new media ID and URL; use the ID with set_featured_image or featured_media_id.",
                     MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
                 ),
                 input_schema: serde_json::json!({
@@ -4544,7 +7226,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_media".to_string(),
-                description: "Retrieve WordPress media files".to_string(),
+                title: Some("List media files".to_string()),
+                description: "List the files in the WordPress media library (at most 10,000): ID, title, MIME type, URL, alt text and date, with the total number of files. Use get_media_item for one file, update_media to change its title, alt text or caption, and the ID as featured_media_id or with set_featured_image.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -4554,7 +7237,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_media_item".to_string(),
-                description: "Retrieve a single WordPress media item by ID".to_string(),
+                title: Some("Read a media file's details".to_string()),
+                description: "Read one file of the WordPress media library by ID: its title, alt text and URL. Use get_media to find the ID, and update_media to change the title, alt text, caption or description.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4569,9 +7253,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_media".to_string(),
-                description:
-                    "Update WordPress media metadata (title, alt text, caption, description)"
-                        .to_string(),
+                title: Some("Edit media details".to_string()),
+                description: "Change the details of a file in the WordPress media library: title, alt text, caption and description, or attach it to a post. Only the fields given are changed; the file itself is not replaced (upload a new file with upload_media for that). Returns the media ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4597,7 +7280,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "post": {
                             "type": "number",
-                            "description": "Post ID to attach media to"
+                            "description": "ID of the post or page to attach the file to (shown as 'Uploaded to' in the media library). It does not insert the file into the content"
                         }
                     },
                     "required": ["media_id"]
@@ -4606,7 +7289,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_media".to_string(),
-                description: "Delete WordPress media file. WordPress does not support moving media to the trash by default, so force: true is usually required".to_string(),
+                title: Some("Delete a media file".to_string()),
+                description: "Delete a file from the WordPress media library, together with its resized copies. WordPress has no trash for media by default, so force: true is usually required, and the file is then deleted permanently and cannot be restored. Posts that show the file (in their content or as a featured image) will show a broken image. Returns the media ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4625,7 +7309,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_featured_image".to_string(),
-                description: "Create a new WordPress post with featured image".to_string(),
+                title: Some("Create a post with a featured image".to_string()),
+                description: "Create a WordPress post with a title, content and a featured image (the media ID from upload_media or get_media). It is a draft unless status says otherwise. To add a featured image to an existing post, use set_featured_image instead. Returns the new post's ID, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4635,7 +7320,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post content"
+                            "description": "Body of the post as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -4643,8 +7328,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
-                            "enum": ["publish", "draft", "pending", "private"],
+                            "description": "Post status: 'draft' (the default, so nothing is published unintentionally), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "slug": {
@@ -4658,7 +7342,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "set_featured_image".to_string(),
-                description: "Set featured image for existing post".to_string(),
+                title: Some("Set a post's featured image".to_string()),
+                description: "Set or replace the featured image (thumbnail) of an existing post, using a media ID from upload_media or get_media. Only the featured image is changed. Returns the post ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4677,7 +7362,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_categories".to_string(),
-                description: "Retrieve WordPress categories".to_string(),
+                title: Some("List categories".to_string()),
+                description: "List the post categories of the site (at most 10,000): ID, name, slug, description, parent and number of posts. Use the IDs in the categories argument of the post tools and get_posts. For other taxonomies, use get_taxonomies and get_terms.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -4687,7 +7373,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_category".to_string(),
-                description: "Create a new WordPress category".to_string(),
+                title: Some("Create a category".to_string()),
+                description: "Create a post category, optionally under a parent category. Fails if a category with the same name already exists under the same parent: check get_categories first. Returns the new category's ID, to use in the categories argument of the post tools.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4714,7 +7401,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_category".to_string(),
-                description: "Update an existing WordPress category".to_string(),
+                title: Some("Edit a category".to_string()),
+                description: "Change a category's name, description, parent or slug. Only the fields given are changed, and WordPress does not change the slug when the name changes. Posts in the category stay in it. Returns the category ID and name.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4745,7 +7433,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_category".to_string(),
-                description: "Delete a WordPress category".to_string(),
+                title: Some("Delete a category".to_string()),
+                description: "Delete a category permanently. WordPress has no trash for categories, so force must be true. Posts that were only in this category are moved to the default category. The default category itself cannot be deleted. Returns the category ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4755,7 +7444,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash)"
+                            "description": "Must be true: WordPress has no trash for categories, so they can only be deleted permanently"
                         }
                     },
                     "required": ["category_id"]
@@ -4764,7 +7453,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_tags".to_string(),
-                description: "Retrieve WordPress tags".to_string(),
+                title: Some("List tags".to_string()),
+                description: "List the post tags of the site (at most 10,000): ID, name, slug, description and number of posts. Use the IDs in the tags argument of the post tools and get_posts.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -4774,7 +7464,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_tag".to_string(),
-                description: "Create a new WordPress tag".to_string(),
+                title: Some("Create a tag".to_string()),
+                description: "Create a post tag. Fails if a tag with the same name already exists: check get_tags first. Returns the new tag's ID, to use in the tags argument of the post tools.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4797,7 +7488,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_tag".to_string(),
-                description: "Update an existing WordPress tag".to_string(),
+                title: Some("Edit a tag".to_string()),
+                description: "Change a tag's name, description or slug. Only the fields given are changed, and WordPress does not change the slug when the name changes. Posts with the tag keep it. Returns the tag ID and name.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4824,7 +7516,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_tag".to_string(),
-                description: "Delete a WordPress tag".to_string(),
+                title: Some("Delete a tag".to_string()),
+                description: "Delete a tag permanently. WordPress has no trash for tags, so force must be true. The tag is removed from every post that has it; the posts themselves are not changed otherwise. Returns the tag ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4834,7 +7527,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash)"
+                            "description": "Must be true: WordPress has no trash for tags, so they can only be deleted permanently"
                         }
                     },
                     "required": ["tag_id"]
@@ -4843,7 +7536,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_categories_tags".to_string(),
-                description: "Create a new WordPress post with categories and tags. Defaults to draft status so nothing is published unintentionally.".to_string(),
+                title: Some("Create a post with categories and tags".to_string()),
+                description: "Create a WordPress post with categories, tags and optionally a featured image, by their IDs (from get_categories, get_tags and upload_media). It is a draft unless status says otherwise. Use create_advanced_post to schedule it or for pages and custom post types. Returns the new post's ID, status, slug, categories and tags.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4853,23 +7547,22 @@ impl McpHandler for WordPressHandler {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The post content"
+                            "description": "Body of the post as HTML or Gutenberg block markup (the format get_post returns)"
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["publish", "draft", "pending", "private"],
-                            "description": "Post status. Defaults to 'draft' to avoid accidental publication.",
+                            "description": "Post status: 'draft' (the default, to avoid accidental publication), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "categories": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Category IDs from get_categories (optional). Without it, WordPress uses the default category"
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Tag IDs from get_tags (optional)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -4886,8 +7579,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_post_categories_tags".to_string(),
-                description: "Update categories and tags for an existing WordPress post or page"
-                    .to_string(),
+                title: Some("Change a post's categories and tags".to_string()),
+                description: "Replace the categories and/or tags of an existing post. Each list given replaces the post's current list, so include the IDs to keep; a list not given is not changed. Nothing else of the post is changed. Use update_post to change other fields at the same time. Returns the post ID with its new categories and tags.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4903,13 +7596,13 @@ impl McpHandler for WordPressHandler {
                         },
                         "categories": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         }
                     },
                     "required": ["post_id"]
@@ -4918,10 +7611,16 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_post".to_string(),
-                description: "Update an existing WordPress post or page".to_string(),
+                title: Some("Edit a post or page".to_string()),
+                description: "Change an existing post, page or custom post type item: title, content, excerpt, status, publish date, slug, categories, tags, terms of custom taxonomies or featured image. Only the fields given are changed. Setting status 'publish' publishes it on the site, and status 'future' with a future date schedules it. When revisions are enabled, WordPress keeps the previous content as a revision (get_revisions, restore_revision). Returns the ID, title, status, date and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "terms": {
+                            "type": "object",
+                            "description": "Terms of taxonomies, such as a custom post type's own categories: {\"<taxonomy rest_base>\": [term IDs]}, e.g. {\"product_cat\": [12, 15]}. Each listed taxonomy's terms are replaced with the given ones. See get_taxonomies and get_terms",
+                            "additionalProperties": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+                        },
                         "post_id": {
                             "type": "number",
                             "description": "Post or page ID to update"
@@ -4940,23 +7639,27 @@ impl McpHandler for WordPressHandler {
                             "type": "string",
                             "description": "New post content (optional)"
                         },
+                        "excerpt": {
+                            "type": "string",
+                            "description": "New excerpt (optional): a short summary shown in post lists and often used as the meta description. \"\" lets WordPress make one from the content again. get_post shows the current excerpt. Custom post types without excerpt support do not keep it: the result then says so"
+                        },
                         "status": {
                             "type": "string",
                             "description": "Post status (optional): 'publish', 'draft', 'pending', 'private', or 'future' (scheduled; needs 'date' unless the post is already scheduled)"
                         },
                         "date": {
                             "type": "string",
-                            "description": "Publication date (optional, ISO8601 in the site's time zone, e.g. '2026-11-19T10:00:00'). With status 'future' and a future date, the post is scheduled. get_post shows the current date"
+                            "description": "Publication date (optional, ISO8601 in the site's time zone, e.g. '2030-01-01T10:00:00'). With status 'future' and a future date, the post is scheduled. get_post shows the current date"
                         },
                         "categories": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of category IDs (optional)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Category IDs from get_categories (optional). Replaces all of the post's current categories, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Array of tag IDs (optional)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Tag IDs from get_tags (optional). Replaces all of the post's current tags, so include the ones to keep; [] removes them all. A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         },
                         "featured_media_id": {
                             "type": "number",
@@ -4973,7 +7676,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "delete_post".to_string(),
-                description: "Delete a WordPress post or page".to_string(),
+                title: Some("Delete a post or page".to_string()),
+                description: "Delete a post, page or custom post type item. By default it is moved to the trash, where it can be restored in the WordPress admin; with force: true it is deleted permanently, with its revisions, and cannot be restored. To only take it off the site, use update_post with status 'draft' or 'private' instead. Returns the ID and whether it was trashed or deleted.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -4989,7 +7693,7 @@ impl McpHandler for WordPressHandler {
                         },
                         "force": {
                             "type": "boolean",
-                            "description": "Force delete (bypass trash, permanently delete)"
+                            "description": "Delete permanently instead of moving to the trash (optional, default false). It cannot be undone"
                         }
                     },
                     "required": ["post_id"]
@@ -4998,9 +7702,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "create_post_with_embeds".to_string(),
-                description:
-                    "Create WordPress post with embedded YouTube videos and social media content"
-                        .to_string(),
+                title: Some("Create a post with embedded videos".to_string()),
+                description: "Create a WordPress post or page whose content is followed by embedded media: each YouTube video URL (a watch, youtu.be, embed, Shorts or live URL) becomes a video player, and each X/Twitter, Instagram post, Facebook or TikTok URL is added on its own line, for WordPress to show as an embed. WordPress itself does not embed Instagram or Facebook (since 5.5.2), so those stay plain links unless the site has a plugin for them; the result shows only that a URL was added, not how WordPress shows it. Other URLs are left out, and the result lists them. It is a draft unless status says otherwise. To embed in the middle of the content, write the URLs or embed blocks into content and use create_post instead. Returns the new post's ID, title, status and slug.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5015,12 +7718,12 @@ impl McpHandler for WordPressHandler {
                         "youtube_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "YouTube video URLs to embed"
+                            "description": "YouTube video URLs: youtube.com/watch?v=..., youtu.be/..., youtube.com/embed/..., youtube.com/shorts/..., youtube.com/live/... or youtube-nocookie.com/embed/.... Other forms are left out and listed in the result"
                         },
                         "social_urls": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Social media URLs to embed (Twitter, Instagram, Facebook, TikTok)"
+                            "description": "Social media URLs to embed: X/Twitter, Instagram posts (instagram.com/p/...), Facebook or TikTok. Instagram and Facebook stay plain links unless the site has a plugin that embeds them. Other URLs are left out and listed in the result"
                         },
                         "post_type": {
                             "type": "string",
@@ -5029,19 +7732,18 @@ impl McpHandler for WordPressHandler {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Post status. Defaults to 'draft' so nothing is published unintentionally. 'future' is not available because this tool has no date parameter.",
-                            "enum": ["publish", "draft", "pending", "private"],
+                            "description": "Post status: 'draft' (the default, so nothing is published unintentionally), 'publish', 'pending', 'private', or a custom status registered on the site (for example by a plugin). 'future' is not available because this tool has no date parameter.",
                             "default": "draft"
                         },
                         "categories": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Category IDs (posts only)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Category IDs (optional). A non-empty list is refused for a post type without categories on the site (pages, unless a plugin adds them)"
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "description": "Tag IDs (posts only)"
+                            "items": {"type": "integer", "minimum": 1},
+                            "description": "Tag IDs (optional). A non-empty list is refused for a post type without tags on the site (pages, unless a plugin adds them)"
                         },
                         "slug": {
                             "type": "string",
@@ -5054,7 +7756,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "get_settings".to_string(),
-                description: "Get WordPress site settings".to_string(),
+                title: Some("Read site settings".to_string()),
+                description: "Read the main WordPress site settings: site title, tagline, what the front page shows, posts per page and language (time zone and the default category are not shown). Needs administrator credentials. Use update_settings to change them, or set_front_page and set_front_page_to_posts for the front page.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -5064,7 +7767,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "update_settings".to_string(),
-                description: "Update WordPress site settings".to_string(),
+                title: Some("Change site settings".to_string()),
+                description: "Change WordPress site settings: site title, tagline, time zone, language, posts per page, default category, and the front page. Only the fields given are changed, and the changes apply to the live site at once. Needs administrator credentials. Read the current values with get_settings first. Returns the site title, tagline and what the front page shows.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5112,7 +7816,8 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "set_front_page".to_string(),
-                description: "Set a static page as the front page".to_string(),
+                title: Some("Show a page as the front page".to_string()),
+                description: "Make a static page (from get_pages) the site's front page, instead of the latest posts. This changes the live site at once. Use set_front_page_to_posts to go back to showing the latest posts. Needs administrator credentials. Returns the page ID.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -5127,13 +7832,14 @@ impl McpHandler for WordPressHandler {
             },
             Tool {
                 name: "set_front_page_to_posts".to_string(),
-                description: "Set front page to show latest posts".to_string(),
+                title: Some("Show latest posts on the front page".to_string()),
+                description: "Make the site's front page show the latest posts, instead of a static page. Optionally give the page that lists the posts. This changes the live site at once. Use set_front_page to show a static page instead. Needs administrator credentials.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "posts_page_id": {
                             "type": "number",
-                            "description": "Optional page ID to use for blog posts"
+                            "description": "ID of a page (from get_pages) on which to list the posts, when the front page itself is not that list (optional)"
                         }
                     },
                     "required": []
@@ -5143,9 +7849,13 @@ impl McpHandler for WordPressHandler {
         ];
         Ok(tools
             .into_iter()
-            .map(|tool| Tool {
-                annotations: Some(wordpress_tool_annotations(&tool.name)),
-                ..tool
+            .map(|tool| {
+                let mut tool = Tool {
+                    annotations: Some(wordpress_tool_annotations(&tool.name)),
+                    ..tool
+                };
+                with_allowed_post_types(&mut tool, &self.allowed_post_types);
+                tool
             })
             .collect())
     }
@@ -5153,7 +7863,7 @@ impl McpHandler for WordPressHandler {
     async fn call_tool(&self, params: ToolCallParams) -> Result<serde_json::Value, McpError> {
         let started = std::time::Instant::now();
         let tool_name = params.name.clone();
-        let target_id = extract_target_id(&params.arguments);
+        let target_id = extract_target_id(&params.name, &params.arguments);
 
         if let Err(e) = self
             .rate_limiter
@@ -5180,15 +7890,57 @@ impl McpHandler for WordPressHandler {
     /// 各リソースは、同じデータを読めるツールと同じ扱いにする（#538）。
     /// `wordpress://posts`は投稿の本文まで返すので、要約だけを返す
     /// `get_posts`ではなく、本文を返す`get_post`に対応させる
+    fn prompts(&self) -> Vec<crate::mcp::PromptSpec> {
+        crate::handlers::prompts::wordpress_prompts()
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: &HashMap<String, String>,
+    ) -> Result<serde_json::Value, McpError> {
+        crate::handlers::prompts::wordpress_prompt(name, arguments)
+    }
+
     fn resource_tool(&self, uri: &str) -> Option<String> {
         let tool = match uri {
             "wordpress://posts" => "get_post",
             "wordpress://comments" => "get_comments",
             "wordpress://categories" => "get_categories",
             "wordpress://tags" => "get_tags",
-            _ => return None,
+            // テンプレート（#644）。テンプレートの文字列と、作ったURIの両方
+            _ => match resource_template_target(uri)? {
+                (ResourceKind::Post | ResourceKind::Page, _) => "get_post",
+                (ResourceKind::Media, _) => "get_media_item",
+            },
         };
         Some(tool.to_string())
+    }
+
+    async fn list_resource_templates(&self) -> Result<Vec<crate::mcp::ResourceTemplate>, McpError> {
+        let template = |uri: &str, name: &str, description: &str| crate::mcp::ResourceTemplate {
+            uri_template: uri.to_string(),
+            name: name.to_string(),
+            description: Some(description.to_string()),
+            mime_type: Some("application/json".to_string()),
+        };
+        Ok(vec![
+            template(
+                "wordpress://post/{id}",
+                "WordPress Post",
+                "One post by ID, with its editable source when the credentials allow",
+            ),
+            template(
+                "wordpress://page/{id}",
+                "WordPress Page",
+                "One page by ID, with its editable source when the credentials allow",
+            ),
+            template(
+                "wordpress://media/{id}",
+                "WordPress Media Item",
+                "One media item by ID: URL, type, title, alt text and caption",
+            ),
+        ])
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, McpError> {
@@ -5246,7 +7998,7 @@ impl McpHandler for WordPressHandler {
                 }))
             }
             "wordpress://comments" => {
-                let comments = self.get_comments(None).await?;
+                let comments = self.get_comments(None, None).await?;
                 Ok(serde_json::json!({
                     "contents": [{
                         "uri": params.uri,
@@ -5275,7 +8027,39 @@ impl McpHandler for WordPressHandler {
                     }]
                 }))
             }
-            _ => Err(McpError::ResourceNotFound(params.uri)),
+            uri => match resource_template_target(uri) {
+                Some((kind, ResourceId::Id(id))) => {
+                    let text = match kind {
+                        ResourceKind::Post | ResourceKind::Page => {
+                            let post_type = if kind == ResourceKind::Page {
+                                "page"
+                            } else {
+                                "post"
+                            };
+                            let post = self
+                                .get_post(id, post_type, true)
+                                .await
+                                .map_err(|e| not_found_as_resource(e, uri))?;
+                            serde_json::to_string_pretty(&post)?
+                        }
+                        ResourceKind::Media => {
+                            let media = self
+                                .get_media_item(id)
+                                .await
+                                .map_err(|e| not_found_as_resource(e, uri))?;
+                            serde_json::to_string_pretty(&media)?
+                        }
+                    };
+                    Ok(serde_json::json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    }))
+                }
+                _ => Err(McpError::ResourceNotFound(params.uri)),
+            },
         }
     }
 }
@@ -5284,6 +8068,37 @@ impl McpHandler for WordPressHandler {
 mod tests {
     use super::*;
     use crate::config::RateLimitConfig;
+
+    /// サインインが通らなければ、権限・メディアは「確かめていない」と出す
+    /// （#710）
+    #[test]
+    fn test_health_mark_after_sign_in() {
+        let health = |signed_in: bool| WordPressHealthCheck {
+            site_accessible: true,
+            rest_api_available: true,
+            authentication_valid: signed_in,
+            permissions_adequate: false,
+            media_upload_possible: false,
+            error_details: Vec::new(),
+            site_info: None,
+            log_destination: String::new(),
+        };
+        assert_eq!(health_mark_after_sign_in(&health(true), true), "✅");
+        assert_eq!(health_mark_after_sign_in(&health(true), false), "❌");
+        assert!(health_mark_after_sign_in(&health(false), false).contains("the sign-in failed"));
+        // サイトに届かなければ、REST API・サインインも試していない（PR #713の
+        // レビュー）
+        let unreachable = WordPressHealthCheck {
+            site_accessible: false,
+            ..health(false)
+        };
+        assert!(health_mark_after_sign_in(&unreachable, false)
+            .contains("the site could not be reached"));
+        assert!(health_mark_after_reaching_site(&unreachable, false)
+            .contains("the site could not be reached"));
+        assert_eq!(health_mark_after_reaching_site(&health(false), false), "❌");
+        assert_eq!(health_mark_after_reaching_site(&health(true), true), "✅");
+    }
 
     #[test]
     fn test_https_enforcement() {
@@ -5297,7 +8112,10 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         let result = WordPressHandler::try_new(insecure_config);
@@ -5305,6 +8123,44 @@ mod tests {
         let error_msg = result.unwrap_err();
         assert!(error_msg.contains("Insecure URL detected"));
         assert!(error_msg.contains("Only HTTPS connections are allowed"));
+    }
+
+    /// URLのユーザー名・パスワードは断り、エラーにも出さない（#746）
+    #[test]
+    fn test_url_with_credentials_is_refused() {
+        for url in [
+            "https://alice:secret-pass@example.com",
+            "https://alice@example.com",
+            "http://alice:secret-pass@example.com",
+            // 読めないURL（PR #747のレビュー）
+            "https://alice:secret-pass@exa mple.com",
+            "https://alice:secret-pass@",
+        ] {
+            let config = WordPressConfig {
+                url: url.to_string(),
+                username: "test".to_string(),
+                password: "test".to_string(),
+                enabled: Some(true),
+                timeout_seconds: Some(30),
+                rate_limit: Some(RateLimitConfig::default()),
+                encrypted_credentials: None,
+                keyring: None,
+                upload_allowed_dirs: None,
+                post_types: None,
+                default_site: None,
+                sites: Default::default(),
+            };
+            let error = WordPressHandler::try_new(config).err().unwrap();
+            assert!(
+                error.contains("must not contain a user name or password")
+                    || error.contains("is not a valid URL"),
+                "{error}"
+            );
+            assert!(
+                !error.contains("secret-pass") && !error.contains("alice"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -5319,7 +8175,10 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         let result = WordPressHandler::try_new(secure_config);
@@ -5337,7 +8196,10 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
         let handler = WordPressHandler::try_new(config).unwrap();
 
@@ -5362,7 +8224,10 @@ mod tests {
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None,
                 keyring: None,
-                upload_allowed_dirs: Vec::new(),
+                upload_allowed_dirs: None,
+                post_types: None,
+                default_site: None,
+                sites: Default::default(),
             };
 
             let result = WordPressHandler::try_new(config);
@@ -5383,7 +8248,10 @@ mod tests {
             rate_limit: Some(rate_limit),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
         WordPressHandler::try_new(config).unwrap()
     }
@@ -5600,6 +8468,48 @@ mod tests {
         }
     }
 
+    /// ツールの説明は、AIのクライアントがツールを選ぶ材料（#676）。どの
+    /// ツールにも、名前（title）と、何をするか・いつ使うか・何を返すかを
+    /// 書いた説明があり、引数にも説明がある。説明は英語で書き、ほかの
+    /// ツールの名前は、実在するものだけを挙げる
+    #[tokio::test]
+    async fn test_every_tool_is_described() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let names: std::collections::HashSet<&str> =
+            tools.iter().map(|t| t.name.as_str()).collect();
+        // ツールの名前と同じ形の、ツールではない言葉（設定の項目）
+        let not_tools = ["upload_allowed_dirs"];
+        for tool in &tools {
+            let name = &tool.name;
+            let title = tool.title.as_deref().unwrap_or_default();
+            assert!(
+                !title.is_empty() && title.len() <= 60,
+                "{name}: title {title:?}"
+            );
+            let description = &tool.description;
+            assert!(description.len() >= 140, "{name}: description too short");
+            assert!(description.ends_with('.'), "{name}: {description}");
+            assert!(description.is_ascii(), "{name}: {description}");
+            for word in description.split(|c: char| !(c.is_ascii_lowercase() || c == '_')) {
+                let looks_like_a_tool = [
+                    "get_", "create_", "update_", "delete_", "set_", "restore_", "upload_",
+                ]
+                .iter()
+                .any(|prefix| word.starts_with(prefix));
+                if looks_like_a_tool && !not_tools.contains(&word) {
+                    assert!(names.contains(word), "{name}: mentions unknown tool {word}");
+                }
+            }
+            let properties = tool.input_schema["properties"].as_object().unwrap();
+            for (argument, schema) in properties {
+                let text = schema["description"].as_str().unwrap_or_default();
+                assert!(!text.is_empty(), "{name}.{argument}: no description");
+                assert!(text.is_ascii(), "{name}.{argument}: {text}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_every_tool_has_annotations() {
         let handler = rate_limited_handler(RateLimitConfig::default());
@@ -5643,36 +8553,102 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_target_id_finds_known_keys_in_priority_order() {
-        let mut args = HashMap::new();
-        args.insert("post_id".to_string(), serde_json::json!(42));
+    fn test_extract_target_id_uses_the_key_of_the_tool() {
+        let args = |value: serde_json::Value| -> Option<HashMap<String, serde_json::Value>> {
+            Some(serde_json::from_value(value).unwrap())
+        };
         assert_eq!(
-            extract_target_id(&Some(args.clone())),
+            extract_target_id("delete_post", &args(serde_json::json!({"post_id": 42}))),
             Some("42".to_string())
         );
-
-        // "id"があれば他のキーより優先される
-        args.insert("id".to_string(), serde_json::json!("abc"));
-        assert_eq!(extract_target_id(&Some(args)), Some("abc".to_string()));
-
-        let mut media_args = HashMap::new();
-        media_args.insert("media_id".to_string(), serde_json::json!(7));
-        assert_eq!(extract_target_id(&Some(media_args)), Some("7".to_string()));
-
-        // set_front_page/set_front_page_to_postsが使うキー
-        let mut page_args = HashMap::new();
-        page_args.insert("page_id".to_string(), serde_json::json!(99));
-        assert_eq!(extract_target_id(&Some(page_args)), Some("99".to_string()));
-
-        let mut posts_page_args = HashMap::new();
-        posts_page_args.insert("posts_page_id".to_string(), serde_json::json!(5));
+        // 知らない引数`id`ではなく、操作に使う`post_id`を記録する（#755）
         assert_eq!(
-            extract_target_id(&Some(posts_page_args)),
+            extract_target_id(
+                "delete_post",
+                &args(serde_json::json!({"post_id": 42, "id": 7}))
+            ),
+            Some("42".to_string())
+        );
+        // 対象に使わないキー（set_featured_imageのmedia_id）も記録しない
+        assert_eq!(
+            extract_target_id(
+                "set_featured_image",
+                &args(serde_json::json!({"media_id": 7, "post_id": 3}))
+            ),
+            Some("3".to_string())
+        );
+        assert_eq!(
+            extract_target_id("delete_media", &args(serde_json::json!({"media_id": 7}))),
+            Some("7".to_string())
+        );
+        // set_front_page/set_front_page_to_postsが使うキー
+        assert_eq!(
+            extract_target_id("set_front_page", &args(serde_json::json!({"page_id": 99}))),
+            Some("99".to_string())
+        );
+        assert_eq!(
+            extract_target_id(
+                "set_front_page_to_posts",
+                &args(serde_json::json!({"posts_page_id": 5}))
+            ),
             Some("5".to_string())
         );
+        // 文字列はそのまま
+        assert_eq!(
+            extract_target_id("get_post", &args(serde_json::json!({"post_id": "abc"}))),
+            Some("abc".to_string())
+        );
+        // 対象のIDを持たないツール・知らないツールは記録しない
+        assert_eq!(
+            extract_target_id("create_post", &args(serde_json::json!({"id": 7}))),
+            None
+        );
+        assert_eq!(
+            extract_target_id("no_such_tool", &args(serde_json::json!({"post_id": 7}))),
+            None
+        );
+        assert_eq!(extract_target_id("delete_post", &None), None);
+        assert_eq!(
+            extract_target_id("delete_post", &Some(HashMap::new())),
+            None
+        );
+    }
 
-        assert_eq!(extract_target_id(&None), None);
-        assert_eq!(extract_target_id(&Some(HashMap::new())), None);
+    /// 対象のIDを必須の引数に持つツールは、どれも`target_id_key`がその
+    /// キーを返す（ツールを足したときの記録漏れを防ぐ。#755）
+    #[tokio::test]
+    async fn test_target_id_key_covers_every_tool_with_a_target() {
+        const TARGET_KEYS: &[&str] = &[
+            "post_id",
+            "media_id",
+            "category_id",
+            "tag_id",
+            "comment_id",
+            "page_id",
+            "posts_page_id",
+        ];
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        for tool in handler.list_tools().await.unwrap() {
+            let required: Vec<&str> = tool.input_schema["required"]
+                .as_array()
+                .map(|keys| keys.iter().filter_map(|k| k.as_str()).collect())
+                .unwrap_or_default();
+            // 一覧・作成で、`post_id`が絞り込み・関連先のツールは除く
+            let not_a_target = ["get_comments", "create_comment"].contains(&tool.name.as_str());
+            if !not_a_target && required.iter().any(|key| TARGET_KEYS.contains(key)) {
+                let key = target_id_key(&tool.name)
+                    .unwrap_or_else(|| panic!("{} has no target id key", tool.name));
+                assert!(required.contains(&key), "{}: {key}", tool.name);
+            }
+            // 対象のキーは、ツールの引数にある
+            if let Some(key) = target_id_key(&tool.name) {
+                assert!(
+                    tool.input_schema["properties"].get(key).is_some(),
+                    "{}: {key}",
+                    tool.name
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -5701,8 +8677,33 @@ mod tests {
             entries[0].action,
             Some("delete_fake_thing_for_test".to_string())
         );
-        assert_eq!(entries[0].metadata.get("target_id"), Some(&"7".to_string()));
+        // 知らないツールは、操作の対象が分からないので記録しない（#755）
+        assert_eq!(entries[0].metadata.get("target_id"), None);
         assert!(entries[0].metadata.contains_key("error"));
+
+        // 送る前に断った呼び出しも、操作に使うキーのIDで記録する。余分な
+        // `id`は使わない（#755）
+        let result = call_tool_with(
+            &handler,
+            "update_post_categories_tags",
+            serde_json::json!({"post_id": 42, "id": 7, "tags": [7.5]}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(_))),
+            "{result:?}"
+        );
+        let entries = handler.audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[1].action,
+            Some("update_post_categories_tags".to_string())
+        );
+        assert_eq!(entries[1].result, Some("FAILURE".to_string()));
+        assert_eq!(
+            entries[1].metadata.get("target_id"),
+            Some(&"42".to_string())
+        );
     }
 
     /// 読み取りのツールも、呼び出し元・所要時間と一緒に記録する（#55）
@@ -5810,11 +8811,11 @@ mod tests {
                 raw: None,
                 protected: false,
             },
-            content: WordPressContent {
+            content: Some(WordPressContent {
                 rendered: "full content".to_string(),
                 raw: None,
                 protected: false,
-            },
+            }),
             excerpt: Some(WordPressContent {
                 rendered: long_excerpt,
                 raw: None,
@@ -5824,6 +8825,7 @@ mod tests {
             featured_media: None,
             categories: None,
             tags: None,
+            extra: Default::default(),
         }];
 
         let summary = summarize_posts(&posts);
@@ -5886,14 +8888,6 @@ mod tests {
     fn test_display_opt_id_formats_without_debug_artifacts() {
         assert_eq!(display_opt_id(Some(328)), "328");
         assert_eq!(display_opt_id(None), "N/A");
-    }
-
-    #[test]
-    fn test_endpoint_for_post_type_routes_pages_and_posts() {
-        assert_eq!(endpoint_for_post_type("page"), "pages");
-        assert_eq!(endpoint_for_post_type("post"), "posts");
-        // 未知の値は投稿として扱う（既定の振る舞い）
-        assert_eq!(endpoint_for_post_type("anything-else"), "posts");
     }
 
     #[test]
@@ -6250,10 +9244,14 @@ mod tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: dirs
-                .iter()
-                .map(|d| d.to_string_lossy().into_owned())
-                .collect(),
+            upload_allowed_dirs: Some(
+                dirs.iter()
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .collect(),
+            ),
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
         WordPressHandler::try_new(config).unwrap()
     }
@@ -6406,6 +9404,82 @@ mod tests {
         );
     }
 
+    /// Windowsで、UNC・デバイスのパスは、正規化（SMBの接続）の前に断る（#750）
+    #[cfg(windows)]
+    #[test]
+    fn test_resolve_upload_path_rejects_unc_and_device_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed_dirs =
+            canonicalize_upload_dirs(&[dir.path().to_string_lossy().into_owned()]).unwrap();
+        for path in [
+            r"\\host.invalid\share\a.png",
+            r"\\?\UNC\host.invalid\share\a.png",
+            r"\\.\pipe\a.png",
+            r"\\?\GLOBALROOT\Device\Mup\host.invalid\share\a.png",
+        ] {
+            let msg = invalid_params_message(
+                resolve_upload_path(path, &allowed_dirs).map(|_| serde_json::Value::Null),
+            );
+            assert!(msg.contains("UNC"), "path: {path}, got: {msg}");
+        }
+
+        // ドライブ名のパス（`\\?\`付きも）は、これまでどおり
+        std::fs::write(dir.path().join("a.png"), PNG_HEADER).unwrap();
+        let canonical = std::fs::canonicalize(dir.path().join("a.png")).unwrap();
+        assert_eq!(
+            resolve_upload_path(&canonical.to_string_lossy(), &allowed_dirs).unwrap(),
+            canonical
+        );
+    }
+
+    /// 確かめた後に、途中のフォルダをリンクに差し替えられた場合（#750）。
+    /// 確かめたパスのまま開くと外のファイルになるので、読まない
+    #[test]
+    fn test_open_checked_upload_file_rejects_replaced_path() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let allowed = root.join("allowed");
+        let outside = root.join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(allowed.join("a.png"), PNG_HEADER).unwrap();
+        std::fs::write(outside.join("a.png"), PNG_HEADER).unwrap();
+
+        // 確かめたファイルは開ける
+        assert!(open_checked_upload_file(&allowed.join("a.png")).is_ok());
+
+        // `allowed\sub`（確かめたときはフォルダ）が、外へのリンクになった
+        let link = allowed.join("sub");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "mklink /J failed");
+        }
+        let msg = invalid_params_message(
+            open_checked_upload_file(&link.join("a.png")).map(|_| serde_json::Value::Null),
+        );
+        assert!(
+            msg.contains("changed while it was being opened"),
+            "got: {msg}"
+        );
+
+        // 最後の項目がリンクになった場合も
+        #[cfg(unix)]
+        {
+            let file_link = allowed.join("b.png");
+            std::os::unix::fs::symlink(outside.join("a.png"), &file_link).unwrap();
+            assert!(open_checked_upload_file(&file_link).is_err());
+        }
+    }
+
     #[test]
     fn test_mime_type_for_filename() {
         assert_eq!(mime_type_for_filename("a.png"), Some("image/png"));
@@ -6419,7 +9493,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_upload_file_rejects_oversized_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("big.png");
+        let path = std::fs::canonicalize(dir.path()).unwrap().join("big.png");
         std::fs::write(&path, vec![0u8; MAX_UPLOAD_SIZE_BYTES + 1]).unwrap();
         let msg = invalid_params_message(
             read_upload_file(&path)
@@ -6499,6 +9573,15 @@ mod tests {
         status_line: &'static str,
         body: String,
     ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        spawn_fixed_bytes_response_server(status_line, body.into_bytes()).await
+    }
+
+    /// `spawn_fixed_response_server`と同じだが、本文をバイトのまま返す
+    /// （不正なUTF-8の再現用。#774）
+    async fn spawn_fixed_bytes_response_server(
+        status_line: &'static str,
+        body: Vec<u8>,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -6523,11 +9606,60 @@ mod tests {
                             Ok(n) => buf.extend_from_slice(&chunk[..n]),
                         }
                     }
+                    let mut response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        status_line,
+                        body.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(&body);
+                    let _ = socket.write_all(&response).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), count)
+    }
+
+    /// 最初の`cut_off`回は、本文を途中で切って（`Content-Length`より短く
+    /// 送って）接続を閉じ、その後は全部返すHTTPサーバー。本文の受信の失敗の
+    /// 再現用（#750）。受けたリクエスト数を数える
+    async fn spawn_cut_off_body_server(
+        status_line: &'static str,
+        body: String,
+        cut_off: usize,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let nth = server_count.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let length = if nth < cut_off {
+                        body.len() + 100
+                    } else {
+                        body.len()
+                    };
                     let response = format!(
                         "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        status_line,
-                        body.len(),
-                        body
+                        status_line, length, body
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.shutdown().await;
@@ -6702,6 +9834,8 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig::default())),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             upload_allowed_dirs: Arc::new(Vec::new()),
+            allowed_post_types: Arc::new(vec!["product".to_string()]),
+            type_endpoints: Default::default(),
         }
     }
 
@@ -6856,6 +9990,157 @@ mod tests {
             "status": "inherit",
             "source_url": "https://example.com/wp-content/uploads/a.png"
         })
+    }
+
+    /// GETは、本文の受信が途中で失敗しても再送する（#750）
+    #[tokio::test]
+    async fn test_get_is_resent_when_body_is_cut_off() {
+        let (base_url, count) =
+            spawn_cut_off_body_server("200 OK", sample_media_json(1).to_string(), 1).await;
+        let handler = handler_for_local_server(base_url);
+
+        let media = handler.get_media_item(1).await.unwrap();
+        assert_eq!(media.id, Some(1));
+        assert_eq!(request_count(&count), 2);
+    }
+
+    /// 受信しきった不正なJSONは、GETでも再送しない
+    #[tokio::test]
+    async fn test_get_with_unparseable_body_is_not_resent() {
+        let (base_url, count) =
+            spawn_fixed_response_server("200 OK", "{not json".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.get_media_item(1).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("could not be parsed")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    /// POSTで、成功の状態コードの後に本文の受信が失敗したら、再送せず、
+    /// 保存済みかもしれないことを伝える（#750）
+    #[tokio::test]
+    async fn test_post_body_cut_off_after_success_is_not_resent() {
+        let (base_url, count) =
+            spawn_cut_off_body_server("201 Created", sample_media_json(1).to_string(), 3).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.upload_media(PNG_HEADER, "a.png", "image/png").await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("receiving its response failed") && msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+
+        let result = handler
+            .create_advanced_post(PostCreateParams {
+                title: "t".to_string(),
+                content: "c".to_string(),
+                post_type: "post".to_string(),
+                status: "draft".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("receiving its response failed") && msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 2);
+    }
+
+    /// PUTで、成功の状態コードの後に本文の受信が失敗したら、再送せず、
+    /// 変更済みかもしれないことを伝える（#774。送り直しても書き込みを
+    /// 繰り返すだけ）
+    #[tokio::test]
+    async fn test_put_body_cut_off_after_success_is_not_resent() {
+        let (base_url, count) =
+            spawn_cut_off_body_server("200 OK", post_response_json("x"), 3).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.set_featured_image(7, 3).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("receiving its response failed") && msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    /// 成功の応答の本文が不正なUTF-8なら、置き換え文字で読み進めず、
+    /// 再送もしない（#774）
+    #[tokio::test]
+    async fn test_success_body_with_invalid_utf8_is_not_parsed() {
+        let mut body = br#"{"id":1,"status":"inherit","title":{"rendered":"a"#.to_vec();
+        body.push(0xff);
+        body.extend_from_slice(br#""}}"#);
+        let (base_url, count) = spawn_fixed_bytes_response_server("200 OK", body).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = handler.get_media_item(1).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("could not be parsed")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+    }
+
+    fn draft_post_params() -> PostCreateParams {
+        PostCreateParams {
+            title: "t".to_string(),
+            content: "c".to_string(),
+            post_type: "post".to_string(),
+            status: "draft".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// `create_advanced_post`も`send_with_retry`を通る（#750）。429は再送し、
+    /// 5xxは再送しない
+    #[tokio::test]
+    async fn test_create_advanced_post_retries_only_too_many_requests() {
+        let (base_url, count) =
+            spawn_fixed_response_server("429 Too Many Requests", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = handler.create_advanced_post(draft_post_params()).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(_))),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 3);
+
+        let (base_url, count) =
+            spawn_fixed_response_server("500 Internal Server Error", "{}".to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = handler.create_advanced_post(draft_post_params()).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("Not retried automatically")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
+
+        // WordPressのエラーコードは、これまでどおりエラーに含める
+        let body = r#"{"code":"empty_content","message":"Content, title, and excerpt are empty."}"#;
+        let (base_url, count) =
+            spawn_fixed_response_server("400 Bad Request", body.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = handler.create_advanced_post(draft_post_params()).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("empty_content")),
+            "got: {:?}",
+            result
+        );
+        assert_eq!(request_count(&count), 1);
     }
 
     #[tokio::test]
@@ -7088,12 +10373,13 @@ mod tests {
                 raw: content.raw.as_ref().map(|_| "Don't".to_string()),
                 protected: false,
             },
-            content,
+            content: Some(content),
             excerpt: None,
             author: None,
             featured_media: None,
             categories: None,
             tags: None,
+            extra: Default::default(),
         }
     }
 
@@ -7239,6 +10525,41 @@ mod tests {
         assert!(body.get("slug").is_none());
     }
 
+    /// 閉じる文字の無い`&`・`<`が多い長いスラッグも、すぐに確かめ終わる
+    /// （残りを何度も探し直さない。#750）
+    #[test]
+    fn test_slug_without_markup_long_input() {
+        let started = std::time::Instant::now();
+        // 閉じないタグは残りを全部消す。`;`の無い`&`は残す
+        assert_eq!(slug_without_tags(&"&<".repeat(500_000)), "&");
+        assert_eq!(
+            slug_without_entities(&"&<".repeat(500_000)),
+            "&<".repeat(500_000)
+        );
+        assert_eq!(
+            slug_without_tags(&"< ".repeat(500_000)),
+            "< ".repeat(500_000)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            slug_without_entities(&slug_without_tags("a&amp;b<i>c</i>&x")),
+            "abc&x"
+        );
+    }
+
+    /// PHPの`strip_tags`と同じく、タグを取り除く（PR #781のレビュー）
+    #[test]
+    fn test_slug_without_tags_like_strip_tags() {
+        assert_eq!(slug_without_tags("<a title='>→'>x"), "x");
+        assert_eq!(slug_without_tags(r#"<a title=">→">x"#), "x");
+        assert_eq!(slug_without_tags("<b>→</b>"), "→");
+        assert_eq!(slug_without_tags("a<b"), "a");
+        assert_eq!(slug_without_tags("a < b"), "a < b");
+        assert_eq!(slug_without_tags("<a<b>>x"), "x");
+        assert_eq!(slug_without_tags("<!-- > → -->x"), "x");
+        assert_eq!(slug_without_tags("<!-- → "), "");
+    }
+
     #[test]
     fn test_optional_slug_arg() {
         use serde_json::json;
@@ -7266,6 +10587,146 @@ mod tests {
             optional_slug_arg(&args),
             Err(McpError::InvalidParams(_))
         ));
+
+        // WordPressが保存のときに空にするスラッグは拒否する（#750）
+        for slug in [
+            "!!!",
+            "-",
+            " -- ",
+            "&amp;",
+            "&#38;",
+            "<b></b>",
+            "<em>-</em>&nbsp;",
+            // パーセントエンコードの記号だけ（NBSP・ダッシュ）も断る（#774）
+            "%c2%a0",
+            "%E2%80%94",
+            "%e2%80%94",
+            "-%c2%ad-",
+            // 生の記号でも、WordPressが取り除くものだけなら断る（#779）
+            "\u{a0}—“”…",
+            "%e2%80%8b%e2%80%83",
+            // `remove_accents`が`£`を消す。符号化した後の200文字を超える
+            // 文字（…22個の後の→）は残らない（#781）
+            "£",
+            "£—£",
+        ] {
+            args.insert("slug".to_string(), json!(slug));
+            assert!(
+                matches!(
+                    optional_slug_arg(&args),
+                    Err(McpError::InvalidParams(ref msg)) if msg.contains("letter or digit")
+                ),
+                "slug: {slug}"
+            );
+        }
+
+        // 日本語・パーセントエンコードのスラッグは通す
+        for slug in [
+            "テスト",
+            "%e3%83%86%e3%82%b9%e3%83%88",
+            "2024",
+            "a-",
+            "a&amp;b",
+            "<b>post</b>",
+            "a&b",
+            "%e6%97%a5%e6%9c%ac",
+            "hello-%c2%a0world",
+            // WordPressが残す値は通す（#779）。×は`x`になり、→等の記号は
+            // `%xx`のまま残る
+            "%c3%97",
+            "×",
+            "%e2%86%92",
+            "→",
+            // `%c2%a3`はASCIIのまま残る。`£`のほかに文字があれば残る（#781）
+            "%c2%a3",
+            "£abc",
+            "・。",
+            "_",
+            "%c2%a0%e2%86%92",
+            "%41",
+        ] {
+            args.insert("slug".to_string(), json!(slug));
+            assert_eq!(optional_slug_arg(&args).unwrap().as_deref(), Some(slug));
+        }
+
+        // WordPressは、符号化した後の200文字を超える文字を捨ててから記号を
+        // 取り除く（#781）。…（9文字）22個で198文字になり、続く→は入らない
+        assert!(!slug_survives_sanitizing(&format!("{}→", "…".repeat(22))));
+        assert!(slug_survives_sanitizing(&format!("{}→", "…".repeat(21))));
+        assert!(!slug_survives_sanitizing(&format!("{}a", "-".repeat(200))));
+        assert!(slug_survives_sanitizing(&format!("{}a", "-".repeat(199))));
+        // エンティティは200文字に切り詰めた後に取り除く。`remove_accents`が
+        // `e`にする`é`は、198文字の後でも収まる（#781）
+        assert!(!slug_survives_sanitizing(&format!(
+            "{}→",
+            "&amp;".repeat(40)
+        )));
+        assert!(slug_survives_sanitizing("&amp;→"));
+        assert!(slug_survives_sanitizing(&format!("{}é", "…".repeat(22))));
+        assert!(slug_survives_sanitizing("é"));
+        // エンティティの中の`é`も、エンティティごと消える（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("&é;"));
+        assert!(!slug_survives_sanitizing("&æ;"));
+        // `%xx`を探す前に`À`が`a`になり、`%c2%a0`（NBSP）としてハイフンに
+        // なる（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("%c2%À0"));
+        assert!(!slug_survives_sanitizing("%e2%80%à6"));
+        assert!(slug_survives_sanitizing("À"));
+        assert!(slug_survives_sanitizing("%c2%a0abc"));
+        // 引用符の中の`>`ではタグを閉じない。閉じないタグは全部消える。
+        // ノーブレークハイフンは、WordPress 6.9からハイフンになる
+        // （PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<a title='>→'>"));
+        assert!(!slug_survives_sanitizing("<b→"));
+        assert!(slug_survives_sanitizing("<b>→</b>"));
+        // `<?`は`?>`まで消える。`ǝ`は`e`になる。切り詰めで残った`%`だけでは
+        // 残らない（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<?x>→"));
+        assert!(slug_survives_sanitizing("<?x?>→"));
+        assert!(slug_survives_sanitizing("<?>→"));
+        // `"`の中・閉じていない括弧の間の`?>`では終わらない（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<?\"?>→"));
+        assert!(!slug_survives_sanitizing("<?(?>→"));
+        assert!(slug_survives_sanitizing("<?\"x\"?>→"));
+        // PHPは最後の引用符だけを覚える。`'"'`の後は`'`の中なので、`(`を
+        // 数えない（PR #781のレビュー）
+        assert!(slug_survives_sanitizing("<?'\"'(?>a"));
+        // `<?xml`は普通のタグ。1回目で取り除いた記号の後にできた`%xx`は、
+        // 2回目で消える（PR #781のレビュー）
+        assert!(slug_survives_sanitizing("-<?xml>a"));
+        assert!(slug_survives_sanitizing("-<?XML version='1.0'>a"));
+        assert!(!slug_survives_sanitizing("%c2!%a0"));
+        assert!(!slug_survives_sanitizing("%e2%80!%94"));
+        assert!(slug_survives_sanitizing(&format!("{}ǝ", "-".repeat(198))));
+        assert!(!slug_survives_sanitizing(&format!(
+            "{}%21",
+            "-".repeat(199)
+        )));
+        assert!(slug_survives_sanitizing("%41"));
+        assert!(!slug_survives_sanitizing("\u{2011}"));
+        assert!(!slug_survives_sanitizing("%e2%80%91"));
+        assert!(slug_survives_sanitizing("a\u{2011}b"));
+        // `İ`は、小文字にする前に`I`の1文字になる（`i`＋結合文字の9文字では
+        // ない）。`&I;`は消え、200文字の中の`a`が残る（PR #781のレビュー）
+        assert!(slug_survives_sanitizing(&format!(
+            "&İ;{}a",
+            "-".repeat(193)
+        )));
+        // `æ`は`ae`の2文字。198文字の後では、`a`だけが入る
+        assert!(slug_survives_sanitizing(&format!("{}æ", "…".repeat(22))));
+        assert!(!slug_survives_sanitizing(&format!(
+            "--{}é",
+            "%e2%80%94".repeat(22)
+        )));
+        // `%xx`はASCIIの3文字として数える（2文字＋9文字×22個で200文字）
+        assert!(!slug_survives_sanitizing(&format!(
+            "--{}a",
+            "%e2%80%94".repeat(22)
+        )));
+        assert!(slug_survives_sanitizing(&format!(
+            "-{}a",
+            "%e2%80%94".repeat(22)
+        )));
     }
 
     #[test]
@@ -7350,6 +10811,77 @@ mod tests {
         (format!("http://{}", addr), captured)
     }
 
+    /// パスの先頭で応答を選び（どれも200 OK）、届いた要求の
+    /// `メソッド パス`と本文を記録するサーバー（#684）
+    async fn spawn_routing_capturing_server(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, Arc<tokio::sync::Mutex<Vec<(String, String)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes = Arc::new(routes);
+        let captured = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let server_captured = captured.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let routes = routes.clone();
+                let captured = server_captured.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let header_end = loop {
+                        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break pos + 4;
+                        }
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                    let content_length = headers
+                        .to_lowercase()
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_length {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let mut words = headers.split_whitespace();
+                    let method = words.next().unwrap_or("").to_string();
+                    let path = words.next().unwrap_or("").to_string();
+                    captured.lock().await.push((
+                        format!("{method} {path}"),
+                        String::from_utf8_lossy(&buf[header_end..header_end + content_length])
+                            .to_string(),
+                    ));
+                    let (status, body) = routes
+                        .iter()
+                        .find(|(prefix, _)| path.starts_with(prefix))
+                        .map(|(_, body)| ("200 OK", body.clone()))
+                        .unwrap_or(("404 Not Found", "{}".to_string()));
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), captured)
+    }
+
     fn post_response_json(slug: &str) -> String {
         serde_json::json!({
             "id": 7,
@@ -7392,6 +10924,330 @@ mod tests {
         // スラッグだけを送り、タイトル・本文等は送らない
         assert_eq!(sent, serde_json::json!({"slug": "my-first-post"}));
         assert!(tool_text(&result).contains("Slug: my-first-post"));
+    }
+
+    /// `update_post`の`excerpt`は、PUTの本文まで通す。`get_post`は抜粋を
+    /// 出す（#774。`review_post_seo`のプロンプトの手順）
+    #[tokio::test]
+    async fn test_update_post_sends_excerpt_and_get_post_shows_it() {
+        let mut post: serde_json::Value = serde_json::from_str(&post_response_json("x")).unwrap();
+        post["excerpt"] = serde_json::json!({"rendered": "<p>短い要約</p>"});
+        let (base_url, captured) = spawn_body_capturing_server(post.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "excerpt": "短い要約"}),
+        )
+        .await
+        .unwrap();
+        assert!(!tool_text(&result).contains("did not save the excerpt"));
+        {
+            let bodies = captured.lock().await;
+            let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+            assert_eq!(sent, serde_json::json!({"excerpt": "短い要約"}));
+        }
+
+        let result = call_tool_with(
+            &handler,
+            "get_post",
+            serde_json::json!({"post_id": 7, "format": "text"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            tool_text(&result).contains("Title: テスト\nExcerpt: 短い要約"),
+            "{}",
+            tool_text(&result)
+        );
+
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "excerpt": 1}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("excerpt must be a string")),
+            "{:?}",
+            result
+        );
+    }
+
+    /// 抜粋に対応しない投稿タイプで抜粋を渡したら、保存されていないことを
+    /// 伝える（#774）。抜粋だけなら、何も変わらないのでエラーにする（#779）
+    #[tokio::test]
+    async fn test_update_post_says_when_excerpt_was_not_saved() {
+        let (base_url, _captured) = spawn_body_capturing_server(post_response_json("x")).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "excerpt": "短い要約"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            tool_text(&result).starts_with(
+                "WordPress did not save the excerpt of post ID 7, because this post type does not support excerpts. No other change was given"
+            ),
+            "{}",
+            tool_text(&result)
+        );
+
+        // 空の`terms`・空の`date`は送らないので、変更に数えない（#779）
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "excerpt": "短い要約", "terms": {}, "date": ""}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // ほかの項目もあれば、ほかの変更は保存されたと伝える
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "title": "新しい題", "excerpt": "短い要約"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], false);
+        assert!(
+            tool_text(&result).ends_with("WordPress did not save the excerpt: this post type does not support excerpts. The other changes are saved"),
+            "{}",
+            tool_text(&result)
+        );
+    }
+
+    /// スラッグのある投稿の更新（#750）。スラッグを渡さなければ送らず、今の
+    /// スラッグのまま。文字・数字の無いスラッグは、送る前に断る
+    #[tokio::test]
+    async fn test_update_post_keeps_existing_slug_and_refuses_symbol_only_slug() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(post_response_json("existing-slug")).await;
+        let handler = handler_for_local_server(base_url);
+        let call = |args: serde_json::Value| {
+            let args: HashMap<String, serde_json::Value> = serde_json::from_value(args).unwrap();
+            handler.call_tool(ToolCallParams {
+                name: "update_post".to_string(),
+                arguments: Some(args),
+            })
+        };
+
+        let result = call(serde_json::json!({"post_id": 7, "title": "新しい題"}))
+            .await
+            .unwrap();
+        assert!(tool_text(&result).contains("Slug: existing-slug"));
+        {
+            let bodies = captured.lock().await;
+            assert_eq!(bodies.len(), 1);
+            let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+            assert_eq!(sent, serde_json::json!({"title": "新しい題"}));
+        }
+
+        // `&amp;`もWordPressが取り除いて空にするので、送る前に断る（#750）
+        for slug in ["!!!", "&amp;"] {
+            let result = call(serde_json::json!({"post_id": 7, "slug": slug})).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("letter or digit")),
+                "slug: {slug}, got: {:?}",
+                result
+            );
+        }
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    /// 無いメディアのIDでも、WordPressは投稿を保存する（#750）。投稿は
+    /// 作ったと返し、画像は付いていないことと`set_featured_image`を伝える
+    #[tokio::test]
+    async fn test_create_post_with_featured_image_reports_unset_image() {
+        async fn call(handler: &WordPressHandler) -> Result<serde_json::Value, McpError> {
+            let args: HashMap<String, serde_json::Value> = serde_json::from_value(
+                serde_json::json!({"title": "t", "content": "c", "featured_media_id": 42}),
+            )
+            .unwrap();
+            handler
+                .call_tool(ToolCallParams {
+                    name: "create_post_with_featured_image".to_string(),
+                    arguments: Some(args),
+                })
+                .await
+        }
+        let post_with_media = |media: u64| {
+            let mut post: serde_json::Value =
+                serde_json::from_str(&post_response_json("t")).unwrap();
+            post["featured_media"] = serde_json::json!(media);
+            post.to_string()
+        };
+
+        let (base_url, captured) = spawn_body_capturing_server(post_with_media(0)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call(&handler).await.unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("did not set media 42") && text.contains("Post ID: 7"),
+            "got: {text}"
+        );
+        assert!(text.contains("set_featured_image"), "got: {text}");
+        assert_eq!(result["isError"], false);
+        assert_eq!(captured.lock().await.len(), 1);
+
+        let (base_url, _) = spawn_body_capturing_server(post_with_media(42)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call(&handler).await.unwrap();
+        assert!(
+            tool_text(&result).starts_with("Created post with featured image. Post ID: 7"),
+            "got: {}",
+            tool_text(&result)
+        );
+    }
+
+    #[test]
+    fn test_extract_youtube_id_forms() {
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=10s",
+            "https://youtu.be/dQw4w9WgXcQ?si=abc",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://youtube.com/shorts/dQw4w9WgXcQ?feature=share",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+            // `v`が問い合わせの先頭でなくてもよい
+            "https://www.youtube.com/watch?feature=shared&v=dQw4w9WgXcQ",
+            // ホストの大文字・末尾のスラッシュ
+            "https://WWW.YouTube.com/shorts/dQw4w9WgXcQ/",
+            "https://youtu.be/dQw4w9WgXcQ/",
+            "https://www.youtube.com/watch/?v=dQw4w9WgXcQ",
+        ] {
+            assert_eq!(
+                WordPressHandler::extract_youtube_id(url).as_deref(),
+                Some("dQw4w9WgXcQ"),
+                "{}",
+                url
+            );
+            assert!(WordPressHandler::validate_youtube_url(url), "{}", url);
+        }
+        for url in [
+            "https://vimeo.com/123456789",
+            "https://www.youtube.com/@channel",
+            "https://www.youtube.com/watch?v=",
+            "https://www.youtube.com/watch?feature=shared",
+            "https://www.youtube.com/shorts/",
+            // パスの中の文字列・似たホスト・ユーザー名に引っかからない
+            "https://example.org/youtube.com/shorts/dQw4w9WgXcQ",
+            "https://notyoutube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com.example.org/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com@example.org/watch?v=dQw4w9WgXcQ",
+            "https://example.org/?u=youtu.be/dQw4w9WgXcQ",
+            // nocookieは`/embed/`だけ
+            "https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ",
+            // IDの後ろに余分な要素がある
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ/extra",
+            "https://www.youtube.com/watch/extra?v=dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ/extra",
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ/extra",
+            "https://youtu.be/",
+            // `http`・`https`以外・IDに使えない文字
+            "javascript://youtube.com/%0Aalert(1)//watch?v=dQw4w9WgXcQ",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ%22onload%3D",
+        ] {
+            assert_eq!(WordPressHandler::extract_youtube_id(url), None, "{}", url);
+            assert!(!WordPressHandler::validate_youtube_url(url), "{}", url);
+        }
+    }
+
+    #[test]
+    fn test_validate_social_url_checks_host() {
+        for (url, service) in [
+            ("https://twitter.com/user/status/1", "twitter"),
+            ("https://x.com/user/status/1", "twitter"),
+            ("https://mobile.x.com/user/status/1", "twitter"),
+            ("https://www.instagram.com/p/ABC123xyz/", "instagram"),
+            ("https://www.facebook.com/user/posts/1", "facebook"),
+            ("https://www.tiktok.com/@user/video/1", "tiktok"),
+            ("https://vm.tiktok.com/ZM123/", "tiktok"),
+        ] {
+            assert_eq!(
+                WordPressHandler::validate_social_url(url),
+                Some(service),
+                "{}",
+                url
+            );
+        }
+        for url in [
+            "https://example.org/x.com/user/status/1",
+            // 以前は`x.com/`を含むので受け付けていた
+            "https://www.netflix.com/title/1",
+            "https://x.com.example.org/user/status/1",
+            "https://notfacebook.com/user",
+            // Instagramは投稿（`/p/`）だけ
+            "https://www.instagram.com/user/",
+            "ftp://x.com/user/status/1",
+        ] {
+            assert_eq!(WordPressHandler::validate_social_url(url), None, "{}", url);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_post_with_embeds_lists_skipped_urls() {
+        let (base_url, captured) = spawn_body_capturing_server(post_response_json("hello")).await;
+        let handler = handler_for_local_server(base_url);
+
+        let args: HashMap<String, serde_json::Value> = [
+            ("title".to_string(), serde_json::json!("Videos")),
+            ("content".to_string(), serde_json::json!("<p>Intro</p>")),
+            (
+                "youtube_urls".to_string(),
+                serde_json::json!([
+                    "https://www.youtube.com/shorts/abc123_-X",
+                    "https://vimeo.com/123456789"
+                ]),
+            ),
+            (
+                "social_urls".to_string(),
+                serde_json::json!([
+                    "https://www.tiktok.com/@user/video/1",
+                    "https://example.org/x.com/user/status/1"
+                ]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: "create_post_with_embeds".to_string(),
+                arguments: Some(args),
+            })
+            .await
+            .unwrap();
+
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        let content = sent["content"].as_str().unwrap();
+        // Shortsは動画プレーヤーになり、対応しないURLは本文に入らない
+        assert!(
+            content.contains("https://www.youtube.com/embed/abc123_-X"),
+            "{}",
+            content
+        );
+        assert!(content.contains("https://www.tiktok.com/@user/video/1"));
+        assert!(!content.contains("vimeo.com"), "{}", content);
+        assert!(!content.contains("example.org"), "{}", content);
+
+        let text = tool_text(&result);
+        assert!(
+            text.contains(
+                "Not embedded (unsupported URL): https://vimeo.com/123456789, https://example.org/x.com/user/status/1"
+            ),
+            "{}",
+            text
+        );
     }
 
     #[tokio::test]
@@ -7687,10 +11543,9 @@ mod tests {
             .filter(|body| !body.is_empty())
             .map(|body| serde_json::from_str(body).unwrap())
             .collect();
-        assert_eq!(
-            sent,
-            vec![serde_json::json!({"title": "新しい題", "status": "future"})]
-        );
+        // 予約を保つだけなら`status`は送らない（#759。読んだ後に予約が
+        // 取り消されていても、`future`を送り直して戻さないように）
+        assert_eq!(sent, vec![serde_json::json!({"title": "新しい題"})]);
     }
 
     #[test]
@@ -7802,7 +11657,8 @@ mod tests {
         assert_eq!(read_error_body(response_with("{}")).await, "{}");
     }
 
-    /// `X-WP-TotalPages`がとても大きくても、`MAX_LIST_PAGES`ページで止める
+    /// `X-WP-TotalPages`がとても大きくても、`MAX_LIST_PAGES`ページで止め、
+    /// 途中までの一覧を全件として返さない（#692）
     #[tokio::test]
     async fn test_fetch_all_pages_stops_at_the_page_limit() {
         use std::sync::atomic::Ordering;
@@ -7813,8 +11669,24 @@ mod tests {
         )
         .await;
         let handler = handler_for_local_server(base);
-        let posts = handler.get_posts(None).await.unwrap();
-        assert!(posts.is_empty());
+        let err = handler.get_posts(None).await.unwrap_err().to_string();
+        assert!(err.contains("4294967295 pages"), "{err}");
+        assert!(err.contains("per_page and page"), "{err}");
+        assert_eq!(count.load(Ordering::SeqCst), MAX_LIST_PAGES as usize);
+    }
+
+    /// ちょうど`MAX_LIST_PAGES`ページなら、エラーにせず全件を返す
+    #[tokio::test]
+    async fn test_fetch_all_pages_reads_exactly_the_page_limit() {
+        use std::sync::atomic::Ordering;
+        assert_eq!(MAX_LIST_PAGES, 100);
+        let (base, count) = spawn_fixed_response_server(
+            "200 OK\r\nX-WP-TotalPages: 100\r\nX-WP-Total: 0",
+            "[]".to_string(),
+        )
+        .await;
+        let handler = handler_for_local_server(base);
+        assert!(handler.get_posts(None).await.unwrap().is_empty());
         assert_eq!(count.load(Ordering::SeqCst), MAX_LIST_PAGES as usize);
     }
 
@@ -7989,5 +11861,2502 @@ mod tests {
         assert!(
             tool_text(&result).starts_with("Found 0 pages (page 1 of 1, 20 per page; 0 in total):")
         );
+    }
+
+    // ---- #639: コメントの管理 ----
+
+    fn comment_json(id: u64, status: &str, parent: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "post": 7,
+            "parent": parent,
+            "status": status,
+            "date": "2026-11-19T10:00:00",
+            "author_name": "読者",
+            "author_email": "reader@example.com",
+            "author_ip": "203.0.113.9",
+            "link": "https://example.com/post/#comment-1",
+            "content": {"rendered": "<p>ありがとうございます</p>"}
+        })
+    }
+
+    async fn call_tool_with(
+        handler: &WordPressHandler,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        let args: HashMap<String, serde_json::Value> =
+            serde_json::from_value(args).expect("arguments must be an object");
+        handler
+            .call_tool(ToolCallParams {
+                name: name.to_string(),
+                arguments: Some(args),
+            })
+            .await
+    }
+
+    /// `status`で絞る。メールアドレス・IPアドレスは出さない
+    #[tokio::test]
+    async fn test_get_comments_filters_by_status_without_personal_data() {
+        let list = serde_json::json!([comment_json(1, "hold", 0)]).to_string();
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/comments?per_page=100&page=1&post=7&status=hold",
+            "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+            list,
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_comments",
+            serde_json::json!({"post_id": 7, "status": "hold"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.starts_with("Found 1 comments:"), "{text}");
+        assert!(text.contains("\"status\": \"hold\""), "{text}");
+        assert!(!text.contains("reader@example.com"), "{text}");
+        assert!(!text.contains("203.0.113.9"), "{text}");
+    }
+
+    /// `post_id`は`7.0`も同じIDとし、読めない値は絞らずに読まずに断る（#774）
+    #[tokio::test]
+    async fn test_get_comments_post_id_is_parsed_strictly() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/comments?per_page=100&page=1&post=7",
+            "200 OK
+X-WP-Total: 1
+X-WP-TotalPages: 1",
+            serde_json::json!([comment_json(1, "approved", 0)]).to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_comments",
+            serde_json::json!({"post_id": 7.0}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            tool_text(&result).starts_with("Found 1 comments:"),
+            "{result}"
+        );
+        for post_id in [
+            serde_json::json!("7"),
+            serde_json::json!(-1),
+            serde_json::json!(0),
+            serde_json::json!(7.5),
+        ] {
+            let result = call_tool_with(
+                &handler,
+                "get_comments",
+                serde_json::json!({ "post_id": post_id }),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("post_id must be a positive integer")),
+                "{post_id}: {:?}",
+                result
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_comments_refuses_unknown_status() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        let result = call_tool_with(
+            &handler,
+            "get_comments",
+            serde_json::json!({"status": "approve&post=1"}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("status must be one of")),
+            "{:?}",
+            result
+        );
+    }
+
+    /// 返信は、既定で承認待ちで作る。投稿は、返信先のコメントから決める
+    #[tokio::test]
+    async fn test_create_comment_reply_is_held_by_default() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(comment_json(5, "hold", 1).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "create_comment",
+            serde_json::json!({"parent": 1, "content": "ご質問ありがとうございます"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        // 返信先のコメントを読む（本文の無いGET）、作る
+        assert_eq!(bodies.len(), 2, "{:?}", bodies);
+        assert!(bodies[0].is_empty());
+        let sent: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({
+                "post": 7,
+                "parent": 1,
+                "content": "ご質問ありがとうございます",
+                "status": "hold"
+            })
+        );
+        let text = tool_text(&result);
+        assert!(
+            text.contains("ID 5 on post 7, reply to 1 (Status: hold"),
+            "{text}"
+        );
+        assert!(text.contains("held for moderation"), "{text}");
+    }
+
+    /// `status: approve`で、すぐに公開する。`post_id`があれば、返信先を読まない
+    #[tokio::test]
+    async fn test_create_comment_can_publish_at_once() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(comment_json(6, "approved", 1).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "create_comment",
+            serde_json::json!({"post_id": 7, "parent": 1, "content": "返信", "status": "approve"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent["status"], "approve");
+        assert!(!tool_text(&result).contains("held for moderation"));
+        assert_eq!(result["isError"], false);
+    }
+
+    /// 頼んだ状態と違う状態で作られたら、作成済みであること・ID・実際の
+    /// 状態・直し方を返し、エラーにする。作り直しは勧めない（#779）
+    #[tokio::test]
+    async fn test_create_comment_reports_status_differing_from_request() {
+        for (requested, returned) in [("approve", "hold"), ("hold", "approved")] {
+            let (base_url, _captured) =
+                spawn_body_capturing_server(comment_json(6, returned, 1).to_string()).await;
+            let handler = handler_for_local_server(base_url);
+            let result = call_tool_with(
+                &handler,
+                "create_comment",
+                serde_json::json!({"post_id": 7, "content": "返信", "status": requested}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["isError"], true);
+            let text = tool_text(&result);
+            assert!(
+                text.starts_with("The comment was created, but WordPress set its status to"),
+                "{text}"
+            );
+            assert!(text.contains(&format!("'{returned}'")), "{text}");
+            assert!(text.contains("Comment ID: 6."), "{text}");
+            assert!(
+                text.contains(&format!(
+                    "update_comment (comment_id: 6, status: {requested})"
+                )),
+                "{text}"
+            );
+            assert!(text.contains("Do not create it again"), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_comment_requires_content_and_post() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (args, message) in [
+            (serde_json::json!({"post_id": 7}), "Missing content"),
+            (
+                serde_json::json!({"post_id": 7, "content": "  "}),
+                "Missing content",
+            ),
+            (serde_json::json!({"content": "返信"}), "Missing post_id"),
+            (
+                serde_json::json!({"post_id": 7, "content": "返信", "status": "spam"}),
+                "status must be one of: approve, hold",
+            ),
+            (
+                serde_json::json!({"post_id": 0, "content": "返信"}),
+                "post_id must be a positive integer",
+            ),
+        ] {
+            let result = call_tool_with(&handler, "create_comment", args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{args}: {:?}",
+                result
+            );
+        }
+    }
+
+    /// 状態を変える
+    #[tokio::test]
+    async fn test_update_comment_changes_status() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(comment_json(1, "spam", 0).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_comment",
+            serde_json::json!({"comment_id": 1, "status": "spam"}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent, serde_json::json!({"status": "spam"}));
+        assert!(tool_text(&result).contains("(Status: spam"));
+    }
+
+    #[tokio::test]
+    async fn test_update_comment_requires_a_change() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (args, message) in [
+            (
+                serde_json::json!({"comment_id": 1}),
+                "Pass status or content",
+            ),
+            (
+                serde_json::json!({"status": "approve"}),
+                "Missing comment_id",
+            ),
+            (
+                serde_json::json!({"comment_id": 1, "status": "all"}),
+                "status must be one of",
+            ),
+        ] {
+            let result = call_tool_with(&handler, "update_comment", args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{args}: {:?}",
+                result
+            );
+        }
+    }
+
+    /// 既定はゴミ箱。`force`で完全に消す
+    #[tokio::test]
+    async fn test_delete_comment_moves_to_trash_by_default() {
+        let (base_url, _) =
+            spawn_body_capturing_server(comment_json(1, "trash", 0).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let trashed = call_tool_with(
+            &handler,
+            "delete_comment",
+            serde_json::json!({"comment_id": 1}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_text(&trashed), "Deleted comment ID 1 (moved to trash)");
+        let deleted = call_tool_with(
+            &handler,
+            "delete_comment",
+            serde_json::json!({"comment_id": 1, "force": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_text(&deleted), "Deleted comment ID 1 (permanently)");
+    }
+
+    /// 印: 読むだけ・作る・変える（#417と同じ規則）。変えるツールは監査ログに残る
+    #[tokio::test]
+    async fn test_comment_tools_annotations() {
+        assert_eq!(
+            wordpress_tool_annotations("get_comments").read_only_hint,
+            Some(true)
+        );
+        let create = wordpress_tool_annotations("create_comment");
+        assert_eq!(create.read_only_hint, Some(false));
+        assert_eq!(create.destructive_hint, Some(false));
+        for name in ["update_comment", "delete_comment"] {
+            let a = wordpress_tool_annotations(name);
+            assert_eq!(a.read_only_hint, Some(false), "{name}");
+            assert_eq!(a.destructive_hint, Some(true), "{name}");
+        }
+        for name in ["create_comment", "update_comment", "delete_comment"] {
+            assert!(is_mutating_tool(name), "{name}");
+        }
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        let tools = handler.list_tools().await.unwrap();
+        for name in ["create_comment", "update_comment", "delete_comment"] {
+            assert!(tools.iter().any(|t| t.name == name), "{name}");
+        }
+    }
+
+    // ---- #641: リビジョン ----
+
+    /// リビジョンの応答（`context=edit`）。書き戻しの応答（投稿）としても読める
+    /// ように、投稿の項目（`status`・`slug`・`type`）も持たせる
+    fn revision_json(id: u64, parent: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "parent": parent,
+            "author": 2,
+            "date": "2026-11-18T09:00:00",
+            "title": {"raw": "前の題", "rendered": "前の題"},
+            "content": {"raw": "<!-- wp:paragraph --><p>前の本文</p><!-- /wp:paragraph -->", "rendered": "<p>前の本文</p>"},
+            "excerpt": {"raw": "前の抜粋", "rendered": "<p>前の抜粋</p>"},
+            "status": "publish",
+            "slug": "post",
+            "type": "post"
+        })
+    }
+
+    /// 一覧: 新しい順に、日時・書いた人の名前・題・長さを出す
+    #[tokio::test]
+    async fn test_get_revisions_lists_with_author_names() {
+        let list = serde_json::json!([revision_json(12, 7), revision_json(11, 7)]).to_string();
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/posts/7/revisions?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 2\r\nX-WP-TotalPages: 1",
+                list,
+            ),
+            (
+                "/wp-json/wp/v2/users/2",
+                "200 OK",
+                r#"{"id":2,"name":"編集者"}"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_revisions", serde_json::json!({"post_id": 7}))
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.starts_with("Found 2 revisions of post 7 (newest first):\nID 12 (Date: 2026-11-18T09:00:00, Author: 編集者): 前の題 — 4 characters: 前の本文"),
+            "{text}"
+        );
+    }
+
+    /// 書いた人の名前は、重ならない人ごとに同時に聞き、全体の時間を過ぎたら
+    /// `user {ID}`にする（#684）
+    #[tokio::test]
+    async fn test_user_names_are_fetched_concurrently_within_limit() {
+        let (base, count) = spawn_silent_server().await;
+        let handler = handler_for_local_server(base);
+        let started = std::time::Instant::now();
+        let names = handler
+            .user_names([3, 2, 3, 5], Duration::from_millis(300))
+            .await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[&2], "user 2");
+        assert_eq!(names[&5], "user 5");
+        // 同時に聞いている（1人ずつなら、最初の人で時間切れになる）
+        assert_eq!(request_count(&count), 3);
+    }
+
+    #[tokio::test]
+    async fn test_get_revisions_of_a_page_without_revisions() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/pages/3/revisions?per_page=100&page=1",
+            "200 OK\r\nX-WP-Total: 0\r\nX-WP-TotalPages: 0",
+            "[]".to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_revisions",
+            serde_json::json!({"post_id": 3, "post_type": "page"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_text(&result), "page 3 has no revisions.");
+    }
+
+    /// 1つのリビジョンを、既定では編集用の原文で読む
+    #[tokio::test]
+    async fn test_get_revision_reads_raw_by_default() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/posts/7/revisions/11?context=edit",
+            "200 OK",
+            revision_json(11, 7).to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.contains("Format: raw"), "{text}");
+        assert!(text.contains("Excerpt: 前の抜粋"), "{text}");
+        assert!(text.contains("<!-- wp:paragraph -->"), "{text}");
+
+        let result = call_tool_with(
+            &handler,
+            "get_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11, "format": "text"}),
+        )
+        .await
+        .unwrap();
+        assert!(tool_text(&result).ends_with("Content:\n前の本文"));
+    }
+
+    /// 書き戻し: リビジョンの原文の題・本文・抜粋だけを送る（状態等は送らない）
+    #[tokio::test]
+    async fn test_restore_revision_sends_title_content_and_excerpt() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(revision_json(11, 7).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 2, "{:?}", bodies);
+        assert!(bodies[0].is_empty());
+        let sent: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({
+                "title": "前の題",
+                "content": "<!-- wp:paragraph --><p>前の本文</p><!-- /wp:paragraph -->",
+                "excerpt": "前の抜粋"
+            })
+        );
+        let text = tool_text(&result);
+        assert!(
+            text.starts_with("Restored post 7 to revision 11 (from 2026-11-18T09:00:00): title, content, excerpt."),
+            "{text}"
+        );
+        assert!(text.contains("Status: publish"), "{text}");
+    }
+
+    /// 本文・抜粋の無いリビジョン（`editor`・`excerpt`に対応していない
+    /// 投稿タイプ）も読め、書き戻しはある項目だけを送る（#774）
+    #[tokio::test]
+    async fn test_revision_without_content_field() {
+        let mut revision = revision_json(11, 7);
+        let object = revision.as_object_mut().unwrap();
+        object.remove("content");
+        object.remove("excerpt");
+        let list = serde_json::json!([revision.clone()]).to_string();
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/posts/7/revisions?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                list,
+            ),
+            (
+                "/wp-json/wp/v2/posts/7/revisions/11?context=edit",
+                "200 OK",
+                revision.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/users/2",
+                "200 OK",
+                r#"{"id":2,"name":"編集者"}"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_revisions", serde_json::json!({"post_id": 7}))
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.ends_with(
+                "ID 11 (Date: 2026-11-18T09:00:00, Author: 編集者): 前の題 — no content field"
+            ),
+            "{text}"
+        );
+        let result = call_tool_with(
+            &handler,
+            "get_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.contains("Title: 前の題\n"), "{text}");
+        // 本文が無ければ、タイトルの原文で形を決める（PR #777のレビュー）
+        assert!(text.contains("Format: raw\n"), "{text}");
+        assert!(text.ends_with("Content:\n(none)"), "{text}");
+
+        // 抜粋だけを持つリビジョンは、抜粋の原文で形を決める（#779）
+        for (excerpt, format) in [
+            (
+                serde_json::json!({"raw": "前の抜粋", "rendered": "<p>前の抜粋</p>"}),
+                "Format: raw\n",
+            ),
+            (
+                serde_json::json!({"rendered": "<p>前の抜粋</p>"}),
+                "Format: rendered HTML (raw source unavailable)\n",
+            ),
+        ] {
+            let mut excerpt_only = revision.clone();
+            let object = excerpt_only.as_object_mut().unwrap();
+            object.remove("title");
+            object.insert("excerpt".to_string(), excerpt);
+            let base = spawn_routing_server(vec![
+                (
+                    "/wp-json/wp/v2/posts/7/revisions/11?context=edit",
+                    "200 OK",
+                    excerpt_only.to_string(),
+                ),
+                (
+                    "/wp-json/wp/v2/users/2",
+                    "200 OK",
+                    r#"{"id":2,"name":"編集者"}"#.to_string(),
+                ),
+            ])
+            .await;
+            let handler = handler_for_local_server(base);
+            let result = call_tool_with(
+                &handler,
+                "get_revision",
+                serde_json::json!({"post_id": 7, "revision_id": 11, "format": "raw"}),
+            )
+            .await
+            .unwrap();
+            let text = tool_text(&result);
+            assert!(text.contains(format), "{text}");
+            assert!(text.contains("Excerpt: "), "{text}");
+        }
+
+        let (base_url, captured) = spawn_body_capturing_server(revision.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await
+        .unwrap();
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 2, "{:?}", bodies);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+        assert_eq!(sent, serde_json::json!({"title": "前の題"}));
+        let text = tool_text(&result);
+        assert!(
+            text.contains("(from 2026-11-18T09:00:00): title."),
+            "{text}"
+        );
+        assert!(!text.contains("excerpt"), "{text}");
+    }
+
+    /// 抜粋も、原文が読めなければ、表示用HTMLで上書きせずに断る（#774）
+    #[tokio::test]
+    async fn test_restore_revision_needs_raw_excerpt() {
+        let mut revision = revision_json(11, 7);
+        revision["excerpt"] = serde_json::json!({"rendered": "<p>前の抜粋</p>"});
+        let (base_url, captured) = spawn_body_capturing_server(revision.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("did not return the excerpt of revision 11")),
+            "{:?}",
+            result
+        );
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    /// 別の投稿のリビジョンは、書き戻さない
+    #[tokio::test]
+    async fn test_restore_revision_refuses_another_posts_revision() {
+        let (base_url, captured) =
+            spawn_body_capturing_server(revision_json(11, 8).to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg == "revision 11 belongs to post 8, not 7"),
+            "{:?}",
+            result
+        );
+        // 読んだだけで、書き戻しは送らない
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    /// 原文が読めなければ（編集の権限が無い）、表示用HTMLで上書きしない
+    #[tokio::test]
+    async fn test_restore_revision_needs_raw_source() {
+        let mut revision = revision_json(11, 7);
+        revision["title"] = serde_json::json!({"rendered": "前の題"});
+        revision["content"] = serde_json::json!({"rendered": "<p>前の本文</p>"});
+        let (base_url, captured) = spawn_body_capturing_server(revision.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "restore_revision",
+            serde_json::json!({"post_id": 7, "revision_id": 11}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("needs credentials with edit permission")),
+            "{:?}",
+            result
+        );
+        assert_eq!(captured.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_revision_tools_check_arguments_and_marks() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (name, args, message) in [
+            ("get_revisions", serde_json::json!({}), "Missing post_id"),
+            (
+                "get_revisions",
+                serde_json::json!({"post_id": 7, "post_type": "attachment"}),
+                "post_type 'attachment' is not allowed",
+            ),
+            (
+                "get_revision",
+                serde_json::json!({"post_id": 7}),
+                "Missing revision_id",
+            ),
+            (
+                "restore_revision",
+                serde_json::json!({"post_id": 7, "revision_id": 0}),
+                "revision_id must be a positive integer",
+            ),
+        ] {
+            let result = call_tool_with(&handler, name, args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{name} {args}: {:?}",
+                result
+            );
+        }
+        for name in ["get_revisions", "get_revision"] {
+            assert_eq!(wordpress_tool_annotations(name).read_only_hint, Some(true));
+        }
+        let restore = wordpress_tool_annotations("restore_revision");
+        assert_eq!(restore.read_only_hint, Some(false));
+        assert_eq!(restore.destructive_hint, Some(true));
+        assert_eq!(restore.idempotent_hint, Some(true));
+        assert!(is_mutating_tool("restore_revision"));
+        // コメントのツールの監査ログに、コメントのIDを残す
+        let args: HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({"comment_id": 5})).unwrap();
+        for name in ["update_comment", "delete_comment"] {
+            assert_eq!(
+                extract_target_id(name, &Some(args.clone())),
+                Some("5".to_string())
+            );
+        }
+    }
+
+    // ---- #642: カスタム投稿タイプと独自のタクソノミー ----
+    // handler_for_local_serverは、post_types = ["product"]
+
+    fn product_type_json() -> String {
+        r#"{"slug":"product","name":"Products","rest_base":"products","rest_namespace":"wp/v2","taxonomies":["product_cat"]}"#.to_string()
+    }
+
+    fn product_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 21,
+            "slug": "mug",
+            "status": "publish",
+            "type": "product",
+            "title": {"rendered": "マグカップ"},
+            "content": {"rendered": "<p>説明</p>"},
+            "product_cat": [12, 15],
+            // 投稿タイプの応答としても読めるように
+            "rest_base": "products",
+            "rest_namespace": "wp/v2"
+        })
+    }
+
+    /// 設定で許したカスタム投稿タイプは、サイトの`rest_base`の場所を使う
+    #[tokio::test]
+    async fn test_custom_post_type_uses_rest_base() {
+        let list = serde_json::json!([product_json()]).to_string();
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/types/product",
+                "200 OK",
+                product_type_json(),
+            ),
+            (
+                "/wp-json/wp/v2/products?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                list,
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        assert_eq!(handler.post_type_endpoint("post").await.unwrap(), "posts");
+        assert_eq!(handler.post_type_endpoint("page").await.unwrap(), "pages");
+        let result = call_tool_with(
+            &handler,
+            "get_posts",
+            serde_json::json!({"post_type": "product"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.starts_with("Found 1 products:"), "{text}");
+        assert!(text.contains("マグカップ"), "{text}");
+        // 2回目は、サイトに聞かない
+        assert!(handler.type_endpoints.lock().await.contains_key("product"));
+    }
+
+    /// 設定に無い型・名前の形でない型は、サイトに送らない
+    #[tokio::test]
+    async fn test_custom_post_type_must_be_allowed() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (post_type, message) in [
+            ("event", "post_type 'event' is not allowed: mcp-rs uses only post, page, product. To use it, add it to post_types"),
+            ("../users", "is not a post type name"),
+        ] {
+            let result = call_tool_with(
+                &handler,
+                "get_post",
+                serde_json::json!({"post_id": 1, "post_type": post_type}),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{post_type}: {:?}",
+                result
+            );
+        }
+    }
+
+    /// `wp/v2`の外（WooCommerceの`wc/v3`等）にある型は使えない
+    #[tokio::test]
+    async fn test_custom_post_type_outside_wp_v2_is_refused() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/types/product",
+            "200 OK",
+            r#"{"slug":"product","rest_base":"products","rest_namespace":"wc/v3"}"#.to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let err = handler.post_type_endpoint("product").await.unwrap_err();
+        assert!(err.to_string().contains("namespace 'wc/v3'"), "{err}");
+    }
+
+    /// `terms`で、独自のタクソノミーの項目を付け替える
+    #[tokio::test]
+    async fn test_update_post_sends_terms() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "terms": {"product_cat": [12, 15], "product_tag": []}
+            }),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        let (request, body) = requests.last().unwrap();
+        assert_eq!(request, "PUT /wp-json/wp/v2/products/21");
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"product_cat": [12, 15], "product_tag": []})
+        );
+    }
+
+    /// `product`の型・タクソノミー・投稿の応答（#684）
+    fn product_routes() -> Vec<(&'static str, String)> {
+        vec![
+            ("/wp-json/wp/v2/types/product", product_type_json()),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                r#"{"product_cat":{"rest_base":"product_cat"},"product_tag":{"rest_base":"product_tag"}}"#
+                    .to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/product_cat?include=",
+                r#"[{"id":12},{"id":15}]"#.to_string(),
+            ),
+            ("/wp-json/wp/v2/products", product_json().to_string()),
+        ]
+    }
+
+    /// `terms`の項目IDがタクソノミーに無ければ、送らずに断る（#774）。
+    /// WordPressは無いIDを黙って飛ばし、ほかの項目を外して成功と返すため。
+    /// 空の配列は調べない
+    #[tokio::test]
+    async fn test_terms_with_unknown_ids_are_refused() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "terms": {"product_cat": [15, 99, 12, 99], "product_tag": []}
+            }),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg))
+                if msg.contains("terms.product_cat: no term with ID 99 in 'product_cat'")),
+            "{:?}",
+            result
+        );
+        let requests = captured.lock().await;
+        assert!(
+            requests
+                .iter()
+                .all(|(request, _)| request.starts_with("GET ")),
+            "{requests:?}"
+        );
+        assert!(
+            requests.iter().any(|(request, _)| request
+                == "GET /wp-json/wp/v2/product_cat?include=12,15,99&per_page=100&_fields=id"),
+            "{requests:?}"
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/product_tag")),
+            "{requests:?}"
+        );
+    }
+
+    /// `categories`・`tags`の項目IDも、無ければ送らずに断る（#779）。投稿
+    /// （`post`）でも確かめる。空の配列（全部外す）は調べない
+    #[tokio::test]
+    async fn test_categories_and_tags_with_unknown_ids_are_refused() {
+        let routes = || {
+            vec![
+                (
+                    "/wp-json/wp/v2/categories?include=",
+                    r#"[{"id":3}]"#.to_string(),
+                ),
+                ("/wp-json/wp/v2/tags?include=", r#"[{"id":5}]"#.to_string()),
+                ("/wp-json/wp/v2/posts", post_response_json("x")),
+            ]
+        };
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        for (tool, args, message) in [
+            (
+                "update_post",
+                serde_json::json!({"post_id": 7, "tags": [5, 99]}),
+                "tags: no term with ID 99 in 'tags'. WordPress would skip it and still remove the other terms. See get_tags",
+            ),
+            (
+                "update_post",
+                serde_json::json!({"post_id": 7, "categories": [99, 3], "tags": []}),
+                "categories: no term with ID 99 in 'categories'. WordPress would skip it and still remove the other terms. See get_categories",
+            ),
+            (
+                "create_advanced_post",
+                serde_json::json!({"title": "題", "content": "本文", "tags": [99]}),
+                "tags: no term with ID 99 in 'tags'",
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.starts_with(message)),
+                "{:?}",
+                result
+            );
+        }
+        {
+            let requests = captured.lock().await;
+            assert!(
+                requests
+                    .iter()
+                    .all(|(request, _)| request.starts_with("GET ")),
+                "{requests:?}"
+            );
+            assert!(
+                requests.iter().any(|(request, _)| request
+                    == "GET /wp-json/wp/v2/tags?include=5,99&per_page=100&_fields=id"),
+                "{requests:?}"
+            );
+            // 投稿（`post`）では、タクソノミーの一覧は読まない
+            assert!(
+                !requests
+                    .iter()
+                    .any(|(request, _)| request.contains("/taxonomies")),
+                "{requests:?}"
+            );
+        }
+
+        // 空の配列は調べずに送る
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 7, "tags": []}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        let (request, body) = &requests[0];
+        assert_eq!(request, "PUT /wp-json/wp/v2/posts/7");
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent, serde_json::json!({"tags": []}));
+    }
+
+    /// カスタム投稿タイプの`categories`・`tags`が`/wp/v2`の外のタクソノミー
+    /// なら、`terms`と同じくIDを調べずに送る（PR #781のレビュー）
+    #[tokio::test]
+    async fn test_categories_outside_wp_v2_are_not_checked() {
+        let mut routes = product_routes();
+        routes[1].1 =
+            r#"{"genre":{"rest_base":"categories","rest_namespace":"shop/v1"}}"#.to_string();
+        let (base_url, captured) = spawn_routing_capturing_server(routes).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 21, "post_type": "product", "categories": [99]}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/wp/v2/categories")),
+            "{requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),
+            "{requests:?}"
+        );
+    }
+
+    /// 抜粋とタグに対応しない投稿タイプに、抜粋と空の`tags`だけを渡したら、
+    /// どちらも保存されないのでエラー（PR #781のレビュー）
+    #[tokio::test]
+    async fn test_excerpt_with_unsupported_empty_tags_is_an_error() {
+        let (base_url, _captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "excerpt": "要約",
+                "tags": []
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // アイキャッチ画像も、応答に反映されていなければ数えない
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "excerpt": "要約",
+                "featured_media_id": 42
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // 本文も、応答に本文が無ければ数えない（PR #773の3回目のレビュー）。
+        // 本文に対応する投稿タイプなら、今までどおり一部成功
+        let mut without_content = product_json();
+        without_content.as_object_mut().unwrap().remove("content");
+        for (product, is_error) in [(without_content, true), (product_json(), false)] {
+            let mut routes = product_routes();
+            routes[3].1 = product.to_string();
+            let (base_url, _captured) = spawn_routing_capturing_server(routes).await;
+            let handler = handler_for_local_server(base_url);
+            let result = call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({
+                    "post_id": 21,
+                    "post_type": "product",
+                    "excerpt": "要約",
+                    "content": "本文"
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["isError"], is_error, "{}", tool_text(&result));
+        }
+    }
+
+    /// 投稿タイプに登録されていないタクソノミーの`terms`は、送らずに断る
+    /// （WordPressは黙って無視するため。#684）
+    #[tokio::test]
+    async fn test_terms_of_unregistered_taxonomy_are_refused() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        for (tool, args) in [
+            (
+                "update_post",
+                serde_json::json!({
+                    "post_id": 21,
+                    "post_type": "product",
+                    "terms": {"product_cat": [12], "genre": [3]}
+                }),
+            ),
+            (
+                "create_advanced_post",
+                serde_json::json!({
+                    "title": "マグカップ",
+                    "content": "説明",
+                    "post_type": "product",
+                    "terms": {"genre": [3]}
+                }),
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg))
+                    if msg.contains("'genre' is not a taxonomy of post type 'product'")
+                        && msg.contains("Valid: product_cat, product_tag")),
+                "{tool}: {:?}",
+                result
+            );
+        }
+        // 投稿は書き換えていない
+        let requests = captured.lock().await;
+        assert!(
+            requests
+                .iter()
+                .all(|(request, _)| request.starts_with("GET ")),
+            "{requests:?}"
+        );
+    }
+
+    /// `terms`が無ければ、タクソノミーを調べない（#684）
+    #[tokio::test]
+    async fn test_update_post_without_terms_skips_taxonomy_lookup() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 21, "post_type": "product", "title": "x"}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/taxonomies")),
+            "{requests:?}"
+        );
+    }
+
+    /// 本文のない投稿タイプ（`editor`に対応していない）の投稿も読め、
+    /// 空の本文としては見せない（#684）
+    #[tokio::test]
+    async fn test_get_post_of_type_without_content() {
+        let mut product = product_json();
+        let object = product.as_object_mut().unwrap();
+        object.remove("content");
+        object.remove("title");
+        let post: WordPressPost = serde_json::from_value(product.clone()).unwrap();
+        assert!(post.content.is_none());
+        assert_eq!(post.title.rendered, "");
+        // 本文のないまま書き出しても、`content`を含めない
+        assert!(serde_json::to_value(&post)
+            .unwrap()
+            .get("content")
+            .is_none());
+
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/types/product",
+                "200 OK",
+                product_type_json(),
+            ),
+            ("/wp-json/wp/v2/products/21", "200 OK", product.to_string()),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                "200 OK",
+                r#"{"product_cat":{"rest_base":"product_cat"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/categories",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/tags",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_post",
+            serde_json::json!({"post_id": 21, "post_type": "product"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("Note: This post type has no content field"),
+            "{text}"
+        );
+        assert!(text.ends_with("Content:\n(none)"), "{text}");
+    }
+
+    #[test]
+    fn test_terms_arg_rejects_other_fields_and_bad_ids() {
+        let args = |value: serde_json::Value| -> HashMap<String, serde_json::Value> {
+            serde_json::from_value(serde_json::json!({ "terms": value })).unwrap()
+        };
+        assert_eq!(terms_arg(&HashMap::new()).unwrap(), None);
+        for (value, message) in [
+            (serde_json::json!([1]), "terms must be an object"),
+            (
+                serde_json::json!({"status": [1]}),
+                "'status' is not a taxonomy",
+            ),
+            (serde_json::json!({"Product Cat": [1]}), "is not a taxonomy"),
+            (
+                serde_json::json!({"product_cat": 1}),
+                "terms.product_cat must be a list of term IDs",
+            ),
+            (
+                serde_json::json!({"product_cat": [0]}),
+                "terms.product_cat must be a list of term IDs",
+            ),
+        ] {
+            let err = terms_arg(&args(value.clone())).unwrap_err();
+            assert!(err.to_string().contains(message), "{value}: {err}");
+        }
+    }
+
+    /// 型の一覧は、使えるか（設定で許したか）も出す
+    #[tokio::test]
+    async fn test_get_post_types_shows_whether_usable() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/wp/v2/types",
+            "200 OK",
+            r#"{"post":{"name":"Posts","taxonomies":["category","post_tag"]},"product":{"name":"Products","taxonomies":["product_cat"]},"event":{"name":"Events","taxonomies":[]}}"#.to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_post_types", serde_json::json!({}))
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.contains("post (Posts): usable; taxonomies: category, post_tag"),
+            "{text}"
+        );
+        assert!(
+            text.contains("product (Products): usable; taxonomies: product_cat"),
+            "{text}"
+        );
+        assert!(
+            text.contains("event (Events): not allowed (add it to post_types"),
+            "{text}"
+        );
+    }
+
+    /// 項目の一覧は、タクソノミーの名前から`rest_base`を決めて読む
+    #[tokio::test]
+    async fn test_get_terms_resolves_rest_base() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/taxonomies",
+                "200 OK",
+                r#"{"product_cat":{"name":"Product categories","rest_base":"product_cat","rest_namespace":"wp/v2"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/product_cat?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                r#"[{"id":12,"name":"食器","slug":"dishes","parent":0,"count":3}]"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_terms",
+            serde_json::json!({"taxonomy": "product_cat"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_text(&result),
+            "Found 1 terms in product_cat:\nID 12: 食器 (slug: dishes, parent: 0, posts: 3)"
+        );
+        let missing = call_tool_with(
+            &handler,
+            "get_terms",
+            serde_json::json!({"taxonomy": "genre"}),
+        )
+        .await;
+        assert!(
+            matches!(missing, Err(McpError::InvalidParams(ref msg)) if msg.contains("taxonomy 'genre' was not found")),
+            "{:?}",
+            missing
+        );
+    }
+
+    /// 名前と`rest_base`が別々のタクソノミーに合うときは、`rest_base`の合う方を
+    /// 読む。応答の順で選ばない（#774）
+    #[tokio::test]
+    async fn test_get_terms_prefers_rest_base_over_name() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/taxonomies",
+                "200 OK",
+                r#"{"topics":{"name":"Book topics","rest_base":"book-topics"},"genre":{"name":"Genres","rest_base":"topics"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/topics?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                r#"[{"id":3,"name":"小説","slug":"novel","parent":0,"count":1}]"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/book-topics?per_page=100&page=1",
+                "200 OK\r\nX-WP-Total: 1\r\nX-WP-TotalPages: 1",
+                r#"[{"id":8,"name":"歴史","slug":"history","parent":0,"count":2}]"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_terms",
+            serde_json::json!({"taxonomy": "topics"}),
+        )
+        .await
+        .unwrap();
+        assert!(tool_text(&result).contains("ID 3: 小説"), "{result}");
+        let result = call_tool_with(
+            &handler,
+            "get_terms",
+            serde_json::json!({"taxonomy": "book-topics"}),
+        )
+        .await
+        .unwrap();
+        assert!(tool_text(&result).contains("ID 8: 歴史"), "{result}");
+    }
+
+    /// カスタム投稿タイプの`get_post`は、独自のタクソノミーの項目も出す
+    #[tokio::test]
+    async fn test_get_post_shows_custom_terms() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/types/product",
+                "200 OK",
+                product_type_json(),
+            ),
+            (
+                "/wp-json/wp/v2/products/21",
+                "200 OK",
+                product_json().to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                "200 OK",
+                r#"{"product_cat":{"rest_base":"product_cat"}}"#.to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/categories",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/tags",
+                "200 OK\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(
+            &handler,
+            "get_post",
+            serde_json::json!({"post_id": 21, "post_type": "product"}),
+        )
+        .await
+        .unwrap();
+        let text = tool_text(&result);
+        assert!(text.contains("Terms: product_cat: 12, 15\n"), "{text}");
+    }
+
+    /// ツールの`post_type`には、許した型だけを見せる
+    #[tokio::test]
+    async fn test_tools_list_only_allowed_post_types() {
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        let tools = handler.list_tools().await.unwrap();
+        let enum_of = |name: &str| {
+            tools.iter().find(|t| t.name == name).unwrap().input_schema["properties"]["post_type"]
+                ["enum"]
+                .clone()
+        };
+        assert_eq!(
+            enum_of("get_post"),
+            serde_json::json!(["post", "page", "product"])
+        );
+        assert_eq!(
+            enum_of("update_post"),
+            serde_json::json!(["post", "page", "product"])
+        );
+        assert_eq!(enum_of("get_posts"), serde_json::json!(["post", "product"]));
+
+        // 許していなければ、今までと同じ（get_postsにpost_typeは無い）
+        let plain = rate_limited_handler(RateLimitConfig::default());
+        let tools = plain.list_tools().await.unwrap();
+        let get_posts = tools.iter().find(|t| t.name == "get_posts").unwrap();
+        assert!(get_posts.input_schema["properties"]
+            .get("post_type")
+            .is_none());
+        let get_post = tools.iter().find(|t| t.name == "get_post").unwrap();
+        assert_eq!(
+            get_post.input_schema["properties"]["post_type"]["enum"],
+            serde_json::json!(["post", "page"])
+        );
+    }
+
+    #[test]
+    fn test_try_new_rejects_bad_post_types() {
+        for post_type in ["Product", "page", "a/b"] {
+            let config: WordPressConfig = toml::from_str(&format!(
+                "url = \"https://example.com\"\nenabled = true\nusername = \"u\"\npassword = \"p\"\npost_types = [\"{post_type}\"]\n"
+            ))
+            .unwrap();
+            let err = WordPressHandler::try_new(config).unwrap_err();
+            assert!(
+                err.contains("is not a custom post type name"),
+                "{post_type}: {err}"
+            );
+        }
+    }
+
+    // ---- #644: リソースのテンプレート ----
+
+    #[test]
+    fn test_resource_template_target_parses_ids() {
+        assert_eq!(
+            resource_template_target("wordpress://post/{id}"),
+            Some((ResourceKind::Post, ResourceId::Placeholder))
+        );
+        assert_eq!(
+            resource_template_target("wordpress://page/42"),
+            Some((ResourceKind::Page, ResourceId::Id(42)))
+        );
+        assert_eq!(
+            resource_template_target("wordpress://media/7"),
+            Some((ResourceKind::Media, ResourceId::Id(7)))
+        );
+        for uri in [
+            "wordpress://post/0",
+            "wordpress://post/012",
+            "wordpress://post/-1",
+            "wordpress://post/ 1",
+            "wordpress://post/1a",
+            "wordpress://post/",
+            "wordpress://post/1/x",
+            "wordpress://posts/1",
+            "wordpress://user/1",
+            "other://post/1",
+            "wordpress://post/99999999999999999999999",
+        ] {
+            assert_eq!(resource_template_target(uri), None, "{uri}");
+        }
+    }
+
+    /// テンプレートは、どれも読み取りのツールに対応する（#538と同じ規則）
+    #[tokio::test]
+    async fn test_every_resource_template_maps_to_a_read_only_tool() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let tools = handler.list_tools().await.unwrap();
+        let templates = handler.list_resource_templates().await.unwrap();
+        assert_eq!(templates.len(), 3);
+        for template in templates {
+            let name = handler.resource_tool(&template.uri_template).unwrap();
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(
+                tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+                Some(true),
+                "{}",
+                template.uri_template
+            );
+            let filled = template.uri_template.replace("{id}", "5");
+            assert_eq!(handler.resource_tool(&filled), Some(name));
+        }
+    }
+
+    /// 1件を読む。WordPressが404なら、無いリソース（-32002）
+    #[tokio::test]
+    async fn test_read_post_by_template_and_not_found() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/pages/7",
+                "200 OK",
+                post_json_with("publish", "2026-11-10T10:00:00"),
+            ),
+            (
+                "/wp-json/wp/v2/posts/9",
+                "404 Not Found",
+                r#"{"code":"rest_post_invalid_id","message":"Invalid post ID."}"#.to_string(),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let page = handler
+            .read_resource(ResourceReadParams {
+                uri: "wordpress://page/7".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page["contents"][0]["uri"], "wordpress://page/7");
+        let text = page["contents"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"id\": 7"), "{text}");
+
+        let missing = handler
+            .read_resource(ResourceReadParams {
+                uri: "wordpress://post/9".to_string(),
+            })
+            .await;
+        assert!(
+            matches!(missing, Err(McpError::ResourceNotFound(ref uri)) if uri == "wordpress://post/9"),
+            "{:?}",
+            missing
+        );
+    }
+
+    // ---- #755: カテゴリー・タグの確かめ、全ページの取得の重なり ----
+
+    /// `categories`・`tags`は、正の整数のIDの配列だけを受ける（#755）
+    #[test]
+    fn test_term_ids_arg_is_strict() {
+        let args = |value: serde_json::Value| -> HashMap<String, serde_json::Value> {
+            serde_json::from_value(value).unwrap()
+        };
+        assert_eq!(
+            term_ids_arg(&args(serde_json::json!({"tags": [7, 8]})), "tags").unwrap(),
+            Some(vec![7, 8])
+        );
+        // []は、すべて外す
+        assert_eq!(
+            term_ids_arg(&args(serde_json::json!({"tags": []})), "tags").unwrap(),
+            Some(vec![])
+        );
+        // `7.0`は、スキーマの`integer`に合うので`7`と同じ（PR #757のレビュー）。
+        // 生のJSONから読む
+        let raw: HashMap<String, serde_json::Value> =
+            serde_json::from_str(r#"{"tags": [7.0, 8], "terms": {"product_cat": [12.0]}}"#)
+                .unwrap();
+        assert_eq!(term_ids_arg(&raw, "tags").unwrap(), Some(vec![7, 8]));
+        assert_eq!(terms_arg(&raw).unwrap().unwrap()["product_cat"], vec![12]);
+        assert_eq!(
+            term_ids_arg(&args(serde_json::json!({})), "tags").unwrap(),
+            None
+        );
+        assert_eq!(
+            term_ids_arg(&args(serde_json::json!({"tags": null})), "tags").unwrap(),
+            None
+        );
+        for bad in [
+            serde_json::json!([7, 7.5]),
+            serde_json::json!([7, 0]),
+            serde_json::json!([0.0]),
+            serde_json::json!([1e300]),
+            serde_json::json!([9007199254740994.0]),
+            serde_json::json!([-1]),
+            serde_json::json!(["7"]),
+            serde_json::json!([7, null]),
+            serde_json::json!("7"),
+            serde_json::json!(7),
+        ] {
+            let err = term_ids_arg(
+                &args(serde_json::json!({ "categories": bad })),
+                "categories",
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, McpError::InvalidParams(ref msg)
+                    if msg.contains("categories must be a list of category IDs")),
+                "{bad}: {err:?}"
+            );
+        }
+    }
+
+    /// 小数等のIDがあれば、どのツールも送らずに断る。落として送ると、
+    /// 置き換えで今の項目が外れる（#755）
+    #[tokio::test]
+    async fn test_non_integer_term_ids_are_refused_before_sending() {
+        let (base_url, captured) =
+            spawn_routing_capturing_server(vec![("/wp-json/wp/v2/posts", post_response_json("x"))])
+                .await;
+        let handler = handler_for_local_server(base_url);
+        for (tool, args) in [
+            (
+                "update_post_categories_tags",
+                serde_json::json!({"post_id": 5, "tags": [7, 7.5]}),
+            ),
+            (
+                "update_post",
+                serde_json::json!({"post_id": 5, "categories": [3, 0]}),
+            ),
+            (
+                "create_advanced_post",
+                serde_json::json!({"title": "t", "content": "c", "tags": [7, 7.5]}),
+            ),
+            (
+                "create_post_with_categories_tags",
+                serde_json::json!({"title": "t", "content": "c", "categories": ["3"]}),
+            ),
+            (
+                "create_post_with_embeds",
+                serde_json::json!({"title": "t", "content": "c", "tags": 7}),
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg))
+                    if msg.contains("must be a list of")),
+                "{tool} {args}: {result:?}"
+            );
+        }
+        assert!(captured.lock().await.is_empty());
+    }
+
+    /// ツールのスキーマも、IDの配列の要素を正の整数とする（#755）
+    #[tokio::test]
+    async fn test_term_id_schemas_are_positive_integers() {
+        let handler = rate_limited_handler(RateLimitConfig::default());
+        let mut checked = 0;
+        for tool in handler.list_tools().await.unwrap() {
+            for key in ["categories", "tags"] {
+                if let Some(schema) = tool.input_schema["properties"].get(key) {
+                    assert_eq!(
+                        schema["items"],
+                        serde_json::json!({"type": "integer", "minimum": 1}),
+                        "{}.{key}",
+                        tool.name
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 10, "{checked}");
+    }
+
+    /// `categories`と`terms.categories`のように、同じ分類を2つの引数で
+    /// 渡したら断る（PR #757のレビュー）。作成と更新で、どちらを送るかが
+    /// ずれていた
+    #[tokio::test]
+    async fn test_categories_given_twice_are_refused() {
+        let terms: std::collections::BTreeMap<String, Vec<u64>> =
+            [("categories".to_string(), vec![])].into();
+        assert!(check_terms_conflict(Some(&terms), false, true).is_ok());
+        assert!(check_terms_conflict(None, true, true).is_ok());
+        let err = check_terms_conflict(Some(&terms), true, false).unwrap_err();
+        assert!(
+            matches!(err, McpError::InvalidParams(ref msg) if msg.contains("terms.categories")),
+            "{err:?}"
+        );
+
+        // 作成・更新とも、送る前に断る
+        let handler = handler_for_local_server("http://127.0.0.1:9".to_string());
+        for (tool, args) in [
+            (
+                "create_advanced_post",
+                serde_json::json!({"title": "t", "content": "c", "tags": [3], "terms": {"tags": [4]}}),
+            ),
+            (
+                "update_post",
+                serde_json::json!({"post_id": 5, "categories": [3], "terms": {"categories": []}}),
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("given both")),
+                "{tool} {args}: {result:?}"
+            );
+        }
+    }
+
+    /// その分類の無い投稿タイプ（固定ページ等）にカテゴリー・タグを
+    /// 渡すと、送らずに断る。WordPressは黙って無視し、成功と返すため（#755）
+    #[tokio::test]
+    async fn test_categories_tags_for_type_without_them_are_refused() {
+        let (base_url, captured) = spawn_routing_capturing_server(vec![
+            ("/wp-json/wp/v2/taxonomies?type=page", "{}".to_string()),
+            ("/wp-json/wp/v2/types/product", product_type_json()),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                r#"{"product_cat":{"rest_base":"product_cat"},"product_tag":{"rest_base":"product_tag"}}"#
+                    .to_string(),
+            ),
+            ("/wp-json/wp/v2/pages", post_response_json("x")),
+            ("/wp-json/wp/v2/products", product_json().to_string()),
+        ])
+        .await;
+        let handler = handler_for_local_server(base_url);
+        for (tool, args, message) in [
+            (
+                "update_post_categories_tags",
+                serde_json::json!({"post_id": 5, "post_type": "page", "tags": [3]}),
+                "tags: post type 'page' has no tags taxonomy",
+            ),
+            (
+                "update_post",
+                serde_json::json!({"post_id": 5, "post_type": "page", "title": "x", "categories": [3]}),
+                "categories: post type 'page' has no categories taxonomy",
+            ),
+            (
+                "create_advanced_post",
+                serde_json::json!({"title": "t", "content": "c", "post_type": "page", "categories": [3]}),
+                "categories: post type 'page' has no categories taxonomy",
+            ),
+            (
+                "create_post_with_embeds",
+                serde_json::json!({"title": "t", "content": "c", "post_type": "page", "tags": [3]}),
+                "tags: post type 'page' has no tags taxonomy",
+            ),
+        ] {
+            let result = call_tool_with(&handler, tool, args.clone()).await;
+            assert!(
+                matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains(message)),
+                "{tool} {args}: {result:?}"
+            );
+        }
+        // 投稿を書き換えていない
+        let requests = captured.lock().await;
+        assert!(
+            requests
+                .iter()
+                .all(|(request, _)| request.starts_with("GET ")),
+            "{requests:?}"
+        );
+    }
+
+    /// その分類を持つ投稿タイプには送る。投稿（`post`）は調べずに送る（#755）
+    #[tokio::test]
+    async fn test_categories_tags_are_sent_when_the_type_has_them() {
+        let (base_url, captured) = spawn_routing_capturing_server(vec![
+            ("/wp-json/wp/v2/types/product", product_type_json()),
+            (
+                "/wp-json/wp/v2/taxonomies?type=product",
+                r#"{"category":{"rest_base":"categories"},"product_cat":{"rest_base":"product_cat"}}"#
+                    .to_string(),
+            ),
+            (
+                "/wp-json/wp/v2/categories?include=",
+                r#"[{"id":3}]"#.to_string(),
+            ),
+            ("/wp-json/wp/v2/products", product_json().to_string()),
+            ("/wp-json/wp/v2/posts", post_response_json("x")),
+        ])
+        .await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "create_advanced_post",
+            serde_json::json!({
+                "title": "マグカップ",
+                "content": "説明",
+                "post_type": "product",
+                "categories": [3]
+            }),
+        )
+        .await
+        .unwrap();
+        {
+            let requests = captured.lock().await;
+            let (request, body) = requests.last().unwrap();
+            assert_eq!(request, "POST /wp-json/wp/v2/products");
+            let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(sent["categories"], serde_json::json!([3]));
+        }
+
+        call_tool_with(
+            &handler,
+            "update_post_categories_tags",
+            serde_json::json!({"post_id": 7, "tags": []}),
+        )
+        .await
+        .unwrap();
+        let requests = captured.lock().await;
+        let (request, body) = requests.last().unwrap();
+        assert_eq!(request, "PUT /wp-json/wp/v2/posts/7");
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent, serde_json::json!({"tags": []}));
+        // 投稿は、タクソノミーを調べない
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/taxonomies?type=post")),
+            "{requests:?}"
+        );
+    }
+
+    /// 受けた順に`responses`の応答（状態行、本文）を返すHTTPサーバー。
+    /// 使い切ったら最後の応答を返す。受けたリクエスト数を数える
+    async fn spawn_sequence_server(
+        responses: Vec<(&'static str, String)>,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        // 受けた要求の1行目（`GET /…?page=1 HTTP/1.1`）。接続の順に並ぶ
+        let request_lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_request_lines = request_lines.clone();
+        let responses = Arc::new(responses);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let nth = server_count.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = responses[nth.min(responses.len() - 1)].clone();
+                let request_lines = server_request_lines.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let first_line = String::from_utf8_lossy(&buf)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    {
+                        let mut lines = request_lines.lock().unwrap();
+                        let len = lines.len().max(nth + 1);
+                        lines.resize(len, String::new());
+                        lines[nth] = first_line;
+                    }
+                    let response = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (format!("http://{}", addr), count, request_lines)
+    }
+
+    /// 受けた要求の、`page`の値の並び
+    fn requested_pages(request_lines: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+        request_lines
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|line| {
+                line.split(['?', '&', ' '])
+                    .find_map(|part| part.strip_prefix("page="))
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// IDの投稿の一覧（全ページの取得の確かめ用）
+    fn posts_page(ids: &[u64]) -> String {
+        serde_json::Value::Array(
+            ids.iter()
+                .map(|id| serde_json::json!({"id": id, "status": "publish"}))
+                .collect(),
+        )
+        .to_string()
+    }
+
+    const TWO_PAGES: &str = "200 OK\r\nX-WP-TotalPages: 2\r\nX-WP-Total: 4";
+
+    /// 読んでいる間に一覧が変わり、前のページの最後が次のページに再び
+    /// 現れたら、初めから読み直す（#755）
+    #[tokio::test]
+    async fn test_fetch_all_pages_rereads_when_an_item_repeats() {
+        use std::sync::atomic::Ordering;
+        let (base, count, request_lines) = spawn_sequence_server(vec![
+            (TWO_PAGES, posts_page(&[1, 2])),
+            (TWO_PAGES, posts_page(&[2, 3])),
+            (TWO_PAGES, posts_page(&[1, 2])),
+            (TWO_PAGES, posts_page(&[3, 4])),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let posts = handler.get_posts(None).await.unwrap();
+        let ids: Vec<Option<u64>> = posts.iter().map(|post| post.id).collect();
+        assert_eq!(ids, vec![Some(1), Some(2), Some(3), Some(4)]);
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+        // 読み直しは1ページ目から
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1", "2"]);
+    }
+
+    /// 読み直しても重なれば、不正確な一覧を返さずエラーにする（#755）
+    #[tokio::test]
+    async fn test_fetch_all_pages_fails_when_an_item_repeats_again() {
+        use std::sync::atomic::Ordering;
+        let (base, count, request_lines) = spawn_sequence_server(vec![
+            (TWO_PAGES, posts_page(&[1, 2])),
+            (TWO_PAGES, posts_page(&[2, 3])),
+            (TWO_PAGES, posts_page(&[1, 2])),
+            (TWO_PAGES, posts_page(&[2, 3])),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let err = handler.get_posts(None).await.unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg)
+                if msg.contains("changed while mcp-rs was reading it") && msg.contains("Try again")),
+            "{err:?}"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1", "2"]);
+    }
+
+    /// 重ならなければ、1回で読み終える（#755）
+    #[tokio::test]
+    async fn test_fetch_all_pages_reads_once_without_repeats() {
+        use std::sync::atomic::Ordering;
+        let (base, count, request_lines) = spawn_sequence_server(vec![
+            (TWO_PAGES, posts_page(&[1, 2])),
+            (TWO_PAGES, posts_page(&[3, 4])),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        assert_eq!(handler.get_posts(None).await.unwrap().len(), 4);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(requested_pages(&request_lines), ["1", "2"]);
+    }
+
+    // ---- #759: WordPressの見直し ----
+
+    /// `create_advanced_post`の`excerpt`は、スキーマから送る本文まで通す
+    /// （#759。`draft_post`のプロンプトが抜粋を書かせる）
+    #[tokio::test]
+    async fn test_create_advanced_post_sends_excerpt() {
+        let body = advanced_post_body(PostCreateParams {
+            excerpt: Some("短い要約".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(body["excerpt"], "短い要約");
+        let body = advanced_post_body(PostCreateParams::default());
+        assert!(body.get("excerpt").is_none(), "{body}");
+
+        let (base_url, captured) = spawn_body_capturing_server(post_response_json("t")).await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "create_advanced_post",
+            serde_json::json!({"title": "t", "content": "c", "excerpt": "短い要約"}),
+        )
+        .await
+        .unwrap();
+        let result = call_tool_with(
+            &handler,
+            "create_advanced_post",
+            serde_json::json!({"title": "t", "content": "c", "excerpt": 1}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg)) if msg.contains("excerpt")),
+            "{result:?}"
+        );
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1);
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent["excerpt"], "短い要約");
+
+        let tools = handler.list_tools().await.unwrap();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "create_advanced_post")
+            .unwrap();
+        assert!(tool.input_schema["properties"]["excerpt"].is_object());
+    }
+
+    /// リソースが無い（`-32002`）にするのは、WordPressの404だけ。503の本文に
+    /// ` 404 `があっても、無いことにしない（#759）
+    #[test]
+    fn test_not_found_as_resource_uses_the_status() {
+        let uri = "wordpress://post/9";
+        let not_found = McpError::ExternalApi(format_wp_error(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"rest_post_invalid_id","message":"Invalid post ID."}"#,
+        ));
+        assert!(matches!(
+            not_found_as_resource(not_found, uri),
+            McpError::ResourceNotFound(ref u) if u == uri
+        ));
+        let unavailable = McpError::ExternalApi(format_wp_error(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            "upstream 404 from proxy",
+        ));
+        assert!(matches!(
+            not_found_as_resource(unavailable, uri),
+            McpError::ExternalApi(ref msg) if msg.contains("503")
+        ));
+    }
+
+    /// `moderate_comments`の無いユーザーで断られたら、権限を案内する。
+    /// `status`を外して送り直さない（公開されうるため。#759）
+    #[tokio::test]
+    async fn test_create_comment_explains_moderate_comments() {
+        let (base_url, count) = spawn_fixed_response_server(
+            "403 Forbidden",
+            r#"{"code":"rest_comment_invalid_status","message":"Sorry, you are not allowed to edit 'status' for comments."}"#
+                .to_string(),
+        )
+        .await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "create_comment",
+            serde_json::json!({"post_id": 7, "content": "返信"}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg))
+                if msg.contains("rest_comment_invalid_status") && msg.contains("moderate_comments")),
+            "{result:?}"
+        );
+        assert_eq!(request_count(&count), 1);
+
+        let tools = handler.list_tools().await.unwrap();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "create_comment")
+            .unwrap();
+        assert!(
+            tool.description.contains("moderate_comments"),
+            "{}",
+            tool.description
+        );
+    }
+
+    /// プライバシー強化モードのURLは、`youtube-nocookie.com`のまま埋め込む（#759）
+    #[test]
+    fn test_youtube_embed_keeps_nocookie_host() {
+        let embed = WordPressHandler::youtube_embed_for_url(
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+        )
+        .unwrap();
+        assert!(
+            embed.contains(r#"src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ""#),
+            "{embed}"
+        );
+        let embed =
+            WordPressHandler::youtube_embed_for_url("https://youtu.be/dQw4w9WgXcQ").unwrap();
+        assert!(
+            embed.contains(r#"src="https://www.youtube.com/embed/dQw4w9WgXcQ""#),
+            "{embed}"
+        );
+        assert_eq!(
+            WordPressHandler::youtube_embed_for_url("https://example.com/embed/x"),
+            None
+        );
+    }
+
+    /// 一覧の残りの量より大きいページは、本文を読まずに断る（#759。以前は
+    /// 読み終えてから合計を確かめていた）
+    #[tokio::test]
+    async fn test_fetch_all_pages_applies_the_remaining_budget_before_reading() {
+        use std::sync::atomic::Ordering;
+        let page = posts_page(&[1, 2]);
+        let (base, count, _) = spawn_sequence_server(vec![
+            (TWO_PAGES, page.clone()),
+            (TWO_PAGES, posts_page(&[3, 4])),
+        ])
+        .await;
+        let handler = handler_for_local_server(base.clone());
+        let mut budget = ListReadBudget {
+            max_bytes: page.len() + page.len() / 2,
+            ..Default::default()
+        };
+        let err = handler
+            .fetch_all_pages_once(
+                &|n| format!("{base}/wp-json/wp/v2/posts?per_page=100&page={n}"),
+                &mut budget,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("in total, the most mcp-rs reads for one list")),
+            "{err:?}"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        // 2ページ目は`Content-Length`で断り、読んでいない
+        assert_eq!(budget.bytes, page.len());
+    }
+
+    /// 本文の受信に失敗して読み直したページは、失敗した試行で受け取った分も
+    /// 一覧の読んだ量に数える（#759）
+    #[tokio::test]
+    async fn test_fetch_all_pages_counts_bytes_of_failed_attempts() {
+        let page = posts_page(&[1, 2]);
+        let (base, count) = spawn_cut_off_body_server("200 OK", page.clone(), 1).await;
+        let handler = handler_for_local_server(base.clone());
+        let mut budget = ListReadBudget::default();
+        let (items, _) = handler
+            .fetch_all_pages_once(
+                &|n| format!("{base}/wp-json/wp/v2/posts?per_page=100&page={n}"),
+                &mut budget,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(request_count(&count), 2);
+        assert_eq!(budget.bytes, page.len() * 2);
+    }
+
+    /// 読んでいる間に、読み終えたページの項目が消えて総件数が変わったら、
+    /// 初めから読み直す（#759。後ろのページがずれて1件欠け、件数の照合も
+    /// 通ってしまうため）
+    #[tokio::test]
+    async fn test_fetch_all_pages_rereads_when_the_total_changes() {
+        use std::sync::atomic::Ordering;
+        const THREE_LEFT: &str = "200 OK\r\nX-WP-TotalPages: 2\r\nX-WP-Total: 3";
+        let (base, count, request_lines) = spawn_sequence_server(vec![
+            (TWO_PAGES, posts_page(&[1, 2])),
+            // 2が消え、3が1ページ目にずれたので、2ページ目は4だけ
+            (THREE_LEFT, posts_page(&[4])),
+            (THREE_LEFT, posts_page(&[1, 3])),
+            (THREE_LEFT, posts_page(&[4])),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let posts = handler.get_posts(None).await.unwrap();
+        let ids: Vec<Option<u64>> = posts.iter().map(|post| post.id).collect();
+        assert_eq!(ids, vec![Some(1), Some(3), Some(4)]);
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1", "2"]);
+    }
+
+    /// `set_featured_image`は、応答の`featured_media`を要求したIDと照らし
+    /// 合わせる（#759。無いメディアのIDでも成功と報告していた）
+    #[tokio::test]
+    async fn test_set_featured_image_checks_the_response() {
+        let post_with_media = |media: u64| {
+            let mut post: serde_json::Value =
+                serde_json::from_str(&post_response_json("t")).unwrap();
+            post["featured_media"] = serde_json::json!(media);
+            post.to_string()
+        };
+        let args = serde_json::json!({"post_id": 7, "media_id": 42});
+
+        let (base_url, _) = spawn_body_capturing_server(post_with_media(0)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(&handler, "set_featured_image", args.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], true);
+        let text = tool_text(&result);
+        assert!(text.contains("did not set media 42"), "{text}");
+
+        let (base_url, _) = spawn_body_capturing_server(post_with_media(42)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(&handler, "set_featured_image", args)
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], false);
+        assert!(
+            tool_text(&result).starts_with("Set featured image 42 for post 7"),
+            "{}",
+            tool_text(&result)
+        );
+    }
+
+    /// サイトのURLの問い合わせ・フラグメントは断る。サブディレクトリはよい
+    /// （#759。REST APIのパスが問い合わせの一部になるため）
+    #[test]
+    fn test_try_new_rejects_query_and_fragment_in_url() {
+        let config = |url: &str| WordPressConfig {
+            url: url.to_string(),
+            username: "test".to_string(),
+            password: "test".to_string(),
+            enabled: Some(true),
+            timeout_seconds: Some(30),
+            rate_limit: Some(RateLimitConfig::default()),
+            encrypted_credentials: None,
+            keyring: None,
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        };
+        for url in [
+            "https://example.com/blog?lang=ja",
+            "https://example.com/?",
+            "https://example.com/blog#top",
+        ] {
+            let err = WordPressHandler::try_new(config(url)).unwrap_err();
+            assert!(err.contains("query"), "{url}: {err}");
+        }
+        let handler = WordPressHandler::try_new(config("https://example.com/blog")).unwrap();
+        assert_eq!(handler.base_url, "https://example.com/blog");
+    }
+
+    /// `isError: true`の結果は、`Ok`でも監査ログに失敗として残す（#759）
+    #[tokio::test]
+    async fn test_call_tool_audits_is_error_result_as_failure() {
+        let base = spawn_routing_server(vec![
+            (
+                "/wp-json/wp/v2/categories",
+                "200 OK\r\nX-WP-Total: 0\r\nX-WP-TotalPages: 1",
+                "[]".to_string(),
+            ),
+            ("/wp-json/", "503 Service Unavailable", "{}".to_string()),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "wordpress_health_check", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], true);
+        let result = call_tool_with(&handler, "get_categories", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(result["isError"], false);
+
+        let entries = handler.audit_logger.get_all_entries().await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].result, Some("FAILURE".to_string()));
+        assert_eq!(entries[0].level, AuditLevel::Error);
+        assert_eq!(entries[1].result, Some("SUCCESS".to_string()));
+    }
+
+    /// ヘルスチェックも、応答の大きさの上限（`MAX_RESPONSE_BYTES`）まで
+    /// しか読まない（#759）
+    #[tokio::test]
+    async fn test_health_check_limits_the_response_size() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/",
+            "200 OK",
+            "x".repeat(MAX_RESPONSE_BYTES + 1),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let health = handler.health_check().await;
+        assert!(!health.site_accessible);
+        assert!(
+            health.error_details[0].contains("larger than"),
+            "{:?}",
+            health.error_details
+        );
+    }
+
+    /// ヘルスチェックは、メディアの読み取りだけを確かめるので、アップロード
+    /// できるとは出さない（#759）
+    #[tokio::test]
+    async fn test_health_check_reports_media_as_readable() {
+        let base = spawn_routing_server(vec![(
+            "/wp-json/",
+            "200 OK",
+            r#"{"name":"Example Site","namespaces":["wp/v2"]}"#.to_string(),
+        )])
+        .await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "wordpress_health_check", serde_json::json!({}))
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(text.contains("Media Readable:"), "{text}");
+        assert!(!text.contains("Media Upload Possible"), "{text}");
+    }
+
+    /// `get_post`は、IDのある分類だけ名前を解決する。カテゴリー・タグの
+    /// 無い固定ページでは、サイト全体の一覧を取得しない（#759）
+    #[tokio::test]
+    async fn test_get_post_skips_term_lists_without_ids() {
+        let mut post: serde_json::Value = serde_json::from_str(&post_response_json("x")).unwrap();
+        post["categories"] = serde_json::json!([3]);
+        post["tags"] = serde_json::json!([]);
+        let (base_url, captured) = spawn_routing_capturing_server(vec![
+            ("/wp-json/wp/v2/pages/7", post_response_json("about")),
+            ("/wp-json/wp/v2/posts/8", post.to_string()),
+            (
+                "/wp-json/wp/v2/categories",
+                r#"[{"id":3,"name":"お知らせ","slug":"news","description":""}]"#.to_string(),
+            ),
+            ("/wp-json/wp/v2/tags", "[]".to_string()),
+        ])
+        .await;
+        let handler = handler_for_local_server(base_url);
+        call_tool_with(
+            &handler,
+            "get_post",
+            serde_json::json!({"post_id": 7, "post_type": "page"}),
+        )
+        .await
+        .unwrap();
+        {
+            let requests = captured.lock().await;
+            assert_eq!(requests.len(), 1, "{requests:?}");
+        }
+
+        let result = call_tool_with(&handler, "get_post", serde_json::json!({"post_id": 8}))
+            .await
+            .unwrap();
+        assert!(
+            tool_text(&result).contains("Categories: お知らせ"),
+            "{}",
+            tool_text(&result)
+        );
+        let requests = captured.lock().await;
+        assert!(
+            requests
+                .iter()
+                .any(|(request, _)| request.starts_with("GET /wp-json/wp/v2/categories")),
+            "{requests:?}"
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.starts_with("GET /wp-json/wp/v2/tags")),
+            "{requests:?}"
+        );
+    }
+
+    /// `get_posts`の`categories`・`tags`も、その分類を持たない投稿タイプでは
+    /// 送らずに断る（#759。WordPressは絞り込みを無視し、絞り込んでいない
+    /// 一覧を返すため）
+    #[tokio::test]
+    async fn test_get_posts_refuses_terms_the_type_lacks() {
+        let (base_url, captured) = spawn_routing_capturing_server(product_routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "get_posts",
+            serde_json::json!({"post_type": "product", "categories": [3]}),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(McpError::InvalidParams(ref msg))
+                if msg.contains("categories: post type 'product' has no categories taxonomy")),
+            "{result:?}"
+        );
+        let requests = captured.lock().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.starts_with("GET /wp-json/wp/v2/products")),
+            "{requests:?}"
+        );
+    }
+
+    // ---- PR #763のレビュー ----
+
+    /// 抜粋に対応しない投稿タイプ（`excerpt`の無い独自の投稿タイプ）では、
+    /// WordPressは抜粋を黙って捨て、応答にも`excerpt`が無い。作ったことと、
+    /// 抜粋は保存されていないことを伝える（PR #763のレビュー。固定ページは
+    /// RESTで抜粋を受け付けるので当たらない。ここでは、応答に`excerpt`の無い
+    /// ことだけを再現する）
+    #[tokio::test]
+    async fn test_create_advanced_post_reports_unsaved_excerpt() {
+        let args = serde_json::json!({
+            "title": "t", "content": "c", "post_type": "page", "excerpt": "要約"
+        });
+        // 応答に`excerpt`が無い（抜粋に対応しない投稿タイプの応答を再現）
+        let (base_url, captured) = spawn_body_capturing_server(post_response_json("t")).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(&handler, "create_advanced_post", args.clone())
+            .await
+            .unwrap();
+        let text = tool_text(&result);
+        assert!(
+            text.starts_with("Created page with ID: 7")
+                && text.contains("did not save the excerpt")
+                && text.contains("do not create it again"),
+            "{text}"
+        );
+        assert_eq!(result["isError"], false);
+        assert_eq!(captured.lock().await.len(), 1);
+
+        // 応答に`excerpt`があれば、注意を添えない
+        let mut post: serde_json::Value = serde_json::from_str(&post_response_json("t")).unwrap();
+        post["excerpt"] = serde_json::json!({"raw": "要約", "rendered": "<p>要約</p>"});
+        let (base_url, _) = spawn_body_capturing_server(post.to_string()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(&handler, "create_advanced_post", args)
+            .await
+            .unwrap();
+        assert!(
+            !tool_text(&result).contains("excerpt"),
+            "{}",
+            tool_text(&result)
+        );
+    }
+
+    /// 本文の受信に失敗した試行で一覧の残りを使い切ったら、同じページを
+    /// 送り直さない（PR #763のレビュー）
+    #[tokio::test]
+    async fn test_fetch_all_pages_does_not_resend_when_the_budget_is_used_up() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let page = posts_page(&[1, 2]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let server_count = count.clone();
+        let server_page = page.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                server_count.fetch_add(1, Ordering::SeqCst);
+                let page = server_page.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    // 長さの分からない（chunked）本文を、途中で切る
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}",
+                        page.len() + 100,
+                        page
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        let base = format!("http://{addr}");
+        let handler = handler_for_local_server(base.clone());
+        let mut budget = ListReadBudget {
+            max_bytes: page.len(),
+            ..Default::default()
+        };
+        let err = handler
+            .fetch_all_pages_once(
+                &|n| format!("{base}/wp-json/wp/v2/posts?per_page=100&page={n}"),
+                &mut budget,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::ExternalApi(ref msg) if msg.contains("in total, the most mcp-rs reads for one list")),
+            "{err:?}"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(budget.bytes, page.len());
+    }
+
+    /// 本文がちょうど一覧の残りで終われば、成功のまま（PR #763のレビュー）
+    #[tokio::test]
+    async fn test_fetch_all_pages_accepts_a_body_that_ends_at_the_budget() {
+        let page = posts_page(&[1, 2]);
+        let (base, _, _) = spawn_sequence_server(vec![("200 OK", page.clone())]).await;
+        let handler = handler_for_local_server(base.clone());
+        let mut budget = ListReadBudget {
+            max_bytes: page.len(),
+            ..Default::default()
+        };
+        let (items, _) = handler
+            .fetch_all_pages_once(
+                &|n| format!("{base}/wp-json/wp/v2/posts?per_page=100&page={n}"),
+                &mut budget,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(budget.bytes, page.len());
+    }
+
+    /// 読んでいる間に一覧が減り、後ろのページが範囲の外になった（400の
+    /// `rest_post_invalid_page_number`）ら、初めから読み直す（PR #763の
+    /// レビュー）
+    #[tokio::test]
+    async fn test_fetch_all_pages_rereads_when_a_page_goes_out_of_range() {
+        use std::sync::atomic::Ordering;
+        const INVALID_PAGE: &str = r#"{"code":"rest_post_invalid_page_number","message":"The page number requested is larger than the number of pages available."}"#;
+        let (base, count, request_lines) = spawn_sequence_server(vec![
+            (TWO_PAGES, posts_page(&[1, 2])),
+            ("400 Bad Request", INVALID_PAGE.to_string()),
+            (
+                "200 OK\r\nX-WP-TotalPages: 1\r\nX-WP-Total: 2",
+                posts_page(&[1, 3]),
+            ),
+        ])
+        .await;
+        let handler = handler_for_local_server(base);
+        let posts = handler.get_posts(None).await.unwrap();
+        let ids: Vec<Option<u64>> = posts.iter().map(|post| post.id).collect();
+        assert_eq!(ids, vec![Some(1), Some(3)]);
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(requested_pages(&request_lines), ["1", "2", "1"]);
+
+        // 1ページだけを読むときと、ほかの400は、そのままエラー
+        assert!(!is_invalid_page_number_error(&McpError::ExternalApi(
+            format_wp_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"code":"rest_invalid_param","message":"Invalid parameter(s): status"}"#,
+            )
+        )));
+        let (base, _, _) =
+            spawn_sequence_server(vec![("400 Bad Request", INVALID_PAGE.to_string())]).await;
+        let handler = handler_for_local_server(base);
+        let result = call_tool_with(&handler, "get_posts", serde_json::json!({"page": 9})).await;
+        assert!(
+            matches!(result, Err(McpError::ExternalApi(ref msg)) if msg.contains("rest_post_invalid_page_number")),
+            "{result:?}"
+        );
+    }
+
+    /// バイトのまま読む。不正なUTF-8を置き換え文字にしない（PR #763のレビュー）
+    #[tokio::test]
+    async fn test_read_body_bytes_limited_keeps_the_bytes() {
+        let bytes = vec![b'"', 0xff, b'"'];
+        let response = reqwest::Response::from(http::Response::new(bytes.clone()));
+        assert_eq!(read_body_bytes_limited(response, 10).await.unwrap(), bytes);
+        let response = reqwest::Response::from(http::Response::new(bytes));
+        assert!(read_body_bytes_limited(response, 2).await.is_err());
     }
 }

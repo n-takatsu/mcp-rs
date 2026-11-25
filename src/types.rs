@@ -1,4 +1,4 @@
-//! Type definitions for MCP JSON-RPC messages.
+//! JSON-RPC message types used by the `Transport` trait.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,7 +10,16 @@ pub struct JsonRpcRequest {
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
-    pub id: RequestId,
+    /// 要求の`id`。通知（`id`なし）は`None`（PR #771）。以前は必須で、
+    /// 通知を読めなかった。`"id": null`も`None`に読む（`HttpTransport`は、
+    /// `id`が文字列・数値でない要求を、渡す前に断る）。
+    ///
+    /// `HttpTransport`のチャンネルでは、要求の`id`は内部の相関IDで、
+    /// クライアントの`id`は`ReceivedRequest::original_id`にある。
+    /// `notifications/cancelled`の`requestId`は、同じ呼び出し元の要求の
+    /// `original_id`と照らし合わせる（PR #771のレビュー）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<RequestId>,
 }
 
 /// JSON-RPC response message
@@ -42,77 +51,6 @@ pub enum RequestId {
     Null,
 }
 
-/// MCP Tool definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_schema: Option<Value>,
-}
-
-/// MCP Resource definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Resource {
-    pub uri: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-}
-
-/// MCP Prompt definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Prompt {
-    pub name: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<PromptArgument>>,
-}
-
-/// Prompt argument definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptArgument {
-    pub name: String,
-    pub description: String,
-    pub required: bool,
-}
-
-/// Server information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerInfo {
-    pub name: String,
-    pub version: String,
-}
-
-/// Server capabilities
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ServerCapabilities {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<ToolsCapability>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resources: Option<ResourcesCapability>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompts: Option<PromptsCapability>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolsCapability {
-    pub list_changed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourcesCapability {
-    pub subscribe: bool,
-    pub list_changed: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptsCapability {
-    pub list_changed: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,11 +61,27 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             method: "test".to_string(),
             params: Some(serde_json::json!({"key": "value"})),
-            id: RequestId::Number(1),
+            id: Some(RequestId::Number(1)),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"method\":\"test\""));
+        assert!(json.contains("\"id\":1"));
+    }
+
+    /// 通知（`id`なし）も読め、書くときも`id`を付けない（PR #771）
+    #[test]
+    fn test_json_rpc_notification_has_no_id() {
+        let notification: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .unwrap();
+        assert!(notification.id.is_none());
+        let json = serde_json::to_value(&notification).unwrap();
+        assert!(json.get("id").is_none(), "{json}");
+
+        let request: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":"a","method":"ping"}"#).unwrap();
+        assert_eq!(request.id, Some(RequestId::String("a".to_string())));
     }
 
     #[test]

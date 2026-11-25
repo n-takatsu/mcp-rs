@@ -8,7 +8,7 @@ permalink: /docs/api/database/
 
 API reference for the database engines, for Rust code that uses mcp-rs as a library.
 
-> **Using mcp-rs as an MCP server?** This page is not about the tools an MCP client sees. To connect mcp-rs to a database, add a `[database]` section to the configuration file: see the [Database Integration Guide](../database.md). Only PostgreSQL can be configured there.
+> **Using mcp-rs as an MCP server?** This page is not about the tools an MCP client sees. To connect mcp-rs to a database, add a `[database]` section to the configuration file: see the [Database Integration Guide]({{ site.baseurl }}/docs/database/). Only PostgreSQL can be configured there.
 
 ---
 
@@ -442,7 +442,7 @@ stmt.execute(&[uuid, Value::Int(123)]).await?;
 
 ### Connection Pool Configuration
 
-The MCP server builds its PostgreSQL connection from the `[database]` section of the configuration file (`host`, `port`, `database`, `username`, `password`, `ssl_mode`, `max_connections`, `query_timeout_seconds`). See the [Database Integration Guide](../database.md#configuration). In library code, pass the same values in `DatabaseConfig`.
+The MCP server builds its PostgreSQL connection from the `[database]` section of the configuration file (`host`, `port`, `database`, `username`, `password`, `ssl_mode`, `max_connections`, `query_timeout_seconds`). See the [Database Integration Guide]({{ site.baseurl }}/docs/database/#configuration). In library code, pass the same values in `DatabaseConfig`.
 
 ---
 
@@ -496,5 +496,5 @@ match txn.commit().await {
 
 ---
 
-See also: [Database Integration Guide](../database.md), [PostgreSQL Integration Guide](../guides/postgres-integration.md)
+See also: [Database Integration Guide]({{ site.baseurl }}/docs/database/), [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 

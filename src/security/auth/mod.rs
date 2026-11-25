@@ -9,7 +9,7 @@
 pub mod api_key;
 pub mod types;
 
-pub use api_key::{ApiKey, ApiKeyConfig, ApiKeyManager, ApiKeyPermission};
+pub use api_key::{ApiKey, ApiKeyManager, ApiKeyPermission};
 pub use types::{
     AuthError, AuthMethod, AuthProvider, AuthResult, AuthUser, Credentials, PasswordHasher,
     Permission, Role,

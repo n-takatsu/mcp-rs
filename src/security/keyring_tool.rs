@@ -46,6 +46,7 @@ config file:
   enabled = true
   keyring = \"example.com\"
 
+For another site, write the same in [handlers.wordpress.sites.<site>].
 Leave username, password and encrypted_credentials out of that section.
 The credentials are used only when url has the same scheme, host and port
 as the site URL stored with them, so they are not sent to another site.
@@ -110,8 +111,10 @@ fn run_with(args: &[String], store: &dyn SecretStore) -> Result<(), Box<dyn std:
                 "Stored the credentials for '{}' on {} as '{name}' in the OS credential store (service '{KEYRING_SERVICE}').",
                 stored.username, stored.site_url
             );
-            eprintln!("In the config file, write this under [handlers.wordpress] and remove username, password and encrypted_credentials:");
-            eprintln!("  keyring = \"{name}\"");
+            eprintln!("In the config file, write this under [handlers.wordpress] (or the site's [handlers.wordpress.sites.<site>]) and remove username, password and encrypted_credentials:");
+            // TOMLの文字列として書く（#724。`"`・`\`を含む名前でも、そのまま
+            // 貼って読める）
+            eprintln!("  keyring = {}", toml_string(&name));
         }
         Action::Show(name) => {
             let credentials = load_wordpress_credentials(store, &name)?;
@@ -179,6 +182,11 @@ fn read_interactive(name: &str) -> Result<WordPressKeyringCredentials, Box<dyn s
     )
 }
 
+/// TOMLの文字列（引用符とエスケープ付き）
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
 fn check_input(
     site_url: String,
     username: String,
@@ -186,9 +194,13 @@ fn check_input(
 ) -> Result<WordPressKeyringCredentials, Box<dyn std::error::Error>> {
     // 入力は文に入れない。2行の形のまま渡すと、1行目はユーザー名で、
     // 取り違えるとパスワードが表示される（PR #551のレビュー）
-    if super::keyring_store::site_origin(&site_url).is_none() {
+    // WordPressのハンドラーは`https://`のサイトしか使わないので、`http://`は
+    // 登録しない（#724。以前は登録でき、使えなかった）
+    if super::keyring_store::site_origin(&site_url).is_none()
+        || !site_url.trim().starts_with("https://")
+    {
         return Err(
-            "the first line (the site URL) is not a URL starting with https:// or http://. Provide three lines: site URL, username, Application Password"
+            "the first line (the site URL) is not a URL starting with https:// (mcp-rs connects to WordPress over HTTPS only). Provide three lines: site URL, username, Application Password"
                 .into(),
         );
     }
@@ -271,6 +283,22 @@ mod tests {
             .to_string();
         assert!(err.contains("the first line (the site URL)"), "{err}");
         assert!(!err.contains("secret-password"), "{err}");
+        // `http://`のサイトは、使えないので登録しない（#724）
+        let err = read_lines("http://example.com\neditor\npw\n".as_bytes())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("https://"), "{err}");
+    }
+
+    /// 表示する設定の例は、TOMLの文字列として読める（#724）
+    #[test]
+    fn test_toml_string() {
+        for name in ["example.com", "a\"b", "c\\d"] {
+            let line = format!("keyring = {}", toml_string(name));
+            let table: toml::Table = line.parse().unwrap();
+            assert_eq!(table["keyring"].as_str(), Some(name), "{line}");
+        }
     }
 
     #[test]

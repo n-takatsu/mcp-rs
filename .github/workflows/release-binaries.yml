@@ -23,6 +23,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release-binaries.yml'
+      - 'packaging/mcpb/**'
   workflow_dispatch:
 
 concurrency:
@@ -115,12 +116,76 @@ jobs:
             dist/${{ steps.package.outputs.file }}.sha256
           if-no-files-found: error
 
+  # Claude Desktopの拡張機能（MCP Bundle、`.mcpb`、#632）。3つのOSの実行
+  # ファイルを1つにまとめる。署名はしない（#632で決めた）。SHA256と出所の
+  # 証明は、ほかのファイルと同じく付ける
+  mcpb:
+    name: Claude Desktop extension (.mcpb)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mcp-rs-*
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: |
+          set -euo pipefail
+          bundle=bundle
+          mkdir -p "${bundle}/server/windows" "${bundle}/server/macos" "${bundle}/server/linux"
+          unzip -q dist/*-x86_64-pc-windows-msvc.zip -d unpacked
+          tar -xzf dist/*-aarch64-apple-darwin.tar.gz -C unpacked
+          tar -xzf dist/*-x86_64-unknown-linux-gnu.tar.gz -C unpacked
+          cp unpacked/*-x86_64-pc-windows-msvc/mcp-rs.exe "${bundle}/server/windows/"
+          cp unpacked/*-aarch64-apple-darwin/mcp-rs "${bundle}/server/macos/"
+          cp unpacked/*-x86_64-unknown-linux-gnu/mcp-rs "${bundle}/server/linux/"
+          chmod +x "${bundle}/server/macos/mcp-rs" "${bundle}/server/linux/mcp-rs"
+          cp packaging/mcpb/config.toml packaging/mcpb/icon.png LICENSE-MIT LICENSE-APACHE "${bundle}/"
+          # 版は、タグ（v0.30.0 → 0.30.0）。タグでなければCargo.tomlの版
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${VERSION#v}"
+          else
+            version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          fi
+          jq --arg v "${version}" '.version = $v' packaging/mcpb/manifest.json > "${bundle}/manifest.json"
+          echo "name=mcp-rs-${VERSION}.mcpb" >> "${GITHUB_ENV}"
+
+      # 公式のCLIで、manifest.jsonを確かめてから作る（版は固定する）
+      - name: Pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes @anthropic-ai/mcpb@2.1.2 validate bundle/manifest.json
+          npx --yes @anthropic-ai/mcpb@2.1.2 pack bundle "dist-mcpb/${name}"
+          cd dist-mcpb
+          sha256sum "${name}" > "${name}.sha256"
+          cat "${name}.sha256"
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mcp-rs-mcpb
+          path: dist-mcpb/*
+          if-no-files-found: error
+
   # 作ったものを、タグのGitHubのリリースに付ける。リリースは、タグを付けた
   # 後に手で作る（deploy.ymlのSBOMと同じ）。まだ無ければ、30分まで待つ
   publish:
     name: Attach to release
-    needs: build
-    if: github.ref_type == 'tag'
+    needs: [build, mcpb]
+    # タグのpushのときだけ。手動の実行でタグを選んでも、公開済みのリリースの
+    # ファイルを置き換えない（#717。`--clobber`で置き換えていた）
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -145,6 +210,7 @@ jobs:
           subject-path: |
             dist/*.zip
             dist/*.tar.gz
+            dist/*.mcpb
 
       - name: Attach to the release
         env:
@@ -168,4 +234,4 @@ jobs:
             echo "Waiting for the GitHub release ${TAG} (${i}/60)"
             sleep 30
           done
-          gh release upload "${TAG}" ./*.zip ./*.tar.gz ./*.sha256 SHA256SUMS --clobber
+          gh release upload "${TAG}" ./*.zip ./*.tar.gz ./*.mcpb ./*.sha256 SHA256SUMS --clobber

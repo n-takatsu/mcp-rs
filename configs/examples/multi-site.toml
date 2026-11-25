@@ -1,0 +1,39 @@
+# mcp-rs: two WordPress sites from one mcp-rs (v0.30.0 and later)
+#
+# The tools stay the same; each tool takes a `site` argument ("blog" or
+# "shop"). Without it, default_site is used. Start with an absolute path:
+#
+#   mcp-rs --config /path/to/multi-site.toml
+#
+# Store each site's username and Application Password in the OS credential
+# store first:
+#
+#   mcp-rs wordpress-keyring set blog
+#   mcp-rs wordpress-keyring set shop
+#
+# See https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites
+
+[server]
+log_level = "info"
+
+[transport]
+type = "stdio"
+
+# Settings for all the sites
+[handlers.wordpress]
+enabled = true                          # required
+default_site = "blog"                   # used when a tool call names no site
+timeout_seconds = 30                    # each site can set its own
+# upload_allowed_dirs = ["/home/me/Pictures/mcp-upload"]  # for every site
+#                                         # without its own; [] in a site
+#                                         # turns off file_path there
+
+[handlers.wordpress.sites.blog]
+url = "https://blog.example.com"
+keyring = "blog"
+
+[handlers.wordpress.sites.shop]
+url = "https://shop.example.com"
+keyring = "shop"
+# post_types = ["product"]              # this site only; [] = post and page only
+# enabled = false                       # stop using this site only

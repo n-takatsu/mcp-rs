@@ -142,8 +142,17 @@ pub fn connect_opts(config: &DatabaseConfig, tls: Option<SslOpts>) -> Opts {
     let connection = &config.connection;
     let constraints =
         PoolConstraints::new(0, config.pool.max_connections.max(1) as usize).unwrap_or_default();
+    // `[::1]`のような角括弧付きのIPv6アドレスは、角括弧を外す。付いたままでは
+    // IPアドレスとして読めず、名前解決に進んで失敗する（#774）
+    let host = connection
+        .host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .filter(|inner| inner.parse::<std::net::Ipv6Addr>().is_ok())
+        .unwrap_or(&connection.host)
+        .to_string();
     let builder = OptsBuilder::default()
-        .ip_or_hostname(connection.host.clone())
+        .ip_or_hostname(host)
         .tcp_port(connection.port)
         .user(Some(connection.username.clone()))
         .pass((!connection.password.is_empty()).then(|| connection.password.clone()))
@@ -165,18 +174,21 @@ pub fn connect_opts(config: &DatabaseConfig, tls: Option<SslOpts>) -> Opts {
     Opts::from(builder)
 }
 
+/// ループバック以外のホストで`ssl_mode`を省略したら、起動しない理由を
+/// 返す（#722。PostgreSQLと同じ）
+pub fn check_ssl_mode_set(config: &ConnectionConfig) -> Result<(), String> {
+    if config.ssl_mode.is_none() && !super::super::is_loopback_host(&config.host) {
+        return Err(super::super::ssl_mode_missing(&config.host));
+    }
+    Ok(())
+}
+
 /// TLSが、通信の盗み見・なりすましを防げない設定のとき、その理由を返す。
 /// ループバック（`localhost`・`127.0.0.1`・`::1`）では返さない
 /// （PostgreSQLの`weak_tls_warning`と同じ考え方）
 pub fn weak_tls_warning(config: &ConnectionConfig) -> Option<String> {
     let host = config.host.as_str();
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if loopback {
+    if super::super::is_loopback_host(host) {
         return None;
     }
     let mode = ssl_mode(config);
@@ -193,6 +205,14 @@ pub fn weak_tls_warning(config: &ConnectionConfig) -> Option<String> {
         "database ssl_mode is \"{mode}\" for {host}: {risk}. Use ssl_mode = \"verify-full\" \
          (with ssl_root_cert for a private CA)"
     ))
+}
+
+/// `ssl_root_cert`（証明書を確かめるCAのファイル）
+fn ssl_root_cert(connection: &ConnectionConfig) -> Option<&str> {
+    connection
+        .options
+        .get(OPTION_SSL_ROOT_CERT)
+        .map(String::as_str)
 }
 
 /// `verify-ca`で`ssl_root_cert`が無いときのエラー（#594）
@@ -232,11 +252,11 @@ async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts, ServerKind
     // ここで決める。既に決まっていれば何もしない
     let _ = rustls::crypto::ring::default_provider().install_default();
     let connection = &config.connection;
+    // CAとTLSモードの組み合わせを、プールを作る前に確かめる（#717。ライブラリ
+    // として直接つなぐ場合も。`require`とCAを書くと、CAを使わずにつないでいた）
+    check_ssl_root_cert(connection).map_err(DatabaseError::ConfigurationError)?;
     let mode = ssl_mode(connection);
-    let root_cert = connection
-        .options
-        .get(OPTION_SSL_ROOT_CERT)
-        .map(String::as_str);
+    let root_cert = ssl_root_cert(connection);
     let timeout = Duration::from_secs(u64::from(connection.timeout_seconds).max(1));
     let try_connect = |opts: Opts| async move {
         let pool = Pool::new(opts.clone());
@@ -334,7 +354,15 @@ impl DatabaseEngine for MySqlEngine {
     }
 
     fn validate_config(&self, config: &DatabaseConfig) -> Result<(), DatabaseError> {
-        ssl_opts(ssl_mode(&config.connection), None).map(|_| ())
+        // CAとTLSモードの組み合わせも、接続と同じく確かめる（#717）
+        check_ssl_root_cert(&config.connection).map_err(DatabaseError::ConfigurationError)?;
+        // 接続と同じCAを渡す（#705。以前は`None`を渡したので、CAを書いた
+        // `verify-ca`も断った）
+        ssl_opts(
+            ssl_mode(&config.connection),
+            ssl_root_cert(&config.connection),
+        )
+        .map(|_| ())
     }
 
     async fn get_version(&self) -> Result<String, DatabaseError> {
@@ -388,6 +416,44 @@ mod tests {
         assert!(ssl_opts("allow", None).is_err());
     }
 
+    /// `validate_config`は、接続と同じCAで確かめる（#705。以前はCAを渡さず、
+    /// CAを書いた`verify-ca`も断った）
+    #[tokio::test]
+    async fn test_validate_config_uses_the_root_cert() {
+        let engine = MySqlEngine::new(DatabaseConfig::default()).await.unwrap();
+        let config = |root_cert: bool| DatabaseConfig {
+            database_type: DatabaseType::MySQL,
+            connection: connection("db.example.com", Some("verify-ca"), root_cert),
+            ..DatabaseConfig::default()
+        };
+        assert!(engine.validate_config(&config(true)).is_ok());
+        assert!(engine.validate_config(&config(false)).is_err());
+        // CAを書いた`require`（CAを使わない）は、確かめて断る（#717）
+        let require_with_ca = DatabaseConfig {
+            database_type: DatabaseType::MySQL,
+            connection: connection("db.example.com", Some("require"), true),
+            ..DatabaseConfig::default()
+        };
+        assert!(engine.validate_config(&require_with_ca).is_err());
+    }
+
+    /// ライブラリとして直接つなぐときも、CAとTLSモードの組み合わせを、
+    /// つなぐ前に確かめる（#717）
+    #[tokio::test]
+    async fn test_connect_checks_the_root_cert_before_connecting() {
+        let config = DatabaseConfig {
+            database_type: DatabaseType::MySQL,
+            connection: connection("db.example.invalid", Some("require"), true),
+            ..DatabaseConfig::default()
+        };
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
+        let error = engine.connect(&config).await.err().unwrap();
+        assert!(
+            matches!(error, DatabaseError::ConfigurationError(_)),
+            "{error:?}"
+        );
+    }
+
     #[test]
     fn test_connect_opts_keep_the_password_as_written() {
         let config = DatabaseConfig {
@@ -404,6 +470,25 @@ mod tests {
         assert!(opts.pool_opts().reset_connection());
         // 新しい接続・リセットした接続で、検査と読み方が違うモードを外す（#574）
         assert_eq!(opts.setup(), [session_setup_sql()]);
+    }
+
+    /// 角括弧付きのIPv6アドレスは、角括弧を外して渡す。ほかのホストは
+    /// そのまま（#774）
+    #[test]
+    fn test_connect_opts_strip_brackets_of_an_ipv6_address() {
+        for (host, expected) in [
+            ("[::1]", "::1"),
+            ("[2001:db8::5]", "2001:db8::5"),
+            ("db.example.com", "db.example.com"),
+            ("[db.example.com]", "[db.example.com]"),
+        ] {
+            let config = DatabaseConfig {
+                database_type: DatabaseType::MySQL,
+                connection: connection(host, None, false),
+                ..DatabaseConfig::default()
+            };
+            assert_eq!(connect_opts(&config, None).ip_or_hostname(), expected);
+        }
     }
 
     /// 外すモードを、カンマで区切った名前として置き換える（`ANSI`で
@@ -427,6 +512,26 @@ mod tests {
         assert!(prefer.contains("\"prefer\""), "{prefer}");
         let verify_ca = weak_tls_warning(&connection("db", Some("verify-ca"), false)).unwrap();
         assert!(verify_ca.contains("host name"), "{verify_ca}");
+    }
+
+    /// ループバック以外では、`ssl_mode`を省略できない（#722）
+    #[test]
+    fn test_check_ssl_mode_set() {
+        for host in ["localhost", "127.0.0.1", "::1", "[::1]"] {
+            assert!(
+                check_ssl_mode_set(&connection(host, None, false)).is_ok(),
+                "{host}"
+            );
+        }
+        for mode in ["disable", "prefer", "require", "verify-full"] {
+            assert!(check_ssl_mode_set(&connection("db", Some(mode), false)).is_ok());
+        }
+        let error = check_ssl_mode_set(&connection("db", None, false)).unwrap_err();
+        assert!(
+            error.contains("not set for db") && error.contains("ssl_mode = \"verify-full\""),
+            "{error}"
+        );
+        assert!(!error.contains("  "), "{error}");
     }
 
     #[test]

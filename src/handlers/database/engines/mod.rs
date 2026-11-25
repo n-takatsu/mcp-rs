@@ -15,6 +15,27 @@ pub const OPTION_BYTE_LIMIT: &str = "byte_limit";
 /// CAのファイル（#539）。PostgreSQL・MySQL（#527）が使う
 pub const OPTION_SSL_ROOT_CERT: &str = "ssl_root_cert";
 
+/// ループバック（`localhost`・`127.0.0.1`・`::1`。`[::1]`も）のホストか
+pub fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// ループバック以外のホストで`ssl_mode`を省略したときの、起動しない理由
+/// （#722）。省略時の`prefer`は、暗号化しないことも、証明書を確かめない
+/// こともあるので、書いて選んでもらう
+pub fn ssl_mode_missing(host: &str) -> String {
+    format!(
+        "database.ssl_mode is not set for {host}: write ssl_mode = \"verify-full\" (with \
+         ssl_root_cert for a private CA). To connect without checking the certificate, write \
+         the mode instead (for example ssl_mode = \"require\")"
+    )
+}
+
 #[cfg(feature = "mysql-backend")]
 pub mod mariadb; // MariaDB (MySQLベース)
 #[cfg(feature = "mongodb-backend")]

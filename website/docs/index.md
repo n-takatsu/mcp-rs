@@ -10,7 +10,7 @@ MCP-RS is a Model Context Protocol (MCP) server written in Rust. MCP clients suc
 
 ## What it offers
 
-- **[WordPress]({{ site.baseurl }}/docs/wordpress/)**: 32 tools for posts, pages, media, categories, tags, comments, and site settings, through the WordPress REST API
+- **[WordPress]({{ site.baseurl }}/docs/wordpress/)**: 41 tools for posts, pages, custom post types, media, categories, tags and other taxonomies, comments, and site settings, through the WordPress REST API
 - **[Database]({{ site.baseurl }}/docs/database/)**: Read-only SQL tools for one PostgreSQL database (writes only with `allow_write = true`)
 - **[Plugins]({{ site.baseurl }}/docs/plugins/)**: The tools of other MCP servers, started as a child process, in a Docker container, or as a Kubernetes Job
 - **[Security]({{ site.baseurl }}/docs/security/)**: Encrypted credentials; for HTTP mode, API key or OAuth 2.1 authentication, per-caller tool limits, and TLS/mTLS; rate limiting; an audit log of every tool call

@@ -38,24 +38,15 @@ timeout_seconds = 30
     env::remove_var("WORDPRESS_PASSWORD");
 
     // 設定をロードしてチェック
-    let config_result = load_test_config();
-    match config_result {
-        Ok(config) => {
-            if let Some(wp_config) = &config.handlers.wordpress {
-                println!("✅ 設定ロード成功:");
-                println!("   - URL: {}", wp_config.url);
-                println!("   - Username: {}", wp_config.username);
-                println!("   - Password: {}", wp_config.password);
-
-                // 環境変数が展開されていないことを確認
-                assert!(wp_config.url.contains("${WORDPRESS_URL}"));
-                assert!(wp_config.username.contains("${WORDPRESS_USERNAME}"));
-                assert!(wp_config.password.contains("${WORDPRESS_PASSWORD}"));
-                println!("✅ 環境変数未設定時の動作確認 OK");
-            }
-        }
+    // v0.19.2より後は、使う変数が無ければ読み込みが失敗する（以前は
+    // `${VAR}`の文字のまま使った）。エラーには、変数の名前だけが出る（#746）
+    match load_test_config() {
+        Ok(_) => panic!("loading must fail when WORDPRESS_URL is not set"),
         Err(e) => {
-            error!("❌ 設定ロードエラー: {}", e);
+            let message = e.to_string();
+            println!("✅ 設定ロードは失敗した（期待どおり）: {}", message);
+            assert!(message.contains("WORDPRESS_URL"), "{message}");
+            println!("✅ 環境変数未設定時の動作確認 OK");
         }
     }
 
@@ -95,24 +86,16 @@ timeout_seconds = 30
     env::remove_var("WORDPRESS_USERNAME");
     env::remove_var("WORDPRESS_PASSWORD");
 
-    let config_result = load_test_config();
-    match config_result {
-        Ok(config) => {
-            if let Some(wp_config) = &config.handlers.wordpress {
-                println!("✅ 設定ロード成功:");
-                println!("   - URL: {}", wp_config.url);
-                println!("   - Username: {}", wp_config.username);
-                println!("   - Password: {}", wp_config.password);
-
-                // 一部のみ展開されていることを確認
-                assert_eq!(wp_config.url, "https://partial-test.example.com");
-                assert!(wp_config.username.contains("${WORDPRESS_USERNAME}"));
-                assert!(wp_config.password.contains("${WORDPRESS_PASSWORD}"));
-                println!("✅ 部分的環境変数展開 OK");
-            }
-        }
+    // 一部の変数だけがあっても、無い変数があれば失敗する。エラーには、
+    // 無い変数の名前が出て、設定した値は出ない（#746）
+    match load_test_config() {
+        Ok(_) => panic!("loading must fail when WORDPRESS_USERNAME is not set"),
         Err(e) => {
-            error!("❌ 設定ロードエラー: {}", e);
+            let message = e.to_string();
+            println!("✅ 設定ロードは失敗した（期待どおり）: {}", message);
+            assert!(message.contains("WORDPRESS_USERNAME"), "{message}");
+            assert!(!message.contains("partial-test.example.com"), "{message}");
+            println!("✅ 部分的環境変数の動作確認 OK");
         }
     }
 

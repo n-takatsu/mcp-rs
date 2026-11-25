@@ -4,21 +4,20 @@ MCP-RS Phase 2 PostgreSQL テスト環境を Docker Compose で構築・管理�
 
 > **使うファイル**: このガイドは、テスト・開発用の `configs/docker/docker-compose.postgres.yml` を使います。リポジトリの直下の `docker-compose.postgres.yml` は別物で、`docker-compose.yml`（HTTPモードのmcp-rs）と一緒に使うPostgreSQLです。そちらは [DOCKER_GUIDE.md](DOCKER_GUIDE.md#docker-compose) を見てください。
 >
-> **パスワード**: テスト環境は、`POSTGRES_PASSWORD` が無いか空なら、`postgres` を使います（`.env.example` は空です）。pgAdminの既定のパスワードも `admin` です。どれも誰でも知っているパスワードなので、ポート（5432・5433・5050）は、このPCの中（`127.0.0.1`）だけに公開します（v0.24.0から。以前は、同じネットワークの誰からも接続できました）。ほかのPCから使うときは、ポートの指定を変え、パスワードも必ず自分のものに変えてください。
+> **パスワード**: テスト環境は、`POSTGRES_PASSWORD` が無いか空なら、`postgres` を使います（`.env.example` は空です）。pgAdminの既定のパスワードも `admin` です。どれも誰でも知っているパスワードなので、ポート（5432・5050）は、このPCの中（`127.0.0.1`）だけに公開します（v0.24.0から。以前は、同じネットワークの誰からも接続できました）。ほかのPCから使うときは、ポートの指定を変え、パスワードも必ず自分のものに変えてください。
 
 ## 概要
 
 このセットアップは以下を提供します：
 
 - **PostgreSQL Primary (15-Alpine)** - メインデータベースサーバー
-- **PostgreSQL Secondary (15-Alpine)** - レプリケーション/フェイルオーバーテスト用
 - **pgAdmin 4** - Web ベースのデータベース管理ツール
 
 ## システム要件
 
 - Docker & Docker Compose
 - 最低 2GB RAM
-- ポート開放: 5432, 5433, 5050
+- ポート開放: 5432, 5050
 
 ## クイックスタート
 
@@ -35,16 +34,34 @@ cp .env.example .env
 
 ### 2. コンテナ起動
 
+> **セカンダリ（`postgres-secondary`）は、v0.30.0で外しました**（#732）。レプリケーションの設定が PostgreSQL 15 に合っておらず起動しなかったうえ、使うテストもありませんでした。以前の手順でセカンダリを起動していたら、そのコンテナとボリュームが残っています。コンテナは`--remove-orphans`で消せます。ボリュームは、名前を確かめてから消してください:
+>
+> ```bash
+> docker compose -f configs/docker/docker-compose.postgres.yml up -d --remove-orphans
+> docker volume ls --filter name=postgres_secondary_data
+> docker volume rm <確かめた名前>
+> ```
+
 ```bash
-# プロダクション環境
+# Primary・pgAdminをバックグラウンドで起動
 docker compose -f configs/docker/docker-compose.postgres.yml up -d
 
-# 開発環境（ログ表示）
+# Primaryだけ（テストにはこれで足りる）
+docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
+
+# ログを表示しながら起動
 docker compose -f configs/docker/docker-compose.postgres.yml up
-
-# バックグラウンド起動
-docker compose -f configs/docker/docker-compose.postgres.yml up -d
 ```
+
+> **初期化のSQL（`scripts/postgres/init.sql`・`test-schema.sql`）は、ボリュームが空のときの最初の起動でだけ実行されます。** 以前の版で初期化が途中で止まったボリュームが残っていると、スキーマが足りないままになります。その場合は、Primaryのコンテナとボリュームだけを消してから起動し直してください（Primaryのデータも消えます）。`down -v`は、pgAdminのボリュームも消します:
+>
+> ```bash
+> docker compose -f configs/docker/docker-compose.postgres.yml rm -sf postgres-primary
+> # ボリュームの名前を確かめる（Composeが前にプロジェクトの名前を付ける。例: docker_postgres_primary_data）
+> docker volume ls --filter name=postgres_primary_data
+> docker volume rm <確かめた名前>
+> docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
+> ```
 
 ### 3. 接続確認
 
@@ -52,10 +69,7 @@ docker compose -f configs/docker/docker-compose.postgres.yml up -d
 # Primary への接続テスト
 psql -h localhost -p 5432 -U postgres -d testdb -c "SELECT version();"
 
-# Secondary への接続テスト
-psql -h localhost -p 5433 -U postgres -d testdb -c "SELECT version();"
-
-# pgAdmin へアクセス
+# pgAdmin へアクセス（pgAdminも起動したとき）
 # http://localhost:5050
 # Email: admin@example.com
 # Password: admin
@@ -85,14 +99,14 @@ docker compose -f configs/docker/docker-compose.postgres.yml stop
 # 全コンテナ再起動
 docker compose -f configs/docker/docker-compose.postgres.yml restart
 
-# 特定コンテナ再起動
+# Primaryだけ再起動
 docker compose -f configs/docker/docker-compose.postgres.yml restart postgres-primary
 
 # コンテナ削除（データ保持）
-docker compose -f configs/docker/docker-compose.postgres.yml down
+docker compose -f configs/docker/docker-compose.postgres.yml down --remove-orphans
 
 # コンテナとボリューム削除（データ削除）
-docker compose -f configs/docker/docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v --remove-orphans
 ```
 
 ## テスト実行
@@ -191,7 +205,6 @@ psql postgresql://postgres:postgres@localhost:5432/testdb
 コンテナ内データは以下のボリュームに永続化：
 
 - `postgres_primary_data` - Primary データベースファイル
-- `postgres_secondary_data` - Secondary データベースファイル
 - `pgadmin_data` - pgAdmin 設定
 
 ### ボリューム確認
@@ -207,7 +220,7 @@ docker volume inspect postgres_primary_data
 
 ```bash
 # 全ボリューム削除
-docker compose -f configs/docker/docker-compose.postgres.yml down -v
+docker compose -f configs/docker/docker-compose.postgres.yml down -v --remove-orphans
 
 # または個別削除
 docker volume rm postgres_primary_data
@@ -227,11 +240,10 @@ docker network inspect mcp-rs_postgres-network
 
 ### コンテナ間通信
 
-コンテナ内では `postgres-primary`, `postgres-secondary` のホスト名で接続可能：
+コンテナ内では `postgres-primary` のホスト名で接続可能：
 
 ```bash
 postgresql://postgres:postgres@postgres-primary:5432/testdb
-postgresql://postgres:postgres@postgres-secondary:5432/testdb
 ```
 
 ## トラブルシューティング
@@ -242,10 +254,17 @@ postgresql://postgres:postgres@postgres-secondary:5432/testdb
 # ログ確認
 docker compose -f configs/docker/docker-compose.postgres.yml logs postgres-primary
 
-# ボリュームクリア（データ削除）
-docker compose -f configs/docker/docker-compose.postgres.yml down -v
+# ボリュームクリア（すべてのデータを削除。pgAdminのボリュームも消える。
+# Primaryだけを消すときは「2. コンテナ起動」の手順）。`--remove-orphans`は、
+# 以前のセカンダリのコンテナも消す
+docker compose -f configs/docker/docker-compose.postgres.yml down -v --remove-orphans
 
-# 再起動
+# 以前のセカンダリのボリュームは、今の定義に無いので`down -v`では消えない。
+# 残っていれば、名前を確かめてから消す
+docker volume ls --filter name=postgres_secondary_data
+docker volume rm <確かめた名前>
+
+# 起動し直す
 docker compose -f configs/docker/docker-compose.postgres.yml up -d
 ```
 
@@ -256,7 +275,7 @@ docker compose -f configs/docker/docker-compose.postgres.yml up -d
 netstat -tulpn | grep 5432
 
 # 別ポート指定
-POSTGRES_PORT=5432 docker compose -f configs/docker/docker-compose.postgres.yml up -d
+POSTGRES_PORT=5432 docker compose -f configs/docker/docker-compose.postgres.yml up -d postgres-primary
 ```
 
 ### 接続タイムアウト
@@ -267,21 +286,6 @@ docker compose -f configs/docker/docker-compose.postgres.yml ps
 
 # コンテナのヘルスチェックログ確認
 docker inspect mcp-rs-postgres-primary | grep -A 10 "Health"
-```
-
-### Secondary レプリケーション失敗
-
-```bash
-# Secondary ログ確認
-docker compose -f configs/docker/docker-compose.postgres.yml logs postgres-secondary
-
-# Primary でレプリケーションスロット確認
-psql -h localhost -p 5432 -U postgres -d postgres \
-  -c "SELECT * FROM pg_replication_slots;"
-
-# Primary で接続確認
-psql -h localhost -p 5432 -U postgres -d postgres \
-  -c "SELECT * FROM pg_stat_replication;"
 ```
 
 ## パフォーマンス最適化
@@ -379,7 +383,6 @@ docker compose -f configs/docker/docker-compose.postgres.yml logs --tail=100
 | `POSTGRES_PASSWORD` | postgres | PostgreSQL パスワード |
 | `POSTGRES_DB` | testdb | デフォルトデータベース |
 | `POSTGRES_PORT` | 5432 | Primary ポート |
-| `POSTGRES_SECONDARY_PORT` | 5433 | Secondary ポート |
 | `PGADMIN_EMAIL` | admin@example.com | pgAdmin ログインメール |
 | `PGADMIN_PASSWORD` | admin | pgAdmin ログインパスワード |
 | `PGADMIN_PORT` | 5050 | pgAdmin Web ポート |

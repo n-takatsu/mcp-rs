@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use mcp_rs::security::ids::{
-    alerts::{Alert, AlertLevel, AlertManager, NotificationChannel},
+    alerts::{Alert, AlertLevel, AlertManager},
     behavioral::BehavioralDetector,
     network::NetworkMonitor,
     signature::SignatureDetector,
@@ -40,7 +40,7 @@ async fn test_signature_detector_sql_injection() {
     let mut request = create_test_request("test-001", "GET", "/api/users", None);
     request.query_params.insert(
         "id".to_string(),
-        "1 UNION SELECT password FROM users".to_string(),
+        vec!["1 UNION SELECT password FROM users".to_string()],
     );
 
     let result = detector.detect(&request).await.unwrap();
@@ -87,7 +87,7 @@ async fn test_signature_detector_command_injection() {
     let mut request = create_test_request("test-004", "POST", "/api/execute", None);
     request
         .query_params
-        .insert("cmd".to_string(), "ls; rm -rf /".to_string());
+        .insert("cmd".to_string(), vec!["ls; rm -rf /".to_string()]);
 
     let result = detector.detect(&request).await.unwrap();
 
@@ -102,7 +102,7 @@ async fn test_signature_detector_benign_request() {
     let mut request = create_test_request("test-005", "GET", "/api/products", None);
     request
         .query_params
-        .insert("category".to_string(), "electronics".to_string());
+        .insert("category".to_string(), vec!["electronics".to_string()]);
 
     let result = detector.detect(&request).await.unwrap();
 
@@ -300,28 +300,6 @@ async fn test_alert_manager_multiple_alerts() {
 }
 
 #[tokio::test]
-async fn test_alert_manager_notification_channels() {
-    let manager = AlertManager::new().await.unwrap();
-
-    // Slackチャネルを追加
-    let slack_channel = NotificationChannel::Slack {
-        webhook_url: "https://hooks.slack.com/test".to_string(),
-        min_level: AlertLevel::High,
-    };
-    manager.add_notification_channel(slack_channel).await;
-
-    // Emailチャネルを追加
-    let email_channel = NotificationChannel::Email {
-        recipients: vec!["security@example.com".to_string()],
-        min_level: AlertLevel::Critical,
-    };
-    manager.add_notification_channel(email_channel).await;
-
-    // チャネルが追加されたか確認（内部実装による）
-    // 実際の通知送信はモックが必要
-}
-
-#[tokio::test]
 async fn test_ids_initialization() {
     let ids = IntrusionDetectionSystem::new(IDSConfig::default()).await;
     assert!(ids.is_ok(), "IDS should initialize successfully");
@@ -345,7 +323,7 @@ async fn test_ids_analyze_malicious_request() {
     );
     request
         .query_params
-        .insert("id".to_string(), "1 OR 1=1".to_string());
+        .insert("id".to_string(), vec!["1 OR 1=1".to_string()]);
 
     let result = ids.analyze_request(&request).await;
     assert!(result.is_ok());
@@ -373,7 +351,7 @@ async fn test_ids_analyze_benign_request() {
     );
     request
         .query_params
-        .insert("category".to_string(), "books".to_string());
+        .insert("category".to_string(), vec!["books".to_string()]);
 
     let result = ids.analyze_request(&request).await.unwrap();
 
@@ -465,7 +443,7 @@ async fn test_ids_severity_levels() {
     );
     critical_request.query_params.insert(
         "q".to_string(),
-        "1 UNION SELECT password FROM users".to_string(),
+        vec!["1 UNION SELECT password FROM users".to_string()],
     );
 
     let result = ids.analyze_request(&critical_request).await.unwrap();

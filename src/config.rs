@@ -20,9 +20,6 @@
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-pub mod dynamic;
-pub use dynamic::DynamicConfigManager;
-
 /// `WORDPRESS_MASTER_PASSWORD`環境変数を読み書きするテストを直列化する
 /// ためのロック。`cargo test`は同一プロセス内で全テストを並列実行する
 /// ため、環境変数はプロセス全体で共有される。このロックを取らずに複数
@@ -34,7 +31,7 @@ pub(crate) static WORDPRESS_MASTER_PASSWORD_ENV_LOCK: std::sync::Mutex<()> =
     std::sync::Mutex::new(());
 
 // 前方宣言用の型エイリアス
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -65,6 +62,14 @@ pub struct McpConfig {
     /// 相対パスの基準に使う。設定ファイルには書かない
     #[serde(skip)]
     pub config_file: Option<PathBuf>,
+    /// 起動はするが使えないもの（名前、理由）。`mcp_rs_status`に出す。
+    /// 拡張機能で、サイトがまだ入力されていないとき等（#632）
+    #[serde(skip)]
+    pub startup_notes: Vec<(String, String)>,
+    /// 設定ファイルが無いまま、設定なし（ハンドラー無し）で起動したときの
+    /// 案内（#667）。`None`は、設定ファイルか環境変数で設定した
+    #[serde(skip)]
+    pub missing_config_file: Option<String>,
 }
 
 /// 監査ログの設定（`[audit]`、#416）
@@ -107,7 +112,9 @@ pub struct DatabaseSettings {
     /// `[database]`の値が違えば使わない。`password`とは一緒に書けない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyring: Option<String>,
-    /// TLS: `disable`・`prefer`（省略時）・`require`・`verify-full`。
+    /// TLS: `disable`・`prefer`・`require`・`verify-full`。省略時は`prefer`だが、
+    /// ループバック（PostgreSQLはUnixソケットも）以外では省略できない
+    /// （#722。PostgreSQLは`PGSSLMODE`でもよい）。
     /// PostgreSQLは`allow`も使う。MySQL・MariaDBは、`ssl_root_cert`があれば
     /// `verify-ca`も使える（#594。PostgreSQLの`verify-ca`は使えない）。
     /// `verify-full`は、MySQLの`VERIFY_IDENTITY`
@@ -475,15 +482,15 @@ pub fn legacy_plugins_conflict_hint(content: &str) -> Option<&'static str> {
                 .replace([' ', '\t'], "")
         })
         .collect();
-    let has_new = headers.iter().any(|h| h == "[[plugins]]");
-    // `[plugins.container]`・`[plugins.kubernetes]`は、直前の`[[plugins]]`の
-    // 設定（#411・#413）
-    let has_legacy = headers.iter().any(|h| {
+    let first_new = headers.iter().position(|h| h == "[[plugins]]");
+    let has_new = first_new.is_some();
+    // `[[plugins]]`より後の`[plugins.*]`（`container`・`kubernetes`・`env`・
+    // `rate_limit`等）は、直前の`[[plugins]]`の設定（#411・#413・#750）
+    let has_legacy = headers.iter().enumerate().any(|(i, h)| {
         h == "[plugins]"
             || (h.starts_with("[plugins.")
                 && h.ends_with(']')
-                && !h.starts_with("[plugins.container")
-                && !h.starts_with("[plugins.kubernetes"))
+                && first_new.is_none_or(|first| i < first))
     });
     (has_new && has_legacy).then_some(
         "The config file has both the old [plugins] section (v0.18.1 and earlier, never used by mcp-rs) and [[plugins]] entries. Delete the old [plugins] section, including [plugins.*] subsections",
@@ -529,11 +536,101 @@ pub fn redact_quoted(message: &str) -> String {
     out
 }
 
+/// 項目の名前として出す長さの上限（#617）
+const FIELD_NAME_MAX_CHARS: usize = 64;
+
+/// 設定の読み込みのエラーの理由を、値を伏せて表す（#543）。ただし、
+/// `missing field`・`unknown field`の項目の名前は残す（#617）。伏せると、
+/// どこを直せばよいか分からない。項目の名前はmcp-rsの設定の型が決める
+/// もので、値ではない。`unknown field`の名前と、`expected one of …`の
+/// 候補は残すが、名前はユーザーが書いたものなので、長さを切り、制御文字を
+/// エスケープする。configクレートが付ける` for key `…``（項目の場所）も
+/// 残す。前に引用符の無いときだけ扱う（値の中の同じ文字列で、値を出さない
+/// ように）
+pub fn redact_config_error(message: &str) -> String {
+    for (prefix, keep_candidates) in [("missing field `", false), ("unknown field `", true)] {
+        let Some(start) = message.find(prefix) else {
+            continue;
+        };
+        let before = &message[..start];
+        if before.contains(['"', '\'', '`']) {
+            continue;
+        }
+        let after_prefix = &message[start + prefix.len()..];
+        let Some(name_len) = after_prefix.find('`') else {
+            continue;
+        };
+        let name = &after_prefix[..name_len];
+        let rest = &after_prefix[name_len + 1..];
+        let rest = if keep_candidates || rest.starts_with(" for key `") {
+            keep_field_names(rest)
+        } else {
+            redact_quoted(rest)
+        };
+        return format!("{before}{prefix}{}`{rest}", sanitize_field_name(name));
+    }
+    // 型の誤り等（`invalid type: string "…", expected u16 for key `a.b``）も、
+    // 最後の` for key `…``（項目の場所）は残す（#724。伏せると、どの項目を
+    // 直せばよいか分からない）。値は伏せる。最後の1つだけを、項目の名前に
+    // 使う文字だけのときに残す（値の中の同じ文字列は、最後にならない）
+    if let Some(at) = message.rfind(" for key `") {
+        let key = &message[at + " for key `".len()..];
+        if let Some(key) = key.strip_suffix('`') {
+            if !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_-.[]".contains(c))
+            {
+                return format!("{} for key `{key}`", redact_quoted(&message[..at]));
+            }
+        }
+    }
+    redact_quoted(message)
+}
+
+/// `, expected one of `a`, `b``の候補（`` ` ``の中）を残し、ほかの引用符の
+/// 中は伏せる。`` ` ``が対にならなければ、すべて伏せる
+fn keep_field_names(text: &str) -> String {
+    let parts: Vec<&str> = text.split('`').collect();
+    if parts.len().is_multiple_of(2) {
+        return redact_quoted(text);
+    }
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            if i % 2 == 1 {
+                sanitize_field_name(part)
+            } else {
+                redact_quoted(part)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("`")
+}
+
+/// ユーザーが書いた項目の名前を、エラーに出せる形にする（#617）
+fn sanitize_field_name(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i == FIELD_NAME_MAX_CHARS {
+            out.push('…');
+            break;
+        }
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// TOMLの読み込みエラーを、行と列の番号と、値を伏せた理由だけで表す
 /// （#543）。tomlのエラーの表示は、誤りのある行をそのまま引用するので、
 /// `password = "…"x`のような誤りで、パスワードが標準エラーに出ていた
 pub fn describe_toml_error(error: &toml::de::Error, content: &str) -> String {
-    let reason = redact_quoted(error.message().trim());
+    let reason = redact_config_error(error.message().trim());
     match error.span() {
         Some(span) => {
             let before = &content[..span.start.min(content.len())];
@@ -562,25 +659,75 @@ pub fn with_config_hint(error: impl fmt::Display, content: &str) -> String {
 /// v0.18.1以前の`[plugins]`（テーブル、`PluginsConfig`）は本体が一度も
 /// 使っておらず、v0.18.2で「残っていても無視される」とした。その約束を
 /// 守るため、テーブルは警告を出して読み飛ばす。
+///
+/// `serde_json::Value`を経由すると、`enabled = nan`等のJSONに無い値が
+/// `null`（省略）になり、既定の値で動いてしまう（#750）。型を保つ
+/// `toml::Value`から`PluginConfig`として読み、不正な値は断る。
 fn deserialize_plugins<'de, D>(deserializer: D) -> Result<Vec<PluginConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::Null => Ok(Vec::new()),
-        serde_json::Value::Array(_) => serde_json::from_value(value)
-            .map_err(|e| serde::de::Error::custom(format!("invalid [[plugins]] entry: {}", e))),
-        serde_json::Value::Object(_) => {
-            // ログはまだ初期化されていないことがあるため、標準エラー出力に書く
-            eprintln!(
-                "[mcp-rs] warning: the [plugins] table from v0.18.1 and earlier is ignored. To add a plugin, use [[plugins]] entries"
-            );
-            Ok(Vec::new())
+    deserializer.deserialize_any(PluginsVisitor)
+}
+
+struct PluginsVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PluginsVisitor {
+    type Value = Vec<PluginConfig>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("plugins must be [[plugins]] entries")
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(Vec::new())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        // 1つずつ`toml::Value`（型を保つ）として受け取ってから読む。
+        // `config`クレートから直接読むと、`nan`・`1`・`"yes"`も`bool`に、
+        // `nan`も数に変換されてしまう
+        let mut plugins = Vec::new();
+        while let Some(entry) = seq.next_element::<toml::Value>()? {
+            // `toml::de::Error`の表示は改行で終わるので、理由だけを使う
+            let plugin = PluginConfig::deserialize(entry).map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "invalid [[plugins]] entry: {}",
+                    e.message().trim()
+                ))
+            })?;
+            plugins.push(plugin);
         }
-        _ => Err(serde::de::Error::custom(
-            "plugins must be [[plugins]] entries",
-        )),
+        Ok(plugins)
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        while map
+            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+            .is_some()
+        {}
+        // ログはまだ初期化されていないことがあるため、標準エラー出力に書く
+        eprintln!(
+            "[mcp-rs] warning: the [plugins] table from v0.18.1 and earlier is ignored. To add a plugin, use [[plugins]] entries"
+        );
+        Ok(Vec::new())
     }
 }
 
@@ -712,7 +859,10 @@ pub struct HttpTransportConfig {
     /// Time limit in seconds for receiving a request (#540): the TLS
     /// handshake and the headers as a whole, and each wait for more of the
     /// body (not the whole body). It does not limit how long a tool call
-    /// takes. Defaults to 30.
+    /// takes. It also closes a connection with no request in progress for
+    /// this long, and a connection whose response body stops being sent:
+    /// each part of the body must be sent within this time plus the time it
+    /// takes at 64 KiB/s (#759, #779). Defaults to 30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout_seconds: Option<u64>,
     /// Maximum number of connections served at the same time, WebSocket
@@ -799,8 +949,17 @@ pub struct HandlersConfig {
     // pub custom: Option<HashMap<String, serde_json::Value>>,
 }
 
+/// `[handlers.wordpress]`と、`[handlers.wordpress.sites.<名前>]`の各サイト。
+///
+/// サイトが1つなら、`[handlers.wordpress]`に`url`・資格情報を直接書ける
+/// （今までの形。サイトの名前は`default`）。複数のサイト（#640）は、すべて
+/// `sites`の下に対等に書き、`[handlers.wordpress]`には、全体の`enabled`・
+/// 既定のサイト（`default_site`）・全サイト共通の設定（`timeout_seconds`・
+/// `rate_limit`・`upload_allowed_dirs`。サイトごとに上書きできる）だけを書く
 #[derive(Clone, Deserialize, Serialize)]
 pub struct WordPressConfig {
+    /// サイトのURL。`sites`を使うときは、各サイトに書く
+    #[serde(default)]
     pub url: String,
     /// `encrypted_credentials`のみを指定する設定も許容するため、省略可能
     /// （省略時は空文字列。`resolve_encrypted_credentials`が復号結果で
@@ -824,12 +983,53 @@ pub struct WordPressConfig {
     /// `username`・`password`・`encrypted_credentials`とは一緒に書けない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyring: Option<String>,
-    /// `upload_media`の`file_path`で読み込みを許可するフォルダ。空（既定）
-    /// なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
+    /// `upload_media`の`file_path`で読み込みを許可するフォルダ。省略（既定）
+    /// か空なら`file_path`は使えない。mcp-rsが動いているマシン上のファイルを
     /// 読んでWordPressへ送る機能のため、明示的に許可したフォルダの中だけに
     /// 限定する（起動時に存在しないフォルダが指定されていればエラー）。
-    #[serde(default)]
-    pub upload_allowed_dirs: Vec<String>,
+    /// `sites`では、サイトで省くと`[handlers.wordpress]`のものを使い、
+    /// `[]`と書くと、そのサイトでは`file_path`を使わない（#684）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_allowed_dirs: Option<Vec<String>>,
+    /// `post`・`page`のほかに使ってよい、カスタム投稿タイプ（#642。例:
+    /// `["product"]`）。省略か空なら`post`・`page`だけ。AIに商品等を
+    /// 書き換えさせるかは、ここで決める。`sites`では、サイトで省くと
+    /// `[handlers.wordpress]`のものを使い、`[]`と書くと、そのサイトでは
+    /// `post`・`page`だけにする（#684）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_types: Option<Vec<String>>,
+    /// ツールの`site`の引数を省いたときに使うサイトの名前（#640）。
+    /// `[handlers.wordpress]`にだけ書く。使うサイトが1つなら省ける
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_site: Option<String>,
+    /// WordPressのサイト（#640）。`[handlers.wordpress.sites.<名前>]`に、
+    /// `url`・資格情報等を書く。`enabled = false`で、そのサイトだけを止める。
+    /// ツールは増やさず、`site`の引数で選ぶ
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sites: BTreeMap<String, WordPressConfig>,
+}
+
+/// `sites`を使わない（今までの形の）サイトの名前（#640）
+pub const DEFAULT_WORDPRESS_SITE: &str = "default";
+
+/// WordPressのサイトの名前の長さの上限（#640）
+const MAX_WORDPRESS_SITE_NAME_LEN: usize = 32;
+
+/// WordPressのサイトの名前を確かめる（#640）。英小文字・数字・`_`・`-`で、
+/// 32文字まで
+pub(crate) fn check_wordpress_site_name(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.len() <= MAX_WORDPRESS_SITE_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "WordPress site name '{name}' is not valid: use lowercase letters, digits, '_' and '-', up to {MAX_WORDPRESS_SITE_NAME_LEN} characters"
+        ))
+    }
 }
 
 // Debugトレイトでパスワードを露出しないようにカスタム実装
@@ -846,6 +1046,9 @@ impl fmt::Debug for WordPressConfig {
             .field("encrypted_credentials", &self.encrypted_credentials)
             .field("keyring", &self.keyring)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
+            .field("post_types", &self.post_types)
+            .field("default_site", &self.default_site)
+            .field("sites", &self.sites)
             .finish()
     }
 }
@@ -899,7 +1102,10 @@ impl WordPressConfig {
             rate_limit,
             encrypted_credentials: Some(encrypted_credentials),
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         })
     }
 
@@ -993,7 +1199,174 @@ impl WordPressConfig {
         &mut self,
         store: &dyn crate::security::keyring_store::SecretStore,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // 今までの形（サイトが1つ）
+        if self.sites.is_empty() {
+            return self.resolve_site_credentials(store, "handlers.wordpress");
+        }
+        // 複数のサイト（#640）。全体が使われないときは、読まない
+        if !self.enabled.unwrap_or(false) {
+            return Ok(());
+        }
+        self.check_sites_layout()?;
+        self.inherit_into_sites();
+        for (name, site) in self.sites.iter_mut() {
+            // 使わないサイトの資格情報は読まない。`encrypted_credentials`の
+            // 復号に失敗して、ほかのサイトまで起動できなくなるのを防ぐ（#684）
+            if !site.enabled.unwrap_or(false) {
+                continue;
+            }
+            let label = format!("handlers.wordpress.sites.{name}");
+            site.resolve_site_credentials(store, &label).map_err(
+                |e| -> Box<dyn std::error::Error> {
+                    let message = e.to_string();
+                    if message.starts_with(&label) {
+                        message.into()
+                    } else {
+                        format!("{label}: {message}").into()
+                    }
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 各サイトの`enabled`を決める（#640）。全体（`[handlers.wordpress]`）が
+    /// 使われなければ、どのサイトも使わない。使われるなら、`enabled = false`
+    /// と書いたサイト以外を使う
+    fn inherit_into_sites(&mut self) {
+        let enabled = self.enabled.unwrap_or(false);
+        for site in self.sites.values_mut() {
+            site.enabled = Some(enabled && site.enabled.unwrap_or(true));
+        }
+    }
+
+    /// `sites`を使うときの、表の書き方を確かめる（#640）。サイトの`url`・
+    /// 資格情報は、`[handlers.wordpress]`ではなく各サイトに書く。
+    /// `default_site`・`sites`は、`[handlers.wordpress]`にだけ書く
+    fn check_sites_layout(&self) -> Result<(), String> {
+        let site_keys: Vec<&str> = [
+            ("url", !self.url.is_empty()),
+            ("username", !self.username.is_empty()),
+            ("password", !self.password.is_empty()),
+            ("keyring", self.keyring.is_some()),
+            (
+                "encrypted_credentials",
+                self.encrypted_credentials.is_some(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect();
+        if !site_keys.is_empty() {
+            return Err(format!(
+                "handlers.wordpress: with [handlers.wordpress.sites.<site>], write {} in each site's table, not in [handlers.wordpress]",
+                site_keys.join(", ")
+            ));
+        }
+        for (name, site) in &self.sites {
+            let label = format!("handlers.wordpress.sites.{name}");
+            check_wordpress_site_name(name).map_err(|e| format!("{label}: {e}"))?;
+            if site.default_site.is_some() || !site.sites.is_empty() {
+                return Err(format!(
+                    "{label}: default_site and sites can be written only in [handlers.wordpress]"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 使うWordPressのサイトの一覧（#640）。最初が既定のサイト。
+    ///
+    /// - `sites`が無ければ、`[handlers.wordpress]`の1つ（名前は`default`）
+    /// - `sites`があれば、使うサイトを、既定のサイト、残りを名前の順に。
+    ///   全サイト共通の設定（`timeout_seconds`・`rate_limit`・
+    ///   `upload_allowed_dirs`・`post_types`）は、サイトに無ければ
+    ///   `[handlers.wordpress]`のものを使う（`[]`と書いたサイトは受け継がない）。
+    ///   使うサイトが2つ以上なら、`default_site`が要る
+    ///
+    /// 返す設定には、`sites`・`default_site`を含めない
+    pub fn site_list(&self) -> Result<Vec<(String, WordPressConfig)>, String> {
+        if self.sites.is_empty() {
+            if let Some(default_site) = &self.default_site {
+                return Err(format!(
+                    "handlers.wordpress.default_site: there is no [handlers.wordpress.sites.{default_site}]. default_site is used with [handlers.wordpress.sites.<site>]"
+                ));
+            }
+            if self.url.trim().is_empty() {
+                return Err("handlers.wordpress.url is not set".to_string());
+            }
+            return Ok(vec![(DEFAULT_WORDPRESS_SITE.to_string(), self.clone())]);
+        }
+        self.check_sites_layout()?;
+        let mut list = Vec::new();
+        for (name, site) in &self.sites {
+            if !(self.enabled.unwrap_or(false) && site.enabled.unwrap_or(true)) {
+                continue;
+            }
+            if site.url.trim().is_empty() {
+                return Err(format!("handlers.wordpress.sites.{name}.url is not set"));
+            }
+            let mut site = site.clone();
+            site.enabled = Some(true);
+            site.timeout_seconds = site.timeout_seconds.or(self.timeout_seconds);
+            if site.rate_limit.is_none() {
+                site.rate_limit = self.rate_limit.clone();
+            }
+            // 省いたときだけ受け継ぐ。`[]`と書けば、受け継がない（#684）
+            if site.upload_allowed_dirs.is_none() {
+                site.upload_allowed_dirs = self.upload_allowed_dirs.clone();
+            }
+            if site.post_types.is_none() {
+                site.post_types = self.post_types.clone();
+            }
+            list.push((name.clone(), site));
+        }
+        if list.is_empty() {
+            return Err(
+                "handlers.wordpress: every site in [handlers.wordpress.sites.<site>] has enabled = false"
+                    .to_string(),
+            );
+        }
+        match &self.default_site {
+            Some(default_site) => {
+                let index = list
+                    .iter()
+                    .position(|(name, _)| name == default_site)
+                    .ok_or_else(|| {
+                        let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
+                        format!(
+                            "handlers.wordpress.default_site: '{default_site}' is not a site in use. Use one of: {}",
+                            names.join(", ")
+                        )
+                    })?;
+                let default = list.remove(index);
+                list.insert(0, default);
+            }
+            None if list.len() > 1 => {
+                let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();
+                return Err(format!(
+                    "handlers.wordpress.default_site is required with more than one site: write default_site = \"<site>\", one of: {}",
+                    names.join(", ")
+                ));
+            }
+            None => {}
+        }
+        Ok(list)
+    }
+
+    /// 1つのサイトの資格情報を読む。`label`は、エラーに出す表の名前
+    fn resolve_site_credentials(
+        &mut self,
+        store: &dyn crate::security::keyring_store::SecretStore,
+        label: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let Some(name) = self.keyring.clone() else {
+            // 使わない設定（enabled = false）では、`encrypted_credentials`も
+            // 復号しない。`WORDPRESS_MASTER_PASSWORD`が無いだけで、ほかの
+            // 機能まで起動できなくなるのを防ぐ（#755。複数のサイトの形は#684）
+            if !self.enabled.unwrap_or(false) {
+                return Ok(());
+            }
             return Ok(self.resolve_encrypted_credentials()?);
         };
         // 使わない設定（enabled = false）では、資格情報ストアに触れない
@@ -1014,19 +1387,20 @@ impl WordPressConfig {
         }
         if !others.is_empty() {
             return Err(format!(
-                "handlers.wordpress: keyring cannot be combined with {}. Remove {} from the config file (the keyring entry holds the username and password)",
+                "{}: keyring cannot be combined with {}. Remove {} from the config file (the keyring entry holds the username and password)",
+                label,
                 others.join(", "),
                 if others.len() == 1 { "it" } else { "them" },
             )
             .into());
         }
         let credentials = crate::security::keyring_store::load_wordpress_credentials(store, &name)
-            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+            .map_err(|e| format!("{label}.keyring: {e}"))?;
         // 資格情報を保存したサイトと、設定の`url`が同じときだけ使う（#541）。
         // 別の人が書いた設定ファイルが、この項目の名前と別のサイトの`url`を
         // 書いて、パスワードを受け取れないようにする
         crate::security::keyring_store::check_site(&name, &credentials, &self.url)
-            .map_err(|e| format!("handlers.wordpress.keyring: {e}"))?;
+            .map_err(|e| format!("{label}.keyring: {e}"))?;
         self.username = credentials.username;
         self.password = credentials.application_password.to_string();
         Ok(())
@@ -1060,6 +1434,8 @@ impl Default for McpConfig {
             audit: None,
             database: None,
             config_file: None,
+            startup_notes: Vec::new(),
+            missing_config_file: None,
         }
     }
 }
@@ -1083,16 +1459,17 @@ fn former_cwd_config_files(dir: &std::path::Path) -> Vec<String> {
 }
 
 /// 設定ファイルが見つからないときのエラーの文（#541）。`former`は、今の
-/// フォルダにあったが読まなかったファイル。案内するパスは絶対パスにする
-/// （相対パスの`--config`は、起動したフォルダから読むので、同じ問題が残る。
-/// PR #551のレビュー）
-fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
+/// フォルダ（`dir`）にあったが読まなかったファイル。案内するパスは絶対パスに
+/// する（相対パスの`--config`は、起動したフォルダから読むので、同じ問題が
+/// 残る。PR #551のレビュー）
+fn no_config_file_message(home: Option<&str>, dir: &std::path::Path, former: &[String]) -> String {
     let user_config =
         expand_home_dir(USER_CONFIG_PATH, home).unwrap_or_else(|| USER_CONFIG_PATH.to_string());
-    let mut message =
-        format!("no config file: pass one with --config <absolute path>, or create {user_config}");
+    let mut message = format!(
+        "no config file: run `mcp-rs init` to create {user_config}, or pass one with --config <absolute path>"
+    );
     if let Some(first) = former.first() {
-        let absolute = std::path::absolute(first)
+        let absolute = std::path::absolute(dir.join(first))
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| first.clone());
         message.push_str(&format!(
@@ -1104,13 +1481,57 @@ fn no_config_file_message(home: Option<&str>, former: &[String]) -> String {
 }
 
 /// `--config`無しで読む設定ファイル（`~/.config/mcp-rs/config.toml`）の、
+/// Claude Desktopの拡張機能（`.mcpb`）から起動したことを示す環境変数（#632）。
+/// 値は`1`
+pub const EXTENSION_ENV_VAR: &str = "MCP_RS_MCPB";
+
+/// 拡張機能から起動したか（#632）
+pub fn started_by_extension() -> bool {
+    std::env::var(EXTENSION_ENV_VAR).is_ok_and(|v| v == "1")
+}
+
+/// `--config`の代わりに使う設定ファイルの環境変数（#632）。Claude Desktopの
+/// 拡張機能（`.mcpb`）は、画面で選んだ設定ファイルをこれで渡す
+pub const CONFIG_ENV_VAR: &str = "MCP_RS_CONFIG";
+
+/// `MCP_RS_CONFIG`の値から、設定ファイルのパスを決める（#632）。空・空白、
+/// 拡張機能が埋めなかった`${user_config.…}`は、無いものとする。値の全体が
+/// `${...}`のときだけ埋まらなかったとみなし、フォルダ名等に`${`を含む
+/// パスは使う（#774）。`${a}/b-${c}`のように、中に`{`・`}`があれば、1つの
+/// `${...}`ではないので使う（#779）
+pub fn config_path_from_env(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && !is_placeholder(path))
+        .map(str::to_string)
+}
+
+/// 値の全体が、1つの`${...}`か（#779）
+fn is_placeholder(value: &str) -> bool {
+    value
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .is_some_and(|inner| !inner.contains(['{', '}']))
+}
+
 /// ホームフォルダを展開したパス。`mcp-rs init`の既定の書き先（#575）。
 /// ホームフォルダが分からなければ`None`
 pub fn user_config_path() -> Option<String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()?;
+    let home = home_dir_from_env()?;
     expand_home_dir(USER_CONFIG_PATH, Some(&home)).filter(|path| !path.starts_with('~'))
+}
+
+/// ホームフォルダ（`HOME`、無ければ`USERPROFILE`）。空の値は飛ばす（#710。
+/// 以前は`HOME`が空の文字列だと、`USERPROFILE`を見なかった）
+pub fn home_dir_from_env() -> Option<String> {
+    home_dir_from(|name| std::env::var(name).ok())
+}
+
+fn home_dir_from(var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(var)
+        .find(|home| !home.trim().is_empty())
 }
 
 /// `--config`のパスの先頭の`~/`（Windowsでは`~\`も）を、ホームフォルダに
@@ -1119,17 +1540,29 @@ pub fn user_config_path() -> Option<String> {
 /// 起動したフォルダの中の`~`という名前のフォルダを探してしまう。ホーム
 /// フォルダが分からなければ、そのまま返す（相対パスの警告が出る）
 pub fn expand_config_path(path: &str) -> String {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok();
+    let home = home_dir_from_env();
     expand_config_path_with(path, home.as_deref())
 }
 
 fn expand_config_path_with(path: &str, home: Option<&str>) -> String {
-    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    expand_config_path_for(path, home, cfg!(windows))
+}
+
+/// `windows`のときだけ、`~\`と、区切り文字の`\`を扱う（#724。Unixでは、
+/// `\`は名前の文字なので、`/`に変えると別のファイルになる）
+fn expand_config_path_for(path: &str, home: Option<&str>, windows: bool) -> String {
+    let rest = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\").filter(|_| windows));
     match rest {
-        Some(rest) => expand_home_dir(&format!("~/{}", rest.replace('\\', "/")), home)
-            .unwrap_or_else(|| path.to_string()),
+        Some(rest) => {
+            let rest = if windows {
+                rest.replace('\\', "/")
+            } else {
+                rest.to_string()
+            };
+            expand_home_dir(&format!("~/{rest}"), home).unwrap_or_else(|| path.to_string())
+        }
         None => path.to_string(),
     }
 }
@@ -1205,10 +1638,15 @@ fn apply_wordpress_env_overrides(
                 rate_limit: Some(RateLimitConfig::default()),
                 encrypted_credentials: None, // 環境変数では平文使用
                 keyring: None,
-                upload_allowed_dirs: Vec::new(),
+                upload_allowed_dirs: None,
+                post_types: None,
+                default_site: None,
+                sites: Default::default(),
             });
         }
         Some(wp_config) if wp_config.keyring.is_some() => {}
+        // 複数のサイト（#640）は、どのサイトかが決まらないので、上書きしない
+        Some(wp_config) if !wp_config.sites.is_empty() => {}
         Some(wp_config) => {
             wp_config.url = wp_url;
             if let Some(username) = env("WORDPRESS_USERNAME") {
@@ -1343,13 +1781,37 @@ impl McpConfig {
         if !config.enabled.unwrap_or(false) {
             return Ok(());
         }
+        config.inherit_into_sites();
+        Self::expand_wordpress_fields(config, "handlers.wordpress")?;
+        // ほかのサイト（#640）
+        for (name, site) in config.sites.iter_mut() {
+            if site.enabled.unwrap_or(false) {
+                Self::expand_wordpress_fields(site, &format!("handlers.wordpress.sites.{name}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 1つのサイトの`url`・`username`・`password`の`${VAR}`を展開する。
+    /// `prefix`は、エラーに出す表の名前
+    fn expand_wordpress_fields(
+        config: &mut WordPressConfig,
+        prefix: &str,
+    ) -> Result<(), ConfigEnvError> {
+        // `encrypted_credentials`があれば、`username`・`password`は復号した
+        // 値で上書きするので、展開しない（#746。古い`${VAR}`が残っていても、
+        // その変数が無いことで起動を止めない）
+        let encrypted = config.encrypted_credentials.is_some();
         for (field, value) in [
             ("url", &mut config.url),
             ("username", &mut config.username),
             ("password", &mut config.password),
         ] {
+            if encrypted && field != "url" {
+                continue;
+            }
             *value = Self::expand_env_vars(value).map_err(|reason| ConfigEnvError {
-                field: format!("handlers.wordpress.{}", field),
+                field: format!("{prefix}.{field}"),
                 reason,
             })?;
         }
@@ -1562,6 +2024,68 @@ impl McpConfig {
         Ok(config)
     }
 
+    /// 拡張機能（#632）で、サイトのURL・ユーザー名・アプリケーションパスワードが
+    /// 入力されていなければ、WordPressを使わずに起動し、何を入力するかを
+    /// `mcp_rs_status`に出す（拡張機能では、起動に失敗すると、Claude Desktopには
+    /// 「切断された」としか出ないため）。拡張機能が埋めなかった
+    /// `${user_config.…}`は、入力されていないものとする
+    /// 拡張機能（#632）から起動したときの設定。Claude DesktopはSTDIOで
+    /// つなぐので、選んだ設定ファイルがHTTPモードでも、STDIOで動かす
+    /// （PR #666のレビュー）。サイトが未入力なら`allow_unset_extension_site`
+    pub fn prepare_for_extension(&mut self) {
+        if self.transport.transport_type.as_deref() != Some("stdio") {
+            info!(
+                "Started by the Claude Desktop extension: using STDIO instead of [transport] type = {:?}",
+                self.transport.transport_type.as_deref().unwrap_or("(not set)")
+            );
+            self.transport.transport_type = Some("stdio".to_string());
+        }
+        self.allow_unset_extension_site();
+    }
+
+    pub fn allow_unset_extension_site(&mut self) {
+        let Some(wordpress) = self.handlers.wordpress.as_mut() else {
+            return;
+        };
+        if !wordpress.enabled.unwrap_or(false) || !wordpress.sites.is_empty() {
+            return;
+        }
+        let unset = |value: &str| {
+            Self::expand_env_vars(value)
+                .map(|v| v.trim().is_empty() || v.contains("${user_config."))
+                .unwrap_or(true)
+        };
+        let missing: Vec<&str> = [
+            ("the site URL", unset(&wordpress.url)),
+            (
+                "the username",
+                wordpress.keyring.is_none()
+                    && wordpress.encrypted_credentials.is_none()
+                    && unset(&wordpress.username),
+            ),
+            (
+                "the Application Password",
+                wordpress.keyring.is_none()
+                    && wordpress.encrypted_credentials.is_none()
+                    && unset(&wordpress.password),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, missing)| missing.then_some(name))
+        .collect();
+        if missing.is_empty() {
+            return;
+        }
+        wordpress.enabled = Some(false);
+        self.startup_notes.push((
+            "wordpress".to_string(),
+            format!(
+                "not set up: enter {} in Claude Desktop (Settings > Extensions > mcp-rs > Configure), or choose an mcp-rs config file there, then restart the extension",
+                missing.join(", ")
+            ),
+        ));
+    }
+
     /// `read_file`で読んだ設定の、WordPressの`${VAR}`を展開し、資格情報
     /// （`keyring`・`encrypted_credentials`・平文）を解決する。参照した
     /// 環境変数が無ければ、項目と変数名を返す（#454）
@@ -1573,8 +2097,22 @@ impl McpConfig {
         Ok(())
     }
 
-    /// 設定ファイルから読み込み、環境変数で上書き
+    /// 設定ファイルから読み込み、環境変数で上書き。設定ファイルが無ければ
+    /// エラー（`mcp-rs check`が使う）
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::load_with(false)
+    }
+
+    /// `--config`無しで起動するときの読み込み（#667）。設定ファイルが無ければ、
+    /// エラーで終わらず、設定なし（ハンドラー無し、`mcp_rs_status`だけ）で
+    /// 起動できる設定を返し、`missing_config_file`に案内を入れる。STDIO
+    /// モードだけ。HTTPモードは、認証等が既定のまま待ち受けないよう、
+    /// 今までどおりエラー
+    pub fn load_for_startup() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::load_with(true)
+    }
+
+    fn load_with(allow_missing_file: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let mut settings = config::Config::builder();
 
         // デフォルト値を設定
@@ -1586,16 +2124,19 @@ impl McpConfig {
         // プロジェクトのフォルダで起動するクライアント（Claude Code等）では、
         // 開いたリポジトリの設定ファイルで、任意のコマンド（プラグイン）を
         // 実行させたり、資格情報を別のサイトへ送らせたりできた
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok();
+        let home = home_dir_from_env();
 
         let mut config_file_found = false;
         let mut loaded_config_file = None;
         // `~`はPathが展開しないため、自前でホームフォルダに置き換える。
         // ホームフォルダが分からない場合は、探さない
         if let Some(path) = expand_home_dir(USER_CONFIG_PATH, home.as_deref()) {
-            if std::path::Path::new(&path).exists() {
+            // 権限等で確かめられないときは、無いものとせず、理由を返す（#774。
+            // 無いものとすると、設定なしで起動し、理由が分からない）
+            let exists = std::path::Path::new(&path)
+                .try_exists()
+                .map_err(|e| format!("cannot check the config file {path}: {e}"))?;
+            if exists {
                 // 標準出力はSTDIOモードでJSON-RPCの通信専用のため、
                 // 標準エラー出力に書く（ログはこの時点で未初期化）
                 eprintln!("[mcp-rs] config file: {}", path);
@@ -1609,14 +2150,18 @@ impl McpConfig {
             }
         }
 
-        // 設定ファイルが見つからない場合はエラーを返す。今のフォルダに以前の
-        // 名前の設定ファイルがあれば、読まずに、`--config`の付け方を案内する
-        if !config_file_found && !Self::has_env_config() {
-            return Err(no_config_file_message(
-                home.as_deref(),
-                &former_cwd_config_files(std::path::Path::new(".")),
-            )
-            .into());
+        // 設定ファイルが見つからない場合はエラーを返す（起動では、STDIOモード
+        // なら設定なしで続ける、#667）。今のフォルダに以前の名前の設定ファイルが
+        // あれば、読まずに、`--config`の付け方を案内する
+        let missing_config_file = (!config_file_found && !Self::has_env_config()).then(|| {
+            // 今のフォルダ（空のパスに名前をつなぐと、以前と同じ相対パスになる）
+            let current = std::path::Path::new("");
+            no_config_file_message(home.as_deref(), current, &former_cwd_config_files(current))
+        });
+        if let Some(message) = &missing_config_file {
+            if !allow_missing_file {
+                return Err(message.clone().into());
+            }
         }
 
         // 環境変数で上書き (MCP_で始まる変数)
@@ -1633,7 +2178,7 @@ impl McpConfig {
         let config: McpConfig = settings
             .build()
             .and_then(|built| built.try_deserialize())
-            .map_err(|e| redact_quoted(&e.to_string()))?;
+            .map_err(|e| redact_config_error(&e.to_string()))?;
 
         // 環境変数による個別上書き
         let mut final_config = config;
@@ -1672,7 +2217,22 @@ impl McpConfig {
 
         final_config.config_file = loaded_config_file;
         final_config.resolve_plugin_paths();
+        if let Some(message) = missing_config_file {
+            if !final_config.uses_stdio() {
+                return Err(message.into());
+            }
+            final_config.missing_config_file = Some(message);
+        }
         Ok(final_config)
+    }
+
+    /// STDIOモードで動くか。`[transport] type`が`http`以外（知らない値も
+    /// STDIOで動く）
+    pub fn uses_stdio(&self) -> bool {
+        !matches!(
+            self.to_transport_config().transport_type,
+            crate::transport::TransportType::Http { .. }
+        )
     }
 
     /// 環境変数による設定があるかチェック
@@ -1751,13 +2311,18 @@ impl McpConfig {
                     rate_limit: Some(RateLimitConfig::default()),
                     encrypted_credentials: None, // デフォルトでは平文
                     keyring: None,
-                    upload_allowed_dirs: Vec::new(),
+                    upload_allowed_dirs: None,
+                    post_types: None,
+                    default_site: None,
+                    sites: Default::default(),
                 }),
             },
             plugins: Vec::new(),
             audit: None,
             database: None,
             config_file: None,
+            startup_notes: Vec::new(),
+            missing_config_file: None,
         };
 
         let toml_content = toml::to_string_pretty(&sample_config)?;
@@ -1825,9 +2390,28 @@ impl McpConfig {
         Ok(())
     }
 
+    /// ファイルに書く形。`keyring`のサイトは、資格情報ストアから読んだ
+    /// ユーザー名・パスワード（`resolve_site_credentials`が入れる）を書かない
+    /// （#724。以前は平文で書き、`keyring`と一緒にあるので読み直せなかった）
+    fn without_keyring_secrets(&self) -> Self {
+        let mut config = self.clone();
+        // `encrypted_credentials`から復号した値も、平文で書かない（#755）
+        let strip = |site: &mut WordPressConfig| {
+            if site.keyring.is_some() || site.encrypted_credentials.is_some() {
+                site.username.clear();
+                site.password.clear();
+            }
+        };
+        if let Some(wordpress) = config.handlers.wordpress.as_mut() {
+            strip(wordpress);
+            wordpress.sites.values_mut().for_each(strip);
+        }
+        config
+    }
+
     /// 設定をファイルに保存
     pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let toml_content = toml::to_string_pretty(self)?;
+        let toml_content = toml::to_string_pretty(&self.without_keyring_secrets())?;
 
         let content = format!(
             r#"# MCP-RS Configuration File
@@ -2116,6 +2700,57 @@ command = "node"
             "[[plugins]]\nname = \"a\"\n[plugins.kubernetes]\nimage = \"i\"\n"
         )
         .is_none());
+        // `[[plugins]]`より後の`[plugins.env]`・`[plugins.rate_limit]`も、
+        // その`[[plugins]]`の設定（#750）
+        let entry_tables = "[[plugins]]\nname = \"a\"\ntype = \"x\"\ntransport_type = \"y\"\n[plugins.env]\nA = \"1\"\n[plugins.rate_limit]\nrequests_per_minute = 1\n";
+        assert!(legacy_plugins_conflict_hint(entry_tables).is_none());
+        // `[[plugins]]`より前の`[plugins.*]`は古い形式
+        assert!(legacy_plugins_conflict_hint(
+            "[plugins.isolation]\nenabled = true\n[[plugins]]\nname = \"a\"\n"
+        )
+        .is_some());
+    }
+
+    /// `enabled`・`call_timeout_seconds`等の不正な値（`nan`等）を、省略と
+    /// 同じに扱わず、読み込みのエラーにする（#750）
+    #[test]
+    fn test_invalid_plugin_values_are_rejected() {
+        for (field, value) in [
+            ("enabled", "nan"),
+            ("enabled", "inf"),
+            ("enabled", "1"),
+            ("call_timeout_seconds", "nan"),
+            ("call_timeout_seconds", "-1"),
+            ("max_response_bytes", "1.5"),
+        ] {
+            let content = format!(
+                "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\ncommand = \"c\"\n{} = {}\n",
+                field, value
+            );
+            assert!(
+                toml::from_str::<McpConfig>(&content).is_err(),
+                "{} = {}",
+                field,
+                value
+            );
+
+            let content = normalize_transport_type_alias(&content).unwrap();
+            let result = config::Config::builder()
+                .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+                .add_source(config::File::from_str(&content, config::FileFormat::Toml))
+                .build()
+                .unwrap()
+                .try_deserialize::<McpConfig>();
+            assert!(result.is_err(), "{} = {} (config crate)", field, value);
+        }
+
+        // 省略すれば起動し、`false`なら起動しない（今までどおり）
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[[plugins]]\nname = \"x\"\ncommand = \"c\"\n[[plugins]]\nname = \"y\"\ncommand = \"c\"\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(config.plugins[0].enabled, None);
+        assert_eq!(config.plugins[1].enabled, Some(false));
     }
 
     #[test]
@@ -2552,7 +3187,10 @@ start_timeout_seconds = 300
         McpConfig::expand_database_config(&mut db).unwrap();
         assert_eq!(db.password.as_deref(), Some("from-env"));
 
-        // 無い変数は、項目と変数の名前を返す（値は出さない）
+        // 無い変数は、項目と変数の名前を返す（値は出さない）。テストを
+        // 動かす環境に同じ名前があっても、無い状態にする（#737。名前は
+        // このテストだけが使う）
+        std::env::remove_var("MCP_RS_TEST_DB_MISSING_453");
         let mut missing = DatabaseSettings {
             password: Some("${MCP_RS_TEST_DB_MISSING_453}".to_string()),
             ..db.clone()
@@ -2924,6 +3562,32 @@ resource = "https://mcp.example.com/mcp"
         );
     }
 
+    /// `encrypted_credentials`があれば、上書きされる`username`・`password`は
+    /// 展開しない。`url`は展開する（#746）
+    #[test]
+    fn test_expand_wordpress_config_skips_credentials_with_encrypted_credentials() {
+        let mut wp: WordPressConfig = toml::from_str(
+            r#"
+            url = "${WP_URL_NOT_SET_746}"
+            username = "${WP_USERNAME_NOT_SET_746}"
+            password = "${WP_PASSWORD_NOT_SET_746}"
+            enabled = true
+
+            [encrypted_credentials]
+            username = "admin"
+            encrypted_password = "x"
+            nonce = "x"
+            salt = "x"
+            "#,
+        )
+        .unwrap();
+        let err = McpConfig::expand_wordpress_config(&mut wp).unwrap_err();
+        assert_eq!(err.field, "handlers.wordpress.url");
+        wp.url = "https://example.com".to_string();
+        assert!(McpConfig::expand_wordpress_config(&mut wp).is_ok());
+        assert_eq!(wp.password, "${WP_PASSWORD_NOT_SET_746}");
+    }
+
     #[test]
     fn test_expand_wordpress_config_skips_disabled() {
         // 使わない（enabledでない）WordPressの設定は、環境変数が無くても
@@ -3028,6 +3692,127 @@ mod additional_tests {
         assert!(config.encrypted_credentials.is_some());
     }
 
+    /// `keyring`のサイトは、資格情報ストアから読んだユーザー名・パスワードを
+    /// ファイルに書かない（#724）
+    #[test]
+    fn test_save_to_file_leaves_out_keyring_secrets() {
+        let site = |keyring: Option<&str>| WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: "wp-user".to_string(),
+            password: "s3cret-from-keyring".to_string(),
+            enabled: Some(true),
+            timeout_seconds: None,
+            rate_limit: None,
+            encrypted_credentials: None,
+            keyring: keyring.map(str::to_string),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        };
+        let mut config = McpConfig::default();
+        config.handlers.wordpress = Some(site(Some("example.com")));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config.save_to_file(path.to_str().unwrap()).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("s3cret-from-keyring"), "{written}");
+        assert!(!written.contains("wp-user"), "{written}");
+        assert!(written.contains("keyring = \"example.com\""), "{written}");
+        // 書いたものを読み直せる
+        McpConfig::read_file(path.to_str().unwrap()).unwrap();
+        // `keyring`の無いサイトは、今までどおり書く
+        let mut sites = site(None);
+        sites.url.clear();
+        sites.username.clear();
+        sites.password.clear();
+        sites.sites.insert("blog".to_string(), site(Some("blog")));
+        sites.sites.insert("plain".to_string(), site(None));
+        config.handlers.wordpress = Some(sites);
+        let saved = config.without_keyring_secrets();
+        let wordpress = saved.handlers.wordpress.unwrap();
+        assert!(wordpress.sites["blog"].password.is_empty());
+        assert_eq!(wordpress.sites["plain"].password, "s3cret-from-keyring");
+    }
+
+    /// `encrypted_credentials`から復号したユーザー名・パスワードも、
+    /// ファイルに書かない（#755）
+    #[test]
+    fn test_save_to_file_leaves_out_decrypted_secrets() {
+        let encrypted = SecureCredentials::new("wp-user".to_string(), "decrypted-pw".to_string())
+            .encrypt("correct-master-password")
+            .unwrap();
+        let mut config = McpConfig::default();
+        config.handlers.wordpress = Some(WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: "wp-user".to_string(),
+            password: "decrypted-pw".to_string(),
+            enabled: Some(true),
+            timeout_seconds: None,
+            rate_limit: None,
+            encrypted_credentials: Some(encrypted),
+            keyring: None,
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        });
+        let saved = config.without_keyring_secrets();
+        let wordpress = saved.handlers.wordpress.unwrap();
+        assert!(wordpress.username.is_empty());
+        assert!(wordpress.password.is_empty());
+        assert!(wordpress.encrypted_credentials.is_some());
+    }
+
+    /// 使わない設定（`enabled = false`・省略）では、`encrypted_credentials`を
+    /// 復号しない。`WORDPRESS_MASTER_PASSWORD`が無くても読み込める（#755）
+    #[test]
+    fn test_disabled_wordpress_does_not_decrypt_encrypted_credentials() {
+        let _env_guard = WORDPRESS_MASTER_PASSWORD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+        let encrypted = SecureCredentials::new("wp-user".to_string(), "pw".to_string())
+            .encrypt("correct-master-password")
+            .unwrap();
+        for enabled in [Some(false), None] {
+            let mut config = WordPressConfig {
+                url: "https://example.com".to_string(),
+                username: String::new(),
+                password: String::new(),
+                enabled,
+                timeout_seconds: None,
+                rate_limit: None,
+                encrypted_credentials: Some(encrypted.clone()),
+                keyring: None,
+                upload_allowed_dirs: None,
+                post_types: None,
+                default_site: None,
+                sites: Default::default(),
+            };
+            config.resolve_credentials().unwrap();
+            assert!(config.password.is_empty());
+        }
+        // 使う設定では、今までどおり鍵が無ければエラー
+        let mut config = WordPressConfig {
+            url: "https://example.com".to_string(),
+            username: String::new(),
+            password: String::new(),
+            enabled: Some(true),
+            timeout_seconds: None,
+            rate_limit: None,
+            encrypted_credentials: Some(encrypted),
+            keyring: None,
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
+        };
+        assert!(config.resolve_credentials().is_err());
+    }
+
     #[test]
     fn test_wordpress_config_debug_redacts_password() {
         let config = WordPressConfig {
@@ -3039,7 +3824,10 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         let debug_output = format!("{:?}", config);
@@ -3068,7 +3856,10 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: Some(encrypted),
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         // マスターパスワード環境変数が無い場合はエラーになり、
@@ -3107,7 +3898,10 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -3131,7 +3925,10 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         assert!(config.resolve_encrypted_credentials().is_err());
@@ -3151,7 +3948,10 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -3172,7 +3972,10 @@ mod additional_tests {
             rate_limit: Some(RateLimitConfig::default()),
             encrypted_credentials: None,
             keyring: None,
-            upload_allowed_dirs: Vec::new(),
+            upload_allowed_dirs: None,
+            post_types: None,
+            default_site: None,
+            sites: Default::default(),
         };
 
         config.resolve_encrypted_credentials().unwrap();
@@ -3222,13 +4025,301 @@ mod additional_tests {
         assert!(!toml::to_string(&plain).unwrap().contains("keyring"));
     }
 
+    // ---- #640: 複数のWordPressのサイト ----
+
+    fn sites_config(toml_str: &str) -> WordPressConfig {
+        toml::from_str(toml_str).unwrap()
+    }
+
+    const TWO_SITES: &str = "enabled = true\ndefault_site = \"shop\"\ntimeout_seconds = 60\n\
+         upload_allowed_dirs = [\"/shared\"]\npost_types = [\"product\"]\n\
+         [sites.blog]\nurl = \"https://blog.example.com\"\nusername = \"u\"\npassword = \"p\"\n\
+         [sites.shop]\nurl = \"https://shop.example.com\"\nusername = \"u\"\npassword = \"p\"\ntimeout_seconds = 5\n\
+         upload_allowed_dirs = [\"/shop\"]\npost_types = [\"event\"]\n\
+         [sites.old]\nurl = \"https://old.example.com\"\nenabled = false\n";
+
+    /// 既定のサイトが最初、残りは名前の順。`enabled = false`のサイトは使わない。
+    /// 共通の設定は、サイトに無ければ`[handlers.wordpress]`のもの
+    #[test]
+    fn test_site_list_order_default_and_shared_settings() {
+        let list = sites_config(TWO_SITES).site_list().unwrap();
+        let names: Vec<_> = list.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["shop", "blog"]);
+        let (shop, blog) = (&list[0].1, &list[1].1);
+        assert_eq!(shop.timeout_seconds, Some(5));
+        assert_eq!(blog.timeout_seconds, Some(60));
+        assert_eq!(
+            shop.upload_allowed_dirs.as_deref(),
+            Some(&["/shop".to_string()][..])
+        );
+        assert_eq!(
+            blog.upload_allowed_dirs.as_deref(),
+            Some(&["/shared".to_string()][..])
+        );
+        assert_eq!(shop.post_types.as_deref(), Some(&["event".to_string()][..]));
+        assert_eq!(
+            blog.post_types.as_deref(),
+            Some(&["product".to_string()][..])
+        );
+        assert!(list
+            .iter()
+            .all(|(_, c)| c.enabled == Some(true) && c.sites.is_empty()));
+
+        // 使うサイトが1つなら、default_siteは要らない
+        let one =
+            sites_config("enabled = true\n[sites.blog]\nurl = \"https://blog.example.com\"\n");
+        assert_eq!(one.site_list().unwrap()[0].0, "blog");
+
+        // 今までの形（sitesが無い）は、defaultという名前の1つ
+        let single = sites_config("url = \"https://blog.example.com\"\nenabled = true\n");
+        let list = single.site_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "default");
+    }
+
+    /// サイトに`[]`と書けば、`[handlers.wordpress]`のものを受け継がない。
+    /// 省けば受け継ぐ（#684）
+    #[test]
+    fn test_site_list_empty_list_does_not_inherit() {
+        let config = sites_config(
+            "enabled = true
+default_site = \"blog\"
+             upload_allowed_dirs = [\"/shared\"]
+post_types = [\"product\"]
+             [sites.blog]
+url = \"https://blog.example.com\"
+             [sites.shop]
+url = \"https://shop.example.com\"
+             upload_allowed_dirs = []
+post_types = []
+",
+        );
+        let list = config.site_list().unwrap();
+        let (blog, shop) = (&list[0].1, &list[1].1);
+        assert_eq!(list[1].0, "shop");
+        assert_eq!(shop.upload_allowed_dirs.as_deref(), Some(&[][..]));
+        assert_eq!(shop.post_types.as_deref(), Some(&[][..]));
+        assert_eq!(
+            blog.upload_allowed_dirs.as_deref(),
+            Some(&["/shared".to_string()][..])
+        );
+        assert_eq!(
+            blog.post_types.as_deref(),
+            Some(&["product".to_string()][..])
+        );
+
+        // 今までの形（sitesが無い）は、省いても`[]`でも、使えない
+        for extra in [
+            "",
+            "upload_allowed_dirs = []
+post_types = []
+",
+        ] {
+            let single = sites_config(&format!(
+                "url = \"https://blog.example.com\"
+enabled = true
+{extra}"
+            ));
+            let (_, site) = single.site_list().unwrap().remove(0);
+            assert!(site.upload_allowed_dirs.unwrap_or_default().is_empty());
+            assert!(site.post_types.unwrap_or_default().is_empty());
+        }
+    }
+
+    /// 使わないサイトの`encrypted_credentials`は復号しない。マスター
+    /// パスワードが無くても、ほかのサイトは読める（#684）
+    #[test]
+    fn test_resolve_credentials_skips_disabled_sites() {
+        let _env_guard = WORDPRESS_MASTER_PASSWORD_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            std::env::remove_var("WORDPRESS_MASTER_PASSWORD");
+        }
+        let encrypted = SecureCredentials::new("old-user".to_string(), "old-pass".to_string())
+            .encrypt("master")
+            .unwrap();
+        let mut config = sites_config(
+            "enabled = true
+default_site = \"blog\"
+             [sites.blog]
+url = \"https://blog.example.com\"
+username = \"u\"
+password = \"p\"
+             [sites.old]
+url = \"https://old.example.com\"
+enabled = false
+",
+        );
+        config.sites.get_mut("old").unwrap().encrypted_credentials = Some(encrypted);
+        let store = crate::security::keyring_store::MemoryStore::default();
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.sites["blog"].username, "u");
+        assert_eq!(config.sites["old"].username, "");
+        let list = config.site_list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "blog");
+
+        // 使うサイトなら、今までどおり復号できなければ誤り
+        config.sites.get_mut("old").unwrap().enabled = None;
+        let err = config
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.sites.old: "), "{err}");
+    }
+
+    #[test]
+    fn test_site_list_refuses_unclear_layouts() {
+        for (toml_str, message) in [
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\n[sites.shop]\nurl = \"s\"\n",
+                "default_site is required with more than one site: write default_site = \"<site>\", one of: blog, shop",
+            ),
+            (
+                "enabled = true\ndefault_site = \"other\"\n[sites.blog]\nurl = \"b\"\n",
+                "'other' is not a site in use. Use one of: blog",
+            ),
+            (
+                "enabled = true\ndefault_site = \"old\"\n[sites.blog]\nurl = \"b\"\n[sites.old]\nurl = \"o\"\nenabled = false\n",
+                "'old' is not a site in use",
+            ),
+            (
+                "url = \"https://a\"\nenabled = true\ndefault_site = \"blog\"\n",
+                "there is no [handlers.wordpress.sites.blog]",
+            ),
+            (
+                "url = \"https://a\"\nkeyring = \"a\"\nenabled = true\n[sites.blog]\nurl = \"b\"\n",
+                "write url, keyring in each site's table, not in [handlers.wordpress]",
+            ),
+            (
+                "enabled = true\n[sites.\"My Blog\"]\nurl = \"b\"\n",
+                "handlers.wordpress.sites.My Blog: WordPress site name 'My Blog' is not valid",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\ndefault_site = \"x\"\n",
+                "default_site and sites can be written only in [handlers.wordpress]",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\n[sites.blog.sites.more]\nurl = \"m\"\n",
+                "default_site and sites can be written only in [handlers.wordpress]",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nusername = \"u\"\n",
+                "handlers.wordpress.sites.blog.url is not set",
+            ),
+            (
+                "enabled = true\n[sites.blog]\nurl = \"b\"\nenabled = false\n",
+                "every site in [handlers.wordpress.sites.<site>] has enabled = false",
+            ),
+            ("enabled = true\n", "handlers.wordpress.url is not set"),
+        ] {
+            let err = sites_config(toml_str).site_list().unwrap_err();
+            assert!(err.contains(message), "{toml_str}: {err}");
+        }
+    }
+
+    /// サイトごとに、自分の`keyring`を読む。誤りには、どのサイトかを出す
+    #[test]
+    fn test_resolve_credentials_reads_each_site() {
+        use crate::security::keyring_store::{
+            store_wordpress_credentials, WordPressKeyringCredentials,
+        };
+        let store = store_with_example();
+        store_wordpress_credentials(
+            &store,
+            "shop",
+            &WordPressKeyringCredentials {
+                site_url: "https://shop.example.com".to_string(),
+                username: "shopkeeper".to_string(),
+                application_password: zeroize::Zeroizing::new("shop pass".to_string()),
+            },
+        )
+        .unwrap();
+        let two = |shop: &str| {
+            sites_config(&format!(
+                "enabled = true\ndefault_site = \"blog\"\n\
+                 [sites.blog]\nurl = \"https://example.com\"\nkeyring = \"example.com\"\n\
+                 [sites.shop]\n{shop}"
+            ))
+        };
+        let mut config = two("url = \"https://shop.example.com\"\nkeyring = \"shop\"\n");
+        config.resolve_credentials_with(&store).unwrap();
+        assert_eq!(config.sites["blog"].username, "editor");
+        let shop = &config.sites["shop"];
+        assert_eq!(shop.username, "shopkeeper");
+        assert_eq!(shop.password, "shop pass");
+
+        // 資格情報を保存したサイトと`url`が違えば、使わない（#541と同じ）
+        let mut wrong = two("url = \"https://evil.example.com\"\nkeyring = \"shop\"\n");
+        let err = wrong
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("handlers.wordpress.sites.shop.keyring: "),
+            "{err}"
+        );
+
+        // 資格情報の無いサイト
+        let mut missing = two("url = \"https://shop.example.com\"\n");
+        let err = missing
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("handlers.wordpress.sites.shop: "), "{err}");
+
+        // 使わないサイト・全体を使わない設定は、読まない
+        let mut disabled =
+            two("url = \"https://shop.example.com\"\nenabled = false\nkeyring = \"none\"\n");
+        disabled.resolve_credentials_with(&store).unwrap();
+        let mut off = two("url = \"https://shop.example.com\"\nkeyring = \"none\"\n");
+        off.enabled = Some(false);
+        off.resolve_credentials_with(&store).unwrap();
+
+        // [handlers.wordpress]にサイトの項目を書いた
+        let mut mixed = two("url = \"https://shop.example.com\"\nkeyring = \"shop\"\n");
+        mixed.url = "https://example.com".to_string();
+        let err = mixed
+            .resolve_credentials_with(&store)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("write url in each site's table"), "{err}");
+    }
+
+    /// サイトの`${VAR}`も展開し、誤りにはサイトの表の名前を出す
+    #[test]
+    fn test_expand_wordpress_config_expands_sites() {
+        let mut config = sites_config(
+            "enabled = true\ndefault_site = \"blog\"\n\
+             [sites.blog]\nurl = \"https://blog.example.com\"\n\
+             [sites.shop]\nurl = \"https://shop.example.com\"\npassword = \"${MCP_RS_TEST_UNSET_640}\"\n",
+        );
+        let err = McpConfig::expand_wordpress_config(&mut config).unwrap_err();
+        assert_eq!(err.field, "handlers.wordpress.sites.shop.password");
+    }
+
+    /// `WORDPRESS_URL`等は、複数のサイトの設定を上書きしない
+    #[test]
+    fn test_env_overrides_leave_sites_alone() {
+        let mut wordpress = Some(sites_config(TWO_SITES));
+        apply_wordpress_env_overrides(&mut wordpress, |name| match name {
+            "WORDPRESS_URL" => Some("https://evil.example.com".to_string()),
+            _ => Some("x".to_string()),
+        });
+        let config = wordpress.unwrap();
+        assert!(config.url.is_empty());
+        assert_eq!(config.sites["blog"].url, "https://blog.example.com");
+    }
+
     /// 今のフォルダの設定ファイルは読まず、見つけたら`--config`を案内する（#541）
     #[test]
     fn test_former_cwd_config_files_are_only_mentioned() {
         let dir = tempfile::tempdir().unwrap();
         assert!(former_cwd_config_files(dir.path()).is_empty());
-        let message = no_config_file_message(Some("/home/u"), &[]);
+        let message = no_config_file_message(Some("/home/u"), dir.path(), &[]);
         assert!(message.contains("--config <absolute path>"), "{message}");
+        assert!(message.contains("`mcp-rs init`"), "{message}");
         assert!(message.contains("config.toml"), "{message}");
         assert!(!message.contains("current folder"), "{message}");
 
@@ -3237,13 +4328,15 @@ mod additional_tests {
         std::fs::write(dir.path().join("config").join("mcp.toml"), "").unwrap();
         let former = former_cwd_config_files(dir.path());
         assert_eq!(former, vec!["config.toml", "config/mcp.toml"]);
-        let message = no_config_file_message(Some("/home/u"), &former);
+        let message = no_config_file_message(Some("/home/u"), dir.path(), &former);
         assert!(
             message.contains("is not read without --config"),
             "{message}"
         );
-        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）
-        let absolute = std::path::absolute("config.toml").unwrap();
+        // 案内は絶対パス（相対パスは、起動したフォルダから読むため）。見つけた
+        // フォルダのファイルを指す（#724。以前は作業フォルダから作ったので、
+        // 確かめたいことを確かめていなかった）
+        let absolute = std::path::absolute(dir.path().join("config.toml")).unwrap();
         assert!(
             message.contains(&format!("--config {}", absolute.display())),
             "{message}"
@@ -3294,6 +4387,128 @@ mod additional_tests {
         assert!(!message.contains("cd-secret"), "{message}");
     }
 
+    /// 設定なしで起動するのはSTDIOモードだけ（#667）。HTTPモードかの判定
+    #[test]
+    fn test_uses_stdio() {
+        let mut config = McpConfig::default();
+        assert!(config.uses_stdio());
+        config.transport.transport_type = Some("unknown".to_string());
+        assert!(config.uses_stdio());
+        config.transport.transport_type = Some("http".to_string());
+        assert!(!config.uses_stdio());
+    }
+
+    /// 足りない項目・知らない項目の名前は伏せない（#617）
+    #[test]
+    fn test_config_errors_show_field_names() {
+        // `[handlers]`が無い
+        let content = "[server]\n[transport]\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        let message = describe_toml_error(&error, content);
+        assert!(message.contains("missing field `handlers`"), "{message}");
+
+        assert_eq!(
+            redact_config_error("missing field `handlers`"),
+            "missing field `handlers`"
+        );
+        // 知らない項目は、名前と候補を出す
+        assert_eq!(
+            redact_config_error("unknown field `pasword`, expected one of `url`, `password`"),
+            "unknown field `pasword`, expected one of `url`, `password`"
+        );
+        assert_eq!(
+            redact_config_error("unknown field `x`, there are no fields"),
+            "unknown field `x`, there are no fields"
+        );
+        // ユーザーが書いた名前は、制御文字をエスケープし、長さを切る
+        let long = "a".repeat(100);
+        let message = redact_config_error(&format!("unknown field `{long}\u{1b}[31m`"));
+        assert!(
+            message.contains(&format!("`{}…`", "a".repeat(64))),
+            "{message}"
+        );
+        let message = redact_config_error("unknown field `a\u{1b}[31m\nb`, expected `url`");
+        assert_eq!(message, "unknown field `a\\u{1b}[31m\\nb`, expected `url`");
+
+        // 値は今までどおり伏せる。値の中に同じ文字列があっても、出さない
+        assert_eq!(
+            redact_config_error(r#"invalid type: string "missing field `s3cret`", expected u16"#),
+            r#"invalid type: string "…", expected u16"#
+        );
+        assert_eq!(
+            redact_config_error(r#"missing field `handlers` for key "s3cret""#),
+            r#"missing field `handlers` for key "…""#
+        );
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = toml::from_str::<McpConfig>(content).unwrap_err();
+        assert!(!describe_toml_error(&error, content).contains("s3cret-pw"));
+
+        // `--config`無し（configクレート、`McpConfig::load`）のエラーも同じ
+        let content = "[[plugins]]\ncommand = \"s3cret-cmd\"\n";
+        let error = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(content, config::FileFormat::Toml))
+            .build()
+            .and_then(|built| built.try_deserialize::<McpConfig>())
+            .unwrap_err();
+        let message = redact_config_error(&error.to_string());
+        assert!(
+            message.contains("missing field `name` for key `plugins`"),
+            "{message}"
+        );
+        assert!(!message.contains("s3cret-cmd"), "{message}");
+
+        // 型の誤りでも、項目の場所は残し、値は伏せる（#724）
+        assert_eq!(
+            redact_config_error(
+                r#"invalid type: string "s3cret", expected u16 for key `transport.http.port`"#
+            ),
+            r#"invalid type: string "…", expected u16 for key `transport.http.port`"#
+        );
+        // 項目の名前に使わない文字があれば、伏せる
+        assert_eq!(
+            redact_config_error(r#"invalid type: string "a", expected u16 for key `s3 cret`"#),
+            r#"invalid type: string "…", expected u16 for key `…`"#
+        );
+        let content = "[transport.http]\nport = \"s3cret-pw\"\n";
+        let error = config::Config::builder()
+            .add_source(config::Config::try_from(&McpConfig::default()).unwrap())
+            .add_source(config::File::from_str(content, config::FileFormat::Toml))
+            .build()
+            .and_then(|built| built.try_deserialize::<McpConfig>())
+            .unwrap_err();
+        let message = redact_config_error(&error.to_string());
+        assert!(message.contains("transport.http.port"), "{message}");
+        assert!(!message.contains("s3cret-pw"), "{message}");
+    }
+
+    /// ホームフォルダは、空の`HOME`を飛ばして`USERPROFILE`を見る（#710）
+    #[test]
+    fn test_home_dir_from() {
+        let env = |home: Option<&str>, profile: Option<&str>| {
+            let home = home.map(str::to_string);
+            let profile = profile.map(str::to_string);
+            move |name: &str| match name {
+                "HOME" => home.clone(),
+                "USERPROFILE" => profile.clone(),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            home_dir_from(env(Some("/home/me"), Some(r"C:\Users\me"))),
+            Some("/home/me".to_string())
+        );
+        assert_eq!(
+            home_dir_from(env(Some(""), Some(r"C:\Users\me"))),
+            Some(r"C:\Users\me".to_string())
+        );
+        assert_eq!(
+            home_dir_from(env(None, Some(r"C:\Users\me"))),
+            Some(r"C:\Users\me".to_string())
+        );
+        assert_eq!(home_dir_from(env(Some(" "), Some(""))), None);
+    }
+
     /// `--config`の`~/`は、ホームフォルダに展開する（PR #551のレビュー）
     #[test]
     fn test_expand_config_path() {
@@ -3305,10 +4520,24 @@ mod additional_tests {
             home.join(".config").join("mcp-rs").join("config.toml")
         );
         assert_eq!(relative_config_path_warning(&expanded), None);
-        let expanded = expand_config_path_with("~\\mcp-rs\\config.toml", Some(&home_str));
+        // Windowsでは`~\`も展開し、`\`を区切り文字として扱う
+        let expanded = expand_config_path_for("~\\mcp-rs\\config.toml", Some(&home_str), true);
         assert_eq!(
             std::path::PathBuf::from(&expanded),
             home.join("mcp-rs").join("config.toml")
+        );
+        // Unixでは、`\`は名前の文字なので変えない（#724）
+        assert_eq!(
+            expand_config_path_for("~\\mcp-rs\\config.toml", Some("/home/me"), false),
+            "~\\mcp-rs\\config.toml"
+        );
+        assert_eq!(
+            std::path::PathBuf::from(expand_config_path_for(
+                "~/a\\b.toml",
+                Some("/home/me"),
+                false
+            )),
+            std::path::Path::new("/home/me").join("a\\b.toml")
         );
         // ホームが分からなければそのまま（相対パスとして警告する）
         assert_eq!(
@@ -3597,5 +4826,105 @@ mod additional_tests {
             std::path::Path::new(config.plugins[0].working_dir.as_deref().unwrap()),
             folder.join("work")
         );
+    }
+
+    // ---- #632: Claude Desktopの拡張機能 ----
+
+    #[test]
+    fn test_config_path_from_env() {
+        assert_eq!(
+            config_path_from_env(Some(" C:/me/config.toml ")),
+            Some("C:/me/config.toml".to_string())
+        );
+        // フォルダ名に`${`を含むパスは使う（#774）
+        assert_eq!(
+            config_path_from_env(Some("/home/me/${archive}/config.toml")),
+            Some("/home/me/${archive}/config.toml".to_string())
+        );
+        // 値の全体が1つの`${...}`でなければ使う（#779）
+        assert_eq!(
+            config_path_from_env(Some("${archive}/settings-${team}")),
+            Some("${archive}/settings-${team}".to_string())
+        );
+        for value in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("${user_config.config_file}"),
+        ] {
+            assert_eq!(config_path_from_env(value), None, "{value:?}");
+        }
+    }
+
+    fn extension_config(url: &str, username: &str, password: &str) -> McpConfig {
+        let mut config = McpConfig::default();
+        config.handlers.wordpress = Some(
+            toml::from_str(&format!(
+                "enabled = true\nurl = \"{url}\"\nusername = \"{username}\"\npassword = \"{password}\"\n"
+            ))
+            .unwrap(),
+        );
+        config
+    }
+
+    /// サイトが入力されていなければ、WordPressを使わずに起動し、何を入力するかを残す
+    #[test]
+    fn test_allow_unset_extension_site() {
+        let mut empty = extension_config("", "", "");
+        empty.allow_unset_extension_site();
+        assert_eq!(
+            empty.handlers.wordpress.as_ref().unwrap().enabled,
+            Some(false)
+        );
+        assert_eq!(empty.startup_notes.len(), 1);
+        assert!(empty.startup_notes[0]
+            .1
+            .contains("enter the site URL, the username, the Application Password"));
+
+        // 拡張機能が埋めなかった${user_config.…}も、入力されていないとみなす
+        let mut placeholder = extension_config("${user_config.wordpress_url}", "editor", "pass");
+        placeholder.allow_unset_extension_site();
+        assert_eq!(
+            placeholder.handlers.wordpress.as_ref().unwrap().enabled,
+            Some(false)
+        );
+        assert!(placeholder.startup_notes[0]
+            .1
+            .contains("enter the site URL in"));
+
+        // 入力されていれば、何も変えない
+        let mut filled = extension_config("https://example.com", "editor", "pass");
+        filled.allow_unset_extension_site();
+        assert_eq!(
+            filled.handlers.wordpress.as_ref().unwrap().enabled,
+            Some(true)
+        );
+        assert!(filled.startup_notes.is_empty());
+    }
+
+    /// 拡張機能から起動したら、選んだ設定ファイルがHTTPモードでもSTDIOにする
+    /// （PR #666のレビュー）
+    #[test]
+    fn test_prepare_for_extension_uses_stdio() {
+        let mut config = extension_config("https://example.com", "editor", "pass");
+        config.transport.transport_type = Some("http".to_string());
+        config.prepare_for_extension();
+        assert_eq!(config.transport.transport_type.as_deref(), Some("stdio"));
+        assert!(matches!(
+            config.to_transport_config().transport_type,
+            crate::transport::TransportType::Stdio
+        ));
+        assert!(config.startup_notes.is_empty());
+    }
+
+    /// 拡張機能に入れる設定ファイルが読め、サイトを入力すればWordPressを使う
+    #[test]
+    fn test_extension_config_file_reads() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/mcpb/config.toml");
+        let config = McpConfig::read_file(path.to_str().unwrap()).unwrap();
+        let wordpress = config.handlers.wordpress.unwrap();
+        assert_eq!(wordpress.enabled, Some(true));
+        assert_eq!(wordpress.url, "${WORDPRESS_URL}");
     }
 }

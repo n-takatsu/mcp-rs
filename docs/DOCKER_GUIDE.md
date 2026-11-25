@@ -1,6 +1,6 @@
 # Running mcp-rs in Docker
 
-The image contains only the `mcp-rs` executable, on a distroless base (no shell), running as the non-root user `nonroot` (UID 65532). Settings come from a config file that you mount into the container.
+The image contains only the `mcp-rs` executable, on a distroless base (no shell), running as the non-root user `nonroot` (UID 65532). From v0.30.0, the executable is statically linked against musl and the base is `gcr.io/distroless/static-debian12:nonroot`, so the image has no C library or OpenSSL; it still has CA certificates and time zone data. Settings come from a config file that you mount into the container.
 
 ## Getting the image
 
@@ -8,7 +8,7 @@ Release images are published to the GitHub Container Registry:
 
 ```bash
 docker pull ghcr.io/n-takatsu/mcp-rs:latest     # latest release
-docker pull ghcr.io/n-takatsu/mcp-rs:0.29       # a release line
+docker pull ghcr.io/n-takatsu/mcp-rs:0.30       # a release line
 ```
 
 Or build it from the repository:
@@ -144,7 +144,7 @@ export POSTGRES_PASSWORD='a long random password'
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 ```
 
-To give mcp-rs the database tools, add a `[database]` section with `host = "postgres"` to the config file. Up to v0.23.0, the PostgreSQL service was in `docker-compose.yml`, and its password was `changeme` unless you set one.
+To give mcp-rs the database tools, add a `[database]` section with `host = "postgres"` to the config file. Since `postgres` is not `localhost`, also set `ssl_mode` (v0.30.0 and later): this PostgreSQL has no TLS and is reached only on the Compose network, so write `ssl_mode = "disable"`. Up to v0.23.0, the PostgreSQL service was in `docker-compose.yml`, and its password was `changeme` unless you set one.
 
 `docker-compose.dev.yml` (for development) publishes PostgreSQL and Redis on `127.0.0.1` only (v0.24.0 and later), since its passwords are fixed in the file and Redis has none. Up to v0.23.0, they were reachable from other machines on the network.
 

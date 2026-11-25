@@ -2,18 +2,21 @@
 
 AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 
-> **[日本語](README.ja.md)** | **[English](README.md)**
+Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、メディアのアップロード、コメントの承認ができます。ScoopかHomebrewで入れて、`mcp-rs init`の質問に答えれば、Claude Desktop・Claude Code・GitHub Copilotに登録されます。
 
-[![Version](https://img.shields.io/badge/Version-v0.29.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.29.0)
-![Implementation](https://img.shields.io/badge/WordPress_Tools-32_Available-green)
+> **📖[日本語](README.ja.md)** | **[English](README.md)**
+
+[![Version](https://img.shields.io/badge/Version-v0.30.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.30.0)
+[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FRedRing2020%2FRedRing%2Fdevelop%2Frust-toolchain.toml&query=%24.toolchain.channel&label=rust&logo=rust&color=orange)](rust-toolchain.toml)
+![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
 
 ## 概要
 
 `mcp-rs`はRustで書かれたMCPのサーバーです。Claude Desktop・Claude Code等のMCPのクライアントはSTDIOで、それ以外のクライアントはHTTPでつなぎます。次の機能があります。
 
-- WordPress REST APIを使う32のツール（投稿・固定ページ・メディア・カテゴリ・タグ・コメント・サイト設定）
-- 1つのPostgreSQLのデータベースを読むSQLのツール（書き込みは許したときだけ）
+- WordPress REST APIを使う41のツール（投稿・固定ページ・カスタム投稿タイプ・メディア・カテゴリ・タグ等のタクソノミー・コメント・サイト設定）
+- 1つのPostgreSQL・MySQL・MariaDBのデータベースを読むSQLのツール（書き込みは許したときだけ）
 - プラグインとして起動した外部のMCPサーバーのツール（子プロセス・Dockerのコンテナ・KubernetesのJob）
 - HTTPモード向け: APIキー・OAuth 2.1の認証、呼び出し元ごとのツールの制限、TLS・mTLS、レート制限、監査ログ
 
@@ -27,15 +30,19 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 - **設定**: 1つのTOMLファイル。`${VAR}`で環境変数の値を使える
 - **状態のツール**: `mcp_rs_status`で、バージョン・設定ファイル・ログのファイル・起動しなかったものが分かる
 
-## **WordPress 統合（32 ツール）**
+## **WordPress 統合（41 ツール）**
 
-- **投稿・固定ページ管理**: 作成・取得（編集用の原文を全文）・更新・削除。SEO メタデータと予約投稿に対応
+- **投稿・固定ページ管理**: 作成・取得（編集用の原文を全文）・更新・削除。SEO メタデータと予約投稿に対応。リビジョンの一覧と書き戻し
 - **メディア管理**: base64 でのアップロード（形式・拡張子・内容を検証）、一覧、メタデータ更新、削除、アイキャッチ画像の設定
 - **カテゴリ・タグ管理**: 作成・更新・削除。カテゴリの階層に対応
-- **コメント**: コメントの取得
+- **コメント**: 状態（承認待ち・スパム等）ごとの一覧・承認・スパム・返信・削除
 - **YouTube・ソーシャル埋め込み**: セキュリティ検証付きリッチメディア統合
 - **サイト設定**: サイト設定とフロントページ設定の取得・更新
 - **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
+- **カスタム投稿タイプ**: 商品・イベント等、サイトが REST API に出している投稿タイプを、`post_types` で許したときに使う。独自のタクソノミーの項目も付けられる（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types)）
+- **プロンプト**: クライアントのメニューから選べる定型の頼み方（記事の下書き・SEOの見直し・コメントの処理、データベースの表の要約）
+- **Claude Desktop の拡張機能**: リリースの `mcp-rs-<版>.mcpb` を開いて入れ、サイトは Claude Desktop の設定画面で入力する（[文書](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension)）
+- **複数のサイト**: 1つの mcp-rs で複数の WordPress サイトを使う。各ツールの `site` の引数で選ぶ（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites)）
 
 ### ライブデモサイト
 
@@ -43,7 +50,7 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 ## **セキュリティ**
 
-- **認証情報の暗号化**: WordPressのApplication Passwordを、AES-GCM-256（PBKDF2で鍵を導出）で暗号化して保存できる。環境変数から読むこともできる
+- **認証情報をファイルに書かない**: `mcp-rs init`は、WordPressのApplication Passwordとデータベースのパスワードを、OSの資格情報ストアに入れる。WordPressの資格情報は、AES-GCM-256（PBKDF2で鍵を導出）で暗号化して保存することもできる。どちらのパスワードも、環境変数から読むこともできる
 - **HTTPモードの認証**: APIキー、または外部の認可サーバーが発行したOAuth 2.1のアクセストークン（JWT）
 - **呼び出し元ごとのツールの制限**: APIキー・トークンごとに、使えるツールを絞れる（例: `@read_only`）
 - **TLS・mTLS**: 最低のTLSバージョンを指定したHTTPS、クライアント証明書（任意）
@@ -64,9 +71,22 @@ AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL
 
 ## 🚀 クイックスタート
 
-HTTPSでつながる、アプリケーションパスワード（ユーザー → プロフィール → アプリケーションパスワード）を使えるWordPressのサイトが要ります。Rustは要りません。v0.25.0から、各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64）向けのビルド済みのmcp-rsが付きます。
+WordPressを使うには、HTTPSでつながる、アプリケーションパスワード（ユーザー → プロフィール → アプリケーションパスワード）を使えるWordPressのサイトが要ります。データベース（PostgreSQL・MySQL・MariaDB）だけを使うなら、WordPressのサイトは要りません。`mcp-rs init`の最初の質問で「2. A database」を選びます。Rustは要りません。v0.25.0から、各リリースに、Windows（x64）・macOS（Apple Silicon）・Linux（x64）向けのビルド済みのmcp-rsが付きます。
 
-**1. インストール**（v0.26.0から）。スクリプトが、最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置きます。管理者の権限は要らず、ほかには何も変えません。更新も、もう一度動かすだけです。
+**1. インストール** パッケージマネージャーで入れます（v0.29.0から）。リリースのビルド済みのmcp-rsを入れ、ほかのパッケージと一緒に更新できます（`scoop update`・`brew upgrade`）。
+
+```powershell
+# Windows（Scoop）
+scoop bucket add n-takatsu https://github.com/n-takatsu/scoop-bucket
+scoop install n-takatsu/mcp-rs
+```
+
+```bash
+# macOS（Apple Silicon）・Linux（x64）（Homebrew）
+brew install n-takatsu/tap/mcp-rs
+```
+
+インストールスクリプトでも入れられます（v0.26.0から）。スクリプトが、最新のリリースをダウンロードしてSHA256を確かめ、`~/.mcp-rs/bin`（Windowsは`%USERPROFILE%\.mcp-rs\bin`）に置きます。管理者の権限は要らず、ほかには何も変えません。更新も、もう一度動かすだけです。
 
 ```powershell
 # Windows（PowerShell）
@@ -78,34 +98,23 @@ irm https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.ps1 
 curl -fsSL https://raw.githubusercontent.com/n-takatsu/mcp-rs/main/install/install.sh | sh
 ```
 
-**2. セットアップ** スクリプトが`mcp-rs init`を動かすかを聞きます（自分で動かしても構いません）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
+**2. セットアップ** `mcp-rs init`を動かします（インストールスクリプトは、動かすかを聞きます）。サイトのURL・ユーザー名・アプリケーションパスワードを聞き（ファイルではなく、OSの資格情報ストアに入れます。データベースも、WordPressと一緒にでも、データベースだけでも設定できます。データベースだけなら、WordPressのことは聞きません）、設定ファイル（`~/.config/mcp-rs/config.toml`）を書き、接続とサインインを確かめ、Claude Desktop・Claude Code・GitHub Copilot（VS Code）に登録します。変える前には、1つずつ確かめます。
 
 ```bash
-~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
+mcp-rs init
+# スクリプトで入れた場合: ~/.mcp-rs/bin/mcp-rs init
+# （Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init）
 ```
 
-**3. 確かめる。** `init`が表示するとおりにクライアントを再起動し、`mcp_rs_status`のツールを呼ぶよう頼みます。版・使っている設定ファイル・ログの場所と、起動に失敗したものが分かります。クライアントを使わずに設定ファイルを確かめるには、`mcp-rs check --config <パス>`を使います。
+**3. 確かめる。** `init`が表示するとおりにクライアントを再起動し、`mcp_rs_status`のツールを呼ぶよう頼みます。版・使っている設定ファイル・ログの場所と、起動に失敗したもの、新しい版が出ているかが分かります。クライアントを使わずに設定ファイルを確かめるには、`mcp-rs check --config <パス>`を使います。
+
+`init`が設定したもの（クライアントへの登録、資格情報ストアの項目、選べば設定ファイル）を外すには、`mcp-rs uninstall`を動かします。変える前に1つずつ確かめ、入れ方に合わせたmcp-rs自身の消し方も示します。
 
 ほかのこと（スクリプトを読んでから動かす方法、手で入れる・ソースからビルドする方法、クライアントごとの手での設定、設定ファイル、ログの場所、クライアントがツールを見つけられないときに見るところ）は、[Getting Startedのガイド](https://n-takatsu.github.io/mcp-rs/docs/guides/)（英語）にあります。
 
 ## 🏗️ アーキテクチャ
 
-```text
-┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-│   AI エージェント    │───▶│    MCP サーバー     │───▶│   WordPress サイト   │
-│  (Claude Desktop,   │    │   (mcp-rs)          │    │   (REST API)        │
-│   カスタム AI など)  │    │                     │    │                     │
-└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
-                                      │
-                                      ▼
-                           ┌─────────────────────┐
-                           │   セキュリティ層    │
-                           │ • 認証              │
-                           │ • ツールの制限      │
-                           │ • レート制限        │
-                           │ • 監査ログ          │
-                           └─────────────────────┘
-```
+![mcp-rsの構成: AIのクライアントがSTDIOかHTTPでつなぎ、mcp-rsが呼び出しを確かめて、WordPressのサイト・データベース・プラグインのツールを提供する](https://raw.githubusercontent.com/n-takatsu/mcp-rs/develop/website/assets/architecture.svg)
 
 ## 📚 ドキュメント
 

@@ -2,9 +2,11 @@
 
 ## Overview
 
-mcp-rs accepts MCP over WebSocket on the `/ws` endpoint of the HTTP transport. The library also has a WebSocket client (`WebSocketTransport`).
+mcp-rs accepts MCP over WebSocket on the `/ws` endpoint of the HTTP transport.
 
 Up to v0.23.0, the library also had a standalone WebSocket server (`WebSocketServer`, and `server_mode` of `WebSocketTransport`). It had no authentication and no `Origin` check, and mcp-rs itself did not use it, so it was removed (#543). Use `/ws` on the HTTP transport instead.
+
+Up to v0.29.x, the library also had a WebSocket client (`WebSocketTransport`, `transport::websocket`). mcp-rs itself did not use it, so it was removed (#760).
 
 ## Server: `/ws` on the HTTP transport
 
@@ -54,35 +56,6 @@ as a request to `/mcp`. With `anti_replay_enabled`, each message carries
 `nonce` and `timestamp` at the top level of its JSON, since WebSocket messages
 have no HTTP headers. See [Security](../website/docs/security.md) for the
 limits (message size, idle timeout, response send timeout).
-
-## Client: `WebSocketTransport`
-
-```rust
-use mcp_rs::transport::websocket::{WebSocketConfig, WebSocketTransport};
-use mcp_rs::transport::Transport;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = WebSocketConfig {
-        url: "ws://127.0.0.1:8082/ws".to_string(),
-        ..Default::default()
-    };
-
-    let mut transport = WebSocketTransport::new(config)?;
-    transport.start().await?; // connects to `url`
-
-    // Send/receive messages...
-
-    transport.stop().await?;
-    Ok(())
-}
-```
-
-Run the example:
-
-```bash
-cargo run --example websocket_transport_foundation
-```
 
 ## Testing
 

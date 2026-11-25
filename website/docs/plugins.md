@@ -6,7 +6,7 @@ permalink: /docs/plugins/
 
 # Plugins
 
-**[Home](../) > [Documentation](./) > Plugins**
+**[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Plugins**
 
 A plugin is a separate MCP server that mcp-rs starts as a child process, inside a Docker container, or as a Kubernetes Job. mcp-rs connects to it as an MCP client and offers its tools alongside the built-in ones. Plugins can be written in any language, as long as they speak MCP over standard input/output.
 
@@ -16,7 +16,7 @@ Plugins work in both STDIO mode (for example, Claude Desktop and Claude Code) an
 
 ## Before you add a plugin
 
-- **Edit the config file your MCP client actually uses.** That is the file passed with `--config` in your client's MCP settings (for Claude Desktop, the `args` of the mcp-rs entry in `claude_desktop_config.json`). If you keep more than one mcp-rs config file, changes to the others have no effect. When a plugin is configured, the mcp-rs log always has either `Plugin '<name>' started with N tools` or `Plugin '<name>' is not available: ...`. If neither appears, mcp-rs did not read your `[[plugins]]`
+- **Edit the config file your MCP client actually uses.** That is the file passed with `--config` in your client's MCP settings (for Claude Desktop, the `args` of the mcp-rs entry in `claude_desktop_config.json`). If you keep more than one mcp-rs config file, changes to the others have no effect. When a plugin is configured and `[server] log_level` is `info` (the default) or more detailed, the mcp-rs log has one line for each `[[plugins]]` entry: `Plugin '<name>' started with N tools`, `Plugin '<name>' is not available: ...` (it failed to start), `Plugin '<name>' is disabled` (`enabled = false`), or `Plugin '<name>' is not started: another plugin has the same name`. With `warn`, only the second and the last appear, and with `error`, none do, so check `log_level` first. If none of them appears at `info`, mcp-rs did not read your `[[plugins]]`
 - **Delete the old `[plugins]` section first.** Config files made from the templates of v0.18.1 and earlier may contain a `[plugins]` section (with keys such as `search_paths`, `auto_load`, and `max_plugins`) and `[plugins.*]` subsections. mcp-rs never used them, and ignores them on their own. But a file cannot contain both `[plugins]` and `[[plugins]]`: mcp-rs fails to start with a `duplicate key` error. Delete the old section, including its subsections, before adding `[[plugins]]`
 
 ## Adding a plugin
@@ -84,7 +84,7 @@ By default, mcp-rs starts the container with:
 | `--memory=512m`, `--pids-limit=256` | Limits on memory and number of processes |
 | `--rm`, `--init` | The container is removed when the plugin stops |
 
-When mcp-rs stops the plugin (or exits), it also runs `docker rm -f` on the container. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
+When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode, including on Ctrl+C, and on SIGTERM from `docker stop` or `systemctl stop` on Linux and macOS, even while plugins are still starting), it also runs `docker rm -f` on the container and waits up to 10 seconds for it to finish; if it takes longer, the log warns you to remove the container by hand. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
 
 If the plugin cannot start (for example, Docker is not running or the image has not been pulled), the warning says so, and Docker's own message is in the log lines that start with `[plugin <name>]`.
 
@@ -126,7 +126,7 @@ What mcp-rs creates:
 |---|---|
 | NetworkPolicy `mcp-rs-plugin-deny-all` | Created once per namespace when `network = "none"`. Blocks all traffic to and from pods labeled `mcp-rs.network=none` |
 | Job `mcp-rs-<plugin name>-<random>` | `backoffLimit: 0` (never restarted), deleted by Kubernetes 60 seconds after it finishes |
-| Secret (same name as the Job) | Only when `env` is set. Owned by the Job |
+| Secret (same name as the Job) | Only when `env` is set. Owned by the Job from the moment it is created: mcp-rs creates the Job suspended, then the Secret, then resumes the Job. If the Job is gone, Kubernetes deletes the Secret |
 
 The plugin's pod runs with:
 
@@ -139,7 +139,7 @@ The plugin's pod runs with:
 | `automountServiceAccountToken: false`, `enableServiceLinks: false` | No access token for the Kubernetes API, and no environment variables describing the cluster's services (Kubernetes still sets the API server's address, such as `KUBERNETES_SERVICE_HOST`) |
 | Label `mcp-rs.network=none` | Covered by the NetworkPolicy above (unless `network = "allow"`) |
 
-When mcp-rs stops the plugin (or exits), it runs `kubectl delete` on the Job and the Secret. If mcp-rs is killed, the plugin's standard input closes, the plugin exits, and Kubernetes deletes the Job 60 seconds later.
+When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode), it runs `kubectl delete` on the Job and the Secret and waits up to 10 seconds for it to finish. A tool call still in progress when mcp-rs exits ends with an error. If mcp-rs is killed, the plugin's standard input closes, the plugin exits, and Kubernetes deletes the Job 60 seconds later.
 
 > **NetworkPolicy needs a network plugin that enforces it.** Most clusters do (for example, Calico and Cilium; also kind's default network). On a cluster whose network plugin ignores NetworkPolicy, `network = "none"` has no effect. Check with your cluster administrator.
 >
@@ -156,10 +156,10 @@ metadata:
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "delete"]
+    verbs: ["get", "create", "patch", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "patch", "delete"]
+    verbs: ["create", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "create", "patch"]
@@ -170,6 +170,10 @@ rules:
     resources: ["pods/attach"]
     verbs: ["create"]
 ```
+
+Until v0.29.0, mcp-rs needed `patch` on `secrets` instead of `get` and `patch` on `jobs`. `get` and `patch` on `jobs` are used only for plugins with `env` (`kubectl patch` reads the Job before changing it).
+
+Plugins with `env` need Kubernetes 1.22 or later (the Job's `spec.suspend`, on by default since 1.22). Plugins without `env` do not use it.
 
 If the plugin cannot start (for example, the image cannot be pulled, or the pod does not start within `start_timeout_seconds`), the warning says why, and `kubectl`'s own message is in the log lines that start with `[plugin <name>]`.
 
@@ -183,7 +187,7 @@ A tool whose name is not a valid MCP tool name is left out with a warning (v0.29
 
 Only tools are relayed. A plugin's resources, prompts, and notifications (such as `notifications/tools/list_changed`) are not. mcp-rs reads the tool list once, when the plugin starts.
 
-mcp-rs asks plugins for MCP protocol version 2025-11-25, and also works with plugins that answer with an older version (2025-06-18 and earlier). Tool definitions are passed on with `title`, `outputSchema`, and `annotations`, and tool results with `content`, `structuredContent`, and `isError`. Other fields of a plugin's tool definitions (such as `icons` and `execution`, added in 2025-11-25) are not passed on. The newer fields are passed on only to clients that use version 2025-06-18 or later. For clients that use version 2024-11-05, mcp-rs removes them, and replaces content types that version does not have (resource links and audio) with text. The same information is in `content`. Up to version 0.18.4, mcp-rs used version 2024-11-05 with every client, and did not pass on these fields.
+mcp-rs asks plugins for MCP protocol version 2025-11-25, and also works with plugins that answer with an older version (2025-06-18, 2025-03-26, or 2024-11-05). A plugin that answers with any other version fails to start. Tool definitions are passed on with `title`, `outputSchema`, and `annotations`, and tool results with `content`, `structuredContent`, and `isError`. Other fields of a plugin's tool definitions (such as `icons` and `execution`, added in 2025-11-25) are not passed on. The newer fields are passed on only to clients that use version 2025-06-18 or later. For clients that use version 2024-11-05, mcp-rs removes them, and replaces content types that version does not have (resource links and audio) with text. The same information is in `content`. For those clients, if a result has an empty `content` and only `structuredContent`, mcp-rs puts `structuredContent` into `content` as JSON text. A plugin result without `content` is refused as invalid, as before (`content` is required by the protocol). Up to version 0.18.4, mcp-rs used version 2024-11-05 with every client, and did not pass on these fields.
 
 ## What mcp-rs enforces
 
@@ -193,6 +197,7 @@ mcp-rs asks plugins for MCP protocol version 2025-11-25, and also works with plu
 - **Read-only marks**: A plugin marks its own tools as read-only (`readOnlyHint`). In HTTP mode, an API key or token limited to `@read_only` does not get the plugin's tools, because mcp-rs cannot check the marks (v0.27.0 and later). Set `trust_annotations = true` after checking the plugin's tools, or allow them by name. MCP clients still see the marks as the plugin sent them
 - **Audit log**: Every plugin tool call is recorded, whether it succeeds or fails, in the same audit log file as WordPress tool calls (see [Audit Log](../security/#audit-log))
 - **Timeout**: If the plugin does not answer within `call_timeout_seconds`, the call fails. A late answer is discarded
+- **Cancellation**: When an MCP client cancels a plugin tool call in STDIO mode (`notifications/cancelled`), mcp-rs does not send the answer to the client. It does not stop the call midway or tell the plugin to cancel: the call runs until the plugin answers or `call_timeout_seconds` passes, and it is recorded in the audit log as usual. Stopping in the middle of sending the request would cut the connection to the plugin. The same applies to every tool that is not marked read-only (`readOnlyHint: true`, from a handler whose marks mcp-rs trusts), such as WordPress tools that change content, so that a change is never left out of the audit log; read-only tools are stopped right away. While such a call runs, `ping` is still answered at once (as long as the client keeps reading mcp-rs's output); other requests wait until the call ends (v0.30.0 and later)
 - **Response size**: A message larger than `max_response_bytes` is discarded and the call fails
 - **Output separation**: The plugin's standard error is written to the mcp-rs log. Anything on its standard output that is not JSON-RPC is logged and ignored, so it never reaches your MCP client
 

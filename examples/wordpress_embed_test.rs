@@ -19,7 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit: None,
         encrypted_credentials: None, // 平文認証情報を使用
         keyring: None,
-        upload_allowed_dirs: Vec::new(),
+        upload_allowed_dirs: None,
+        post_types: None,
+        default_site: None,
+        sites: Default::default(),
     };
 
     // Create WordPress handler
@@ -32,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "https://youtu.be/dQw4w9WgXcQ",
         "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        "https://www.youtube.com/shorts/dQw4w9WgXcQ",
     ];
 
     for url in &youtube_urls {
@@ -94,10 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("   - ID: {}", post.id.unwrap_or(0));
             println!("   - Title: {}", post.title.rendered);
             println!("   - Status: {}", post.status);
-            if post.content.rendered.len() > 200 {
-                println!("   - Content: {}...", &post.content.rendered[..200]);
+            let content = post.content.as_ref().map_or("", |c| c.rendered.as_str());
+            if content.len() > 200 {
+                println!("   - Content: {}...", &content[..200]);
             } else {
-                println!("   - Content: {}", post.content.rendered);
+                println!("   - Content: {}", content);
             }
         }
         Err(e) => {

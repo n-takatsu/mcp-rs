@@ -32,6 +32,25 @@ Each [release](https://github.com/n-takatsu/mcp-rs/releases) from v0.25.0 has re
 | macOS (Apple Silicon) | `mcp-rs-<version>-aarch64-apple-darwin.tar.gz` |
 | Linux (x64, glibc 2.35 or later) | `mcp-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 
+### Claude Desktop extension {#claude-desktop-extension}
+
+For Claude Desktop only, the easiest way is the extension file (v0.30.0 and later). It contains mcp-rs for Windows, macOS (Apple Silicon) and Linux, and the settings are entered in Claude Desktop instead of a config file:
+
+1. Download `mcp-rs-<version>.mcpb` from the [release](https://github.com/n-takatsu/mcp-rs/releases)
+2. Open it (double-click, or drag it onto Claude Desktop's Settings > Extensions), and install it
+3. In the extension's settings, enter the WordPress site URL, the username, and the [Application Password](#credentials). Claude Desktop keeps the password encrypted in the OS's own store (Windows Credential Manager, macOS Keychain)
+4. Ask Claude "What is the status of mcp-rs?". `mcp_rs_status` shows the site, or what is still missing
+
+Notes:
+
+- To use a database, several sites or plugins, choose your own mcp-rs config file in the extension's settings. It is passed to mcp-rs as `MCP_RS_CONFIG` and used instead of the extension's own config. Whether you still fill in the three fields depends on that file:
+  - If it keeps the WordPress credentials in the OS credential store (`keyring`, as `mcp-rs init` writes), leave the three fields empty
+  - If it reads them from `${WORDPRESS_URL}`, `${WORDPRESS_USERNAME}` and `${WORDPRESS_PASSWORD}`, fill in the three fields: the extension passes them as those variables. If they are left empty, mcp-rs starts without WordPress and `mcp_rs_status` says what is missing
+  - The extension always runs mcp-rs in STDIO mode, even if the file sets `[transport] type = "http"`
+- The extension is not signed. Check the file with its `.sha256` or `gh attestation verify mcp-rs-<version>.mcpb --repo n-takatsu/mcp-rs`. To update, install the extension file of the new release
+- Do not also register mcp-rs with `mcp-rs init` for Claude Desktop: the same tools would appear twice. Claude Code and VS Code (GitHub Copilot) cannot use the extension; use `mcp-rs init` for them
+- While mcp-rs runs, the password is in its environment, as with `env` in the Claude Desktop config file
+
 ### Install script {#install-script}
 
 From v0.26.0, the install script downloads the latest release, checks its SHA256, puts mcp-rs in `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows) without changing anything else (no PATH or other settings), and then offers to run [`mcp-rs init`](#mcp-rs-init). No administrator rights are needed. Run it again to update; on Windows, this works even while a client is running mcp-rs (the client uses the new one after a restart):
@@ -73,30 +92,36 @@ winget is not supported yet.
 
 Put `mcp-rs` (`mcp-rs.exe`) in a folder of your own, such as `~/.mcp-rs/bin` (`%USERPROFILE%\.mcp-rs\bin` on Windows). No administrator rights are needed, and updating means replacing the file. mcp-rs writes its log to `logs` next to it. On Windows, avoid folders under `AppData`: Claude Desktop from the Microsoft Store may redirect files written there, so the log can end up somewhere else.
 
+Set `v` to the [latest release](https://github.com/n-takatsu/mcp-rs/releases/latest) (`mcp-rs init` needs v0.26.0 or later).
+
 Windows (PowerShell):
 
 ```powershell
-$v = "v0.25.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
+$v = "v0.29.0"; $name = "mcp-rs-$v-x86_64-pc-windows-msvc"
 Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip" -OutFile "$name.zip"
 Invoke-WebRequest "https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.zip.sha256" -OutFile "$name.zip.sha256"
-# True if the file is the one built by the release workflow
-(Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]
-Expand-Archive "$name.zip" -DestinationPath .
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" | Out-Null
-Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\"
-Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"
-& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+# Install only if the download is complete (its SHA256 matches the release's)
+if ((Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() -eq (Get-Content "$name.zip.sha256").Split(" ")[0]) {
+    # -Force replaces files left from an earlier download; any error stops here
+    Expand-Archive "$name.zip" -DestinationPath . -Force -ErrorAction Stop
+    New-Item -ItemType Directory -Force "$env:USERPROFILE\.mcp-rs\bin" -ErrorAction Stop | Out-Null
+    Copy-Item "$name\mcp-rs.exe" "$env:USERPROFILE\.mcp-rs\bin\" -ErrorAction Stop
+    Unblock-File "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" -ErrorAction Stop
+    & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" --version
+} else {
+    Write-Error "SHA256 mismatch: do not use $name.zip"
+}
 ```
 
 macOS and Linux:
 
 ```bash
-v=v0.25.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
+v=v0.29.0; name=mcp-rs-$v-aarch64-apple-darwin   # Linux: mcp-rs-$v-x86_64-unknown-linux-gnu
 curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz
 curl -LO https://github.com/n-takatsu/mcp-rs/releases/download/$v/$name.tar.gz.sha256
-shasum -a 256 -c $name.tar.gz.sha256   # Linux: sha256sum -c $name.tar.gz.sha256
-tar -xzf $name.tar.gz
-mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/
+shasum -a 256 -c $name.tar.gz.sha256 &&   # Linux: sha256sum -c $name.tar.gz.sha256 &&
+tar -xzf $name.tar.gz &&
+mkdir -p ~/.mcp-rs/bin && cp $name/mcp-rs ~/.mcp-rs/bin/ &&
 ~/.mcp-rs/bin/mcp-rs --version
 ```
 
@@ -125,23 +150,30 @@ The executable is `target/release/mcp-rs` (`mcp-rs.exe` on Windows). The default
 
 From v0.26.0, `mcp-rs init` asks a few questions in a terminal and does the rest:
 
-1. The WordPress site URL (`https://` only), username and Application Password. They are kept in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in the config file. The password is not shown while typing
-2. It writes the config file, `~/.config/mcp-rs/config.toml`, which mcp-rs also reads without `--config`. `--config <path>` writes another file. It asks before replacing a file, and keeps a backup copy (when the backup has a password in plain text, it offers to delete it). On macOS and Linux, the file and its folder are readable by you only
-3. It asks whether the AI should also read a database (PostgreSQL, MySQL or MariaDB, v0.29.0 and later). If so, it asks for the engine, host, port, database, user and password, and the TLS setting (`verify-full` is the default for a database on another machine), and adds `[database]` to the config file. The password goes to the OS credential store (`keyring` in `[database]`), not the file. Writing data (`allow_write`) stays off unless you allow it, and it asks twice. When the config file already has `[database]`, it is kept as it is. When you keep an existing config file, only the `[database]` section is added (a backup copy is kept). See [Database Integration](../database/)
-4. It checks the config file like [`mcp-rs check`](#check): it connects to the site and signs in, and connects to the database. If the sign-in fails, it asks for the username and the Application Password again. If only the database cannot be used, it still registers mcp-rs: mcp-rs starts without the database tools until `[database]` is fixed
-5. It registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking for each one. For the ones you skip, or whose command is not found, it prints the command or the settings to add yourself
+1. What the AI uses: a WordPress site, a database, or both (v0.30.0 and later; asked when a new config file is written). For WordPress, the site URL (`https://` only), username and Application Password. They are kept in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux), never in the config file. The password is not shown while typing
+2. It writes the config file, `~/.config/mcp-rs/config.toml`, which mcp-rs also reads without `--config`. `--config <path>` writes another file. It asks before replacing a file, and keeps a backup copy (when the backup has a password in plain text, it offers to delete it). On macOS and Linux, the file is readable by you only, and `init` creates a missing folder with mode 700 (a folder that already exists keeps its permissions, and on some file systems the mount options decide a folder's mode); when the file system does not keep that (such as a FAT32 or exFAT drive), `init` stops with an error before writing anything to the file (v0.30.0 and later). On Windows, the file and the backup copy can be used only by you, SYSTEM and Administrators (v0.30.0 and later), also when `--config` writes to a folder that other users can read. With a database only, the file has no `[handlers.wordpress]`
+3. It asks whether to add another WordPress site (v0.30.0 and later), so that one mcp-rs uses several sites (see [Using more than one site](../wordpress/#sites)). It asks for a name for each site, which the AI passes as the `site` argument of the tools; the site you had stays the default. When you keep an existing config file, it asks the same, or, for a config file without WordPress, whether to add a site. Only the site is added to the file (a backup copy is kept)
+4. The database (PostgreSQL, MySQL or MariaDB, v0.29.0 and later): the engine, host, port, database, user and password, and the TLS setting (`verify-full` is the default for a database on another machine). It adds `[database]` to the config file. The password goes to the OS credential store (`keyring` in `[database]`), not the file. Writing data (`allow_write`) stays off unless you allow it, and it asks twice. When the config file already has `[database]`, it is kept as it is. When you keep an existing config file, it asks whether the AI should also read a database, and only the `[database]` section is added (a backup copy is kept). See [Database Integration](../database/)
+5. It checks the config file like [`mcp-rs check`](#check): it connects to the site and signs in, and connects to the database. If the sign-in fails, it asks for the username and the Application Password again. If only the database cannot be used, it still registers mcp-rs: mcp-rs starts without the database tools until `[database]` is fixed. Only the credentials of the sites entered in this run can be entered again here; for a site the config file already had, fix its credentials where that site keeps them: with `keyring = "<name>"`, run `mcp-rs wordpress-keyring set <name>`; with `username`/`password` (or `${...}`) or `encrypted_credentials`, fix those values, or switch the site to `keyring` (see [WordPress credentials](#credentials)). Then run `mcp-rs init` once more and keep the config file. With a database only (no WordPress, or `enabled = false` in `[handlers.wordpress]`), it does not register mcp-rs until it connects to the database. When the environment variable `MCP_RS_CONFIG` names another config file, `init` stops before asking anything: clients that pass it on would start mcp-rs with that file instead
+6. It registers mcp-rs with Claude Desktop, Claude Code and GitHub Copilot (VS Code), asking for each one. For the ones you skip, or whose command is not found, it prints the command or the settings to add yourself
 
 ```bash
 ~/.mcp-rs/bin/mcp-rs init        # Windows: & "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" init
 ```
 
-If a client already starts mcp-rs with another config file (for example one you registered by hand), and no client uses the new config file yet, `init` asks whether that is the setup the new config file replaces (answer n for one you keep, such as for another site). If it is, `init` lists what that file has and a new config file for WordPress would not, such as `[[plugins]]`, `[database]`, `upload_allowed_dirs`, or `[audit]` (v0.27.0 and later). You choose to copy those settings into the new config file (the default; the WordPress username and password go to the OS credential store, not the file), to keep using that config file as it is, or to leave them out. When that file has a password in plain text, `init` reminds you at the end to delete it or remove the password. When the new mcp-rs is in another folder than the one you used before, `init` also shows where the log is now written: mcp-rs writes it next to its executable when it can.
+If a client already starts mcp-rs with another config file (for example one you registered by hand), and no client uses the new config file yet, `init` asks whether that is the setup the new config file replaces (answer n for one you keep, such as for another site). If it is, `init` lists what that file has and a new config file for WordPress would not, such as `[[plugins]]`, `[database]`, `upload_allowed_dirs`, or `[audit]` (v0.27.0 and later). You choose to copy those settings into the new config file (the default; the WordPress username and password go to the OS credential store, not the file), to keep using that config file as it is, or to leave them out. When you copy them and then choose WordPress only, the copied `[database]` is left out (v0.30.0 and later). When that file uses more than one WordPress site, `init` keeps using it; with `--config`, it asks first, and sets up the file you gave unless you choose the other one (v0.30.0 and later). When that file has a password in plain text, `init` reminds you at the end to delete it or remove the password. When the new mcp-rs is in another folder than the one you used before, `init` also shows where the log is now written: mcp-rs writes it next to its executable when it can.
 
-If a client already starts mcp-rs under another name (for example `mcp-rs-wordpress`, registered by hand), `init` offers to remove that one, so that the same tools do not appear twice. One that uses the same config file, or the config file you just replaced, is removed unless you answer n; one that uses another config file (such as for a second site) is kept unless you answer y.
+If a client already starts mcp-rs under another name (for example `mcp-rs-wordpress`, registered by hand), `init` offers to remove that one, so that the same tools do not appear twice. One that uses the same config file, or the config file you just replaced, is removed unless you answer n; one that uses another config file (such as for a second site) is kept unless you answer y. From v0.30.0, a second site no longer needs its own registration: add it as a site of the same mcp-rs (step 3). When you add the site that such a registration uses, `init` removes that registration unless you answer n; when its config file also has settings that the new one does not (such as `post_types` of a site, `[server]`, `[database]` or `[[plugins]]`), `init` lists them and keeps the registration unless you answer y, and `mcp-rs uninstall` later finds the credentials of every site in the one config file.
 
 At the end, `init` shows how to restart each client. Then ask the client to call `mcp_rs_status` (see [Check](#check)).
 
 ## 3. Set up by hand {#by-hand}
+
+The commands below are written as `mcp-rs …`. The install script and a manual install do not add mcp-rs to `PATH` (Scoop and Homebrew do), so run it by its full path, such as `~/.mcp-rs/bin/mcp-rs`, or `& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe"` in PowerShell. For example:
+
+```powershell
+& "$env:USERPROFILE\.mcp-rs\bin\mcp-rs.exe" wordpress-keyring set example.com
+```
 
 ### WordPress credentials {#credentials}
 
@@ -174,13 +206,14 @@ keyring = "example.com"   # the name used with `wordpress-keyring set`
 ```
 
 - Pass the config file with `--config` and an absolute path, or put it at `~/.config/mcp-rs/config.toml`. Without `--config`, mcp-rs reads only `~/.config/mcp-rs/config.toml` (v0.24.0 and later). A relative path is read from the folder mcp-rs starts in, which for Claude Code is the folder you open, so mcp-rs warns about it at startup. Config files in the current folder (`mcp-config.toml`, `config.toml`, `config/mcp.toml`) are not read without `--config`: a config file in a folder you open could otherwise run commands (`[[plugins]]`) or send your credentials to another site
-- `${VAR}` is replaced by the environment variable `VAR` when mcp-rs starts. If a variable used by `[handlers.wordpress]` is not set, mcp-rs does not start (in `[database]`, it starts without the database tools instead). With `--config`, the credentials come only from the config file: `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` are read only through `${...}`. Without `--config` (`~/.config/mcp-rs/config.toml`), mcp-rs also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`)
+- Without `--config`, without `~/.config/mcp-rs/config.toml`, and without settings in environment variables (`WORDPRESS_URL`, `MCP_WORDPRESS_URL`, `MCP_SERVER_BIND_ADDR`), mcp-rs still starts in STDIO mode (v0.30.0 and later), with only the `mcp_rs_status` tool. It logs a warning, and `mcp_rs_status` says that there is no config file and how to create one (`mcp-rs init`, or `--config`). This lets MCP directories and inspectors list mcp-rs without a config file, and lets a client show the reason instead of "the server did not start". `mcp-rs check` still reports the missing file as an error. A file passed with `--config` that does not exist or cannot be read is still an error, and so are mistakes in the file
+- `${VAR}` is replaced by the environment variable `VAR` when mcp-rs starts. If a variable used by `[handlers.wordpress]` (when WordPress is enabled) or by the `key` of `[[transport.http.api_keys]]` (in HTTP mode with `auth_enabled`) is not set, mcp-rs does not start. In `[database]`, it starts without the database tools instead, and in `[[plugins]]` `env`, that entry is not passed to the plugin. With `--config`, the credentials come only from the config file: `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD` are read only through `${...}`. Without `--config` (`~/.config/mcp-rs/config.toml`), mcp-rs also reads them directly when `WORDPRESS_URL` is set, and they override the file (except with `keyring`)
 - Ready-made config files are in [`configs/`](https://github.com/n-takatsu/mcp-rs/tree/main/configs). `configs/production/claude-desktop.toml` reads the credentials from `WORDPRESS_URL`, `WORDPRESS_USERNAME`, and `WORDPRESS_PASSWORD`; to use the OS credential store instead, change `[handlers.wordpress]` as above
 
 Add only what you use:
 
 - `[handlers.wordpress]`: see [WordPress]({{ site.baseurl }}/docs/wordpress/)
-- `[database]`: see [Database]({{ site.baseurl }}/docs/database/) and the [PostgreSQL Integration Guide](./postgres-integration.md)
+- `[database]`: see [Database]({{ site.baseurl }}/docs/database/) and the [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 - `[[plugins]]`: see [Plugins]({{ site.baseurl }}/docs/plugins/)
 - `[transport.http]` for HTTP mode, `[audit]` for the audit log: see [Security]({{ site.baseurl }}/docs/security/)
 
@@ -220,7 +253,7 @@ More (Japanese): [Claude Code Integration Guide](https://github.com/n-takatsu/mc
 
 ### VS Code (GitHub Copilot) {#vs-code}
 
-The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json`, which both the chat in VS Code and `copilot` in a terminal read:
+The Copilot chat in VS Code runs on the Copilot CLI (the agent host; the older local harness, which reads `.vscode/mcp.json` itself, is to be removed in February 2027) and uses the MCP servers registered for it. Register mcp-rs with the `copilot` command, with absolute paths. Everything after `--` is the mcp-rs command line. This writes `~/.copilot/mcp-config.json` (`$COPILOT_HOME/mcp-config.json` when the environment variable `COPILOT_HOME` is set; `mcp-rs init` and `mcp-rs uninstall` look there too, v0.30.0 and later), which both the chat in VS Code and `copilot` in a terminal read:
 
 ```bash
 copilot mcp add mcp-rs -- "C:/Users/you/.mcp-rs/bin/mcp-rs.exe" --config C:/Users/you/.config/mcp-rs/config.toml
@@ -241,7 +274,7 @@ Before starting a client, `mcp-rs check --config <path>` (v0.25.0 and later) che
 mcp-rs check --config C:/Users/you/.config/mcp-rs/config.toml
 ```
 
-It shows whether the file loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the site and sign in (read-only requests; when the sign-in fails, the permissions and media are not checked), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and user names are not shown. Like starting mcp-rs, it creates the log and audit log folders and files if they are missing, and adds a `checked` line to the log file. It also checks `[database]` (v0.28.0 and later): the settings (`engine`, `ssl_mode`, `ssl_root_cert`, `${VAR}`), a warning for weak TLS settings, and whether mcp-rs can connect and sign in (nothing is written). For each of `[[plugins]]`, it checks that the command (or `docker`, `kubectl`) can be found, then starts the plugin, waits for its list of tools, and stops it. Connecting and starting each wait up to 10 seconds. `--offline` skips the connections to the site and the database, and does not start the plugins.
+It shows whether the file loads (the line and the reason of an error), whether the WordPress credentials can be read, whether mcp-rs can reach the site and sign in (read-only requests; when the sign-in fails, the permissions and media are not checked), and where the log and the audit log are written. It exits with 1 when it finds an error. Passwords, tokens and WordPress user names are not shown; for `[database]`, the user name is shown with the server, for example `postgresql reader@127.0.0.1:5432/app (read-only)`. Like starting mcp-rs, it creates the log and audit log folders and files if they are missing, and adds a `checked` line to the log file. It also checks `[database]` (v0.28.0 and later): the settings (`engine`, `ssl_mode`, `ssl_root_cert`, `${VAR}`), a warning for weak TLS settings, and whether mcp-rs can connect and sign in (nothing is written). For each of `[[plugins]]`, it checks that the command (or `docker`, `kubectl`) can be found, then starts the plugin, waits for its list of tools, and stops it. Connecting and starting each wait up to 10 seconds. `--offline` skips the connections to the site and the database, and does not start the plugins.
 
 `mcp-rs check` and `mcp_rs_status` also say whether a new version of mcp-rs is available (v0.29.0 and later), and how to update for the way you installed it (Scoop, Homebrew, the install script, or the releases page), for example `mcp-rs 0.30.0 is available (this is 0.29.0). To update, scoop update mcp-rs, then restart the MCP clients`. For this, mcp-rs asks GitHub (`api.github.com`) for the latest release, sending only a `User-Agent` with its version. `mcp_rs_status` asks once while mcp-rs runs, and only in STDIO mode. `--offline` skips it, and `check_updates = false` in `[server]` turns it off.
 
@@ -252,7 +285,7 @@ After the client has started mcp-rs, ask it to call the `mcp_rs_status` tool. It
 mcp-rs writes its log to the first of these folders that it can write to:
 
 1. `logs` in the folder of the `mcp-rs` executable (for example, `~/.mcp-rs/bin/logs`)
-2. The user folder: `%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere. When mcp-rs is installed in `C:\Program Files\MCP-rs`, the log is always here
+2. The user folder: `%USERPROFILE%\.mcp-rs\logs` on Windows, `$XDG_STATE_HOME/mcp-rs/logs` or `~/.local/state/mcp-rs/logs` elsewhere. When mcp-rs is installed in `C:\Program Files\MCP-rs`, the log is here, unless this folder cannot be written either (then the next one is used)
 3. `logs` in the current folder, then, on Windows only, `mcp-rs/logs` in the temporary folder (`%TEMP%` is per user there; the shared `/tmp` of other systems is not used, v0.24.0 and later)
 
 On Linux and macOS, new log folders are created readable by you only (700) and new log files 600, like the audit log, and mcp-rs does not follow a symbolic link in place of a log file.
@@ -264,7 +297,7 @@ The file name ends with the date, such as `mcp-rs.log.2026-11-09`, and a new fil
 Claude Desktop may start two mcp-rs processes for one entry in `claude_desktop_config.json`. This is how Claude Desktop works, not a problem with your mcp-rs settings. Both processes write to the same log file, so the log can look doubled:
 
 - Each line has the process ID (`[pid …]`), so you can tell the two processes apart
-- Each process writes its own startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`). Windows reuses process IDs, so the same `pid` can belong to a different process after a restart. Read `[pid …]` together with the latest startup line above it. The startup line also has `instance` (the process ID and start time), which the audit log records with every tool call, so you can match the two logs
+- Each process writes its own startup line (`=== mcp-rs … started at … / pid … / instance … / log: … ===`). Windows reuses process IDs, so the same `pid` can belong to a different process after a restart. Read `[pid …]` together with the latest startup or `continued` line above it that has the same `pid` (the two processes write to the same file, so the latest such line may belong to the other one). The startup line also has `instance` (the process ID and start time), which the audit log records with every tool call, so you can match the two logs
 - Startup messages, such as the WordPress connection check, appear once per process. Seeing them twice is normal
 
 The audit log (who called which tool) is written next to the logs, to `%USERPROFILE%\.mcp-rs\audit\audit.log` on Windows (`$XDG_STATE_HOME/mcp-rs/audit` or `~/.local/state/mcp-rs/audit` elsewhere). `[audit] file_path` changes it. Up to version 0.21.0, it was `audit.log` in the config file's folder; that file is left where it is. See [Security]({{ site.baseurl }}/docs/security/#audit-log).
@@ -274,7 +307,7 @@ The audit log (who called which tool) is written next to the logs, to `%USERPROF
 `mcp-rs uninstall` (v0.29.0 and later) removes what `mcp-rs init` set up, asking before each step:
 
 1. The mcp-rs registrations in Claude Desktop (a backup copy of `claude_desktop_config.json` is kept), Claude Code, and GitHub Copilot (VS Code)
-2. The WordPress and database credentials in the OS credential store that the config files refer to (`keyring = "<name>"`)
+2. The WordPress and database credentials in the OS credential store that the config files refer to (`keyring = "<name>"`). Each entry is named by what it holds (v0.30.0 and later): when an entry that a WordPress setting refers to holds database credentials, or something that is not mcp-rs credentials (and the other way round), `uninstall` says so and keeps it unless you answer y
 3. The config files (kept unless you answer y)
 
 ```bash
@@ -289,4 +322,4 @@ Set `type = "http"` under `[transport]` and the address under `[transport.http]`
 
 ## Guides
 
-- [PostgreSQL Integration Guide](./postgres-integration.md) - Connect a database with a read-only role
+- [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/) - Connect a database with a read-only role

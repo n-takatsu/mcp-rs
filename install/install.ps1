@@ -98,17 +98,25 @@ function Install-McpRs {
         New-Item -ItemType Directory -Force -Path $installDir | Out-Null
         $exe = Join-Path $installDir 'mcp-rs.exe'
         $old = "$exe.old"
+        $movedAside = $false
         try {
             # A running mcp-rs.exe cannot be overwritten, but it can be
             # renamed: move it aside, so updating works while Claude Desktop
             # or VS Code is running it (they use the new one after a restart)
             if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
-            if (Test-Path $exe) { Move-Item -Force $exe $old }
+            if (Test-Path $exe) {
+                Move-Item -Force $exe $old
+                $movedAside = $true
+            }
             Copy-Item -Force $downloaded $exe
             Remove-Item -Force $old -ErrorAction SilentlyContinue
         } catch {
-            # Put the previous one back, so mcp-rs.exe is never missing
-            if (-not (Test-Path $exe) -and (Test-Path $old)) {
+            # Put the previous one back, so mcp-rs.exe is never missing or
+            # half-written (#710): a copy that failed partway can leave an
+            # incomplete mcp-rs.exe. Only when this run moved it aside, so an
+            # older mcp-rs.exe.old never replaces the current one
+            if ($movedAside -and (Test-Path $old)) {
+                Remove-Item -Force $exe -ErrorAction SilentlyContinue
                 Move-Item -Force $old $exe -ErrorAction SilentlyContinue
             }
             throw "could not replace $exe ($($_.Exception.Message)). If Claude Desktop or VS Code is running mcp-rs, quit it (Claude Desktop from the system tray) and run this again"

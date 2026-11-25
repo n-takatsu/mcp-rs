@@ -5,6 +5,10 @@
 
 // 現在実装されているハンドラー
 pub mod wordpress;
+pub mod wordpress_sites;
+
+// プロンプト（#643）
+pub mod prompts;
 
 // データベースハンドラー
 #[cfg(feature = "database")]

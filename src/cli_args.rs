@@ -30,6 +30,16 @@ pub struct RunArgs {
 /// `--config`は`Invalid`にする（打ち間違いに気づかず、別の設定で起動する
 /// のを防ぐ、#437）
 pub fn parse_args(args: &[String]) -> Command {
+    // `--config`の値の位置でも、表示の引数を先に扱う（#746。
+    // `mcp-rs --config --version`で、`--version`という名前の設定ファイルを
+    // 読まない）
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--version" | "-V" => return Command::Version,
+            "--help" | "-h" => return Command::Help,
+            _ => {}
+        }
+    }
     let mut run = RunArgs::default();
     let mut problems = Vec::new();
     let mut rest = args.iter().skip(1);
@@ -147,6 +157,9 @@ mod tests {
             Command::Version
         );
         assert_eq!(parse(&["--help", "--version"]), Command::Help);
+        // `--config`の直後でも、設定ファイルのパスとして読まない（#746）
+        assert_eq!(parse(&["--config", "--version"]), Command::Version);
+        assert_eq!(parse(&["--config", "-h", "a.toml"]), Command::Help);
     }
 
     #[test]
