@@ -942,7 +942,10 @@ impl McpServer {
             }
             _ => return Ok(invalid_message_response(line)),
         }
-        let request: JsonRpcRequest = match serde_json::from_value(value) {
+        // 元の行から読む（#774）。`Value`は重複したキーを後の値で上書きするが、
+        // `JsonRpcRequest`に直接読むと`jsonrpc`・`method`・`id`・`params`の
+        // 重複を断る（以前と同じ）
+        let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(request) => request,
             Err(_) => return Ok(invalid_message_response(line)),
         };
@@ -1900,7 +1903,14 @@ impl McpServer {
             None => tokio::select! {
                 biased;
                 written = &mut writer.0 => {
-                    worker.stop().await;
+                    if matches!(written, Ok(Ok(()))) {
+                        // 書き手は、ワーカーの送り手が無くなってから終わる。
+                        // ワーカーは終わっているので、そのパニックをエラーに
+                        // する（#774。以前は捨てて`Ok`を返した）
+                        (&mut worker.0).await?;
+                    } else {
+                        worker.stop().await;
+                    }
                     written
                 }
                 done = &mut worker.0 => {
@@ -2116,6 +2126,20 @@ mod tests {
                     .unwrap();
             assert!(response.is_none(), "{method} must not get a response");
         }
+    }
+
+    /// キーが重複した要求は、`-32600`で断り、どちらの`method`も実行しない
+    /// （#774。`Value`に読むと後の値で上書きし、`tools/list`を実行した）
+    #[tokio::test]
+    async fn test_request_with_duplicate_keys_is_rejected() {
+        let handlers: Handlers = vec![("mock".to_string(), Arc::new(PanickingToolMockHandler))];
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/list"}"#;
+        let response = McpServer::process_request(line, &handlers, &Session::default())
+            .await
+            .unwrap()
+            .expect("a request with an id must get a response");
+        assert_eq!(response.error.map(|e| e.code), Some(-32600));
+        assert!(response.result.is_none());
     }
 
     /// `tools/call`等のmethodが`id`なしで届いても、ツールを実行せず、
@@ -4408,6 +4432,45 @@ mod tests {
         assert!(result.is_err(), "{result:?}");
         drop(input);
     }
+
+    /// 入力の終わり（EOF）の後に実行のタスクがパニックしても、成功として
+    /// 終わらない（#774。以前は書き手が先に終わったとして`Ok`を返した）
+    #[tokio::test]
+    async fn test_stdio_worker_panic_after_eof_is_an_error() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut server = McpServer::new();
+        server.add_handler(
+            "panics".to_string(),
+            Arc::new(PanicOnReleaseHandler {
+                started: started.clone(),
+                release: release.clone(),
+            }),
+        );
+        let (mut input, server_input) = tokio::io::duplex(64 * 1024);
+        let (output, _client_output) = tokio::io::duplex(64 * 1024);
+        let serve = tokio::spawn(async move {
+            server
+                .serve_lines(tokio::io::BufReader::new(server_input), output)
+                .await
+                .map_err(|e| e.to_string())
+        });
+        let limit = std::time::Duration::from_secs(5);
+        write_line(&mut input, never_ending_call(1)).await;
+        tokio::time::timeout(limit, started.notified())
+            .await
+            .expect("the tool did not start");
+        // 入力を閉じ、EOFを読ませてからパニックさせる
+        drop(input);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        release.notify_one();
+        let result = tokio::time::timeout(limit, serve)
+            .await
+            .expect("serve_lines did not end")
+            .unwrap();
+        assert!(result.is_err(), "{result:?}");
+    }
+
     /// 空の行は、順を待つ枠を使わない（PR #765のレビュー）
     #[tokio::test]
     async fn test_stdio_blank_lines_do_not_use_the_queue() {

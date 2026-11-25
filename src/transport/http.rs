@@ -755,6 +755,42 @@ fn jsonrpc_error_body(code: i32, message: &str) -> Value {
     })
 }
 
+/// `/ws`の要求に応答を作れなかったとき（期限切れ等）の、その要求の`id`を
+/// 付けたエラー（#774。以前は何も返さず、クライアントは応答を待ち続けた）。
+/// 要求の`id`（`id`が無い通知や、文字列でも数値でもないときは`None`）には
+/// 返さない
+fn ws_request_error(id: Option<&Value>, code: i32, message: &str) -> Option<Message> {
+    let id = id.filter(|id| id.is_string() || id.is_number())?;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "error": { "code": code, "message": message },
+        "id": id
+    });
+    Some(Message::Text(body.to_string().into()))
+}
+
+/// `/ws`の要求が期限までに終わらなかったときのエラー（#774）
+fn ws_timeout_error(id: Option<&Value>) -> Option<Message> {
+    ws_request_error(
+        id,
+        -32001,
+        "Request timed out: the request may still be processed",
+    )
+}
+
+/// チャンネル経由の`/ws`の要求を処理できなかったときのエラー（#774）
+fn ws_channel_error(id: Option<&Value>, error: ChannelError) -> Option<Message> {
+    match error {
+        ChannelError::TimedOut => ws_timeout_error(id),
+        ChannelError::Busy | ChannelError::Stopped => {
+            ws_request_error(id, -32000, "Server busy: the request was not processed")
+        }
+        ChannelError::Closed | ChannelError::NoResponse => {
+            ws_request_error(id, -32603, "Internal error: no response")
+        }
+    }
+}
+
 /// チャンネルに渡せない要求なら、Invalid Requestのメッセージ（PR #771の
 /// レビュー）。JSONのオブジェクトでなければならない（配列等は、`id`が無く
 /// 通知に見え、Serdeは配列も要求として読むため）。`jsonrpc`は`"2.0"`、
@@ -2959,7 +2995,9 @@ async fn handle_jsonrpc_request(
 
     if request.get("id").is_none() {
         // Notification (no ID)
-        RequestChannel::forward_notification(permit, request_str, caller, protocol_version);
+        // 確かめたJSONを渡す（#774。元の文字列は、重複したキーがあると
+        // 受信側が読めない）
+        RequestChannel::forward_notification(permit, request.to_string(), caller, protocol_version);
 
         // JSON-RPC 2.0: the server MUST NOT reply to a notification. MCP's
         // HTTP transport acknowledges an accepted notification with
@@ -4564,7 +4602,7 @@ impl MessageHandler for JsonRpcWsHandler {
                         REQUEST_HANDLER_TIMEOUT.as_secs()
                     );
                     self.stats.lock().total_errors += 1;
-                    return Ok(None);
+                    return Ok(ws_timeout_error(request.get("id")));
                 }
             };
             let Some(response) = response else {
@@ -4586,8 +4624,8 @@ impl MessageHandler for JsonRpcWsHandler {
         }
 
         // チャンネル経由（#760）: キューの枠は期限付きで取る。期限には、枠を
-        // 待つ時間も含める。期限を過ぎたら、この応答だけを返さない（接続は
-        // 閉じない）
+        // 待つ時間も含める。期限を過ぎたら、この要求にだけエラーを返す（接続は
+        // 閉じない。#774）
         let deadline = tokio::time::Instant::now() + CHANNEL_RESPONSE_TIMEOUT;
         let permit = match self.channel.reserve(deadline, &self.shutdown).await {
             Ok(permit) => permit,
@@ -4608,7 +4646,7 @@ impl MessageHandler for JsonRpcWsHandler {
                     "Could not forward a WebSocket request to the channel: {:?}",
                     e
                 );
-                return Ok(None);
+                return Ok(ws_channel_error(request.get("id"), e));
             }
         };
         // 枠を待つ間にアクセストークンの期限が切れていれば、渡さずに
@@ -4623,9 +4661,11 @@ impl MessageHandler for JsonRpcWsHandler {
 
         if request.get("id").is_none() {
             // Notification (no `id`) - no response frame expected
+            // 確かめたJSONを渡す（#774。元の文字列は、重複したキーがあると
+            // 受信側が読めない）
             RequestChannel::forward_notification(
                 permit,
-                text.to_string(),
+                request.to_string(),
                 client.caller.clone(),
                 None,
             );
@@ -4634,6 +4674,7 @@ impl MessageHandler for JsonRpcWsHandler {
 
         // 内部の相関IDで応答を待つ（#760）。別の接続が同じ`id`を使っても、
         // 応答が入れ替わらない
+        let id = request.get("id").cloned();
         let pending =
             self.channel
                 .forward_request(permit, request, client.caller.clone(), None, deadline);
@@ -4653,7 +4694,7 @@ impl MessageHandler for JsonRpcWsHandler {
                     "No response from the channel for a WebSocket request: {:?}",
                     e
                 );
-                Ok(None)
+                Ok(ws_channel_error(id.as_ref(), e))
             }
         }
     }
@@ -8740,6 +8781,148 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
         assert_eq!(body["id"], serde_json::json!(5));
+    }
+
+    /// キーが重複した通知も、確かめたJSON（後の値）で受信側に渡り、受信側は
+    /// 読める（#774。以前は元の文字列を渡し、受信側が`duplicate field`で
+    /// 失敗した）。HTTPと`/ws`の両方
+    #[tokio::test]
+    async fn test_channel_notifications_with_duplicate_keys_can_be_read() {
+        use futures::SinkExt as _;
+
+        let transport = HttpTransport::new(HttpConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            enable_websocket_upgrade: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        transport.start_server().await.unwrap();
+        let server_addr = transport.bound_addr().await.unwrap();
+        wait_for_plain_server_ready(server_addr).await;
+        let next_method = || async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                transport.receive_request_with_context(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .request
+            .method
+        };
+
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{}/mcp", server_addr.port()))
+            .header("content-type", "application/json")
+            .body(r#"{"jsonrpc":"2.0","method":"a","method":"notifications/initialized"}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(next_method().await, "notifications/initialized");
+
+        let ws_url = format!("ws://127.0.0.1:{}/ws", server_addr.port());
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"jsonrpc":"2.0","method":"a","method":"notifications/cancelled"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(next_method().await, "notifications/cancelled");
+        transport.stop_server().await;
+    }
+
+    /// `/ws`の応答を読み、JSONにする
+    fn ws_reply_json(reply: Option<Message>) -> Value {
+        let Some(Message::Text(text)) = reply else {
+            panic!("expected a text frame: {reply:?}");
+        };
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// チャンネル経由の`/ws`の要求が期限までに終わらなければ、その要求の`id`を
+    /// 付けたエラーを返す（#774。以前は何も返さなかった）。キューの枠が
+    /// 空かないときも同じ。通知には返さない
+    #[tokio::test(start_paused = true)]
+    async fn test_websocket_channel_timeout_returns_an_error_with_the_id() {
+        let (channel, mut receiver) = test_request_channel(1);
+        let handler = JsonRpcWsHandler {
+            request_handler: None,
+            callers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            channel,
+            stats: SharedStats::default(),
+            shutdown: not_stopped(),
+        };
+        let send = |message: Value| {
+            handler.handle_message(Uuid::new_v4(), Message::Text(message.to_string().into()))
+        };
+
+        // 受信側が読まない: 応答を待つ間に期限が切れる
+        let reply = send(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }))
+            .await
+            .unwrap();
+        let body = ws_reply_json(reply);
+        assert_eq!(body["id"], serde_json::json!(1));
+        assert_eq!(body["error"]["code"], serde_json::json!(-32001));
+
+        // 枠が埋まったまま: 枠を取れない
+        let reply = send(serde_json::json!({ "jsonrpc": "2.0", "id": "two", "method": "ping" }))
+            .await
+            .unwrap();
+        let body = ws_reply_json(reply);
+        assert_eq!(body["id"], serde_json::json!("two"));
+        assert_eq!(body["error"]["code"], serde_json::json!(-32000));
+
+        let reply =
+            send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+                .await
+                .unwrap();
+        assert!(reply.is_none(), "{reply:?}");
+        receiver.try_recv().unwrap();
+    }
+
+    /// 応答を返さないハンドラー
+    struct NeverRespondingHandler;
+
+    #[async_trait]
+    impl JsonRpcRequestHandler for NeverRespondingHandler {
+        async fn handle_jsonrpc(
+            &self,
+            _message: &str,
+            _caller: &crate::mcp::Caller,
+        ) -> std::result::Result<Option<Value>, String> {
+            std::future::pending().await
+        }
+    }
+
+    /// `with_request_handler`の`/ws`でも、期限を過ぎた要求には、その`id`を
+    /// 付けたエラーを返す（#774）。通知には返さない
+    #[tokio::test(start_paused = true)]
+    async fn test_websocket_handler_timeout_returns_an_error_with_the_id() {
+        let handler = JsonRpcWsHandler {
+            request_handler: Some(Arc::new(NeverRespondingHandler)),
+            callers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            channel: test_request_channel(1).0,
+            stats: SharedStats::default(),
+            shutdown: not_stopped(),
+        };
+        let send = |message: Value| {
+            handler.handle_message(Uuid::new_v4(), Message::Text(message.to_string().into()))
+        };
+
+        let reply = send(serde_json::json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/list" }))
+            .await
+            .unwrap();
+        let body = ws_reply_json(reply);
+        assert_eq!(body["id"], serde_json::json!(7));
+        assert_eq!(body["error"]["code"], serde_json::json!(-32001));
+
+        let reply =
+            send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+                .await
+                .unwrap();
+        assert!(reply.is_none(), "{reply:?}");
     }
 
     /// 受信側には、クライアントの付けた`id`も`original_id`で渡る（PR #771の
