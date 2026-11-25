@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::config::DatabaseSettings;
 use crate::init::{
     append_to_config_file, ask_database, ask_database_password, ask_with_default, check_store,
-    confirm, database_toml, make_backup, write_atomically, Prompt, Terminal,
+    check_unchanged, confirm, database_toml, make_backup, write_atomically, Prompt, Terminal,
 };
 use crate::security::keyring_store::{
     database_entry, store_database_credentials, DatabaseEntry, DatabaseKeyringCredentials,
@@ -216,8 +216,11 @@ fn set(
                 path.display()
             ));
             let answers = ask_database(io, store, Some(name), &[])?;
-            if content.is_some() {
+            if let Some(content) = &content {
                 if confirm(io, &format!("Add [database] to {}?", path.display()), true)? {
+                    // 質問の間に変わった設定ファイルには書き足さない（#779。
+                    // `[database]`が足されていると、重複して壊れる）
+                    check_unchanged(path, content, "database-keyring set")?;
                     let backup = append_to_config_file(path, &database_toml(&answers)?)?;
                     io.say(&format!(
                         "Added [database] to {} (kept the previous file as {}).",
@@ -438,6 +441,9 @@ fn change_config(
     changes: &Changes,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let updated = edit_database(content, name, changes)?;
+    // 質問の間に、ほかで設定ファイルが変わっていれば、古い中身から作った
+    // ものを書かない（#779。変わった分が失われる）
+    check_unchanged(path, content, "database-keyring set")?;
     let backup = make_backup(path, true)?;
     write_atomically(path, &updated, true)?;
     io.say(&format!(
@@ -1015,5 +1021,73 @@ ssl_mode = "verify-full"
         assert_eq!(database_entry(&store, "app@db").unwrap(), None);
         assert!(delete(&store, "app@db").is_err());
         assert!(show(&store, "missing").is_err());
+    }
+
+    /// パスワードを聞いている間に、設定ファイルを書き換える（#779）
+    struct Changing<'a> {
+        script: Script,
+        path: &'a Path,
+        content: &'a str,
+    }
+
+    impl Prompt for Changing<'_> {
+        fn ask(&mut self, question: &str) -> std::io::Result<String> {
+            self.script.ask(question)
+        }
+        fn ask_hidden(&mut self, question: &str) -> std::io::Result<Zeroizing<String>> {
+            std::fs::write(self.path, self.content).unwrap();
+            self.script.ask_hidden(question)
+        }
+        fn say(&mut self, text: &str) {
+            self.script.say(text);
+        }
+    }
+
+    /// 質問の間に設定ファイルが変わったら、古い中身から作ったものを書かずに
+    /// 止め、項目を前の中身に戻す（#779）
+    #[test]
+    fn test_set_stops_when_the_config_file_changed() {
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let store = MemoryStore::default();
+        old_entry(&store);
+        let (_dir, path) = config_in_temp(&config);
+        let changed = format!("{config}# changed by hand\n");
+        let mut io = Changing {
+            script: Script::new(&["db2.example.com", "", "", "new-pass", "y"]),
+            path: &path,
+            content: &changed,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "the config file was changed while mcp-rs database-keyring set was asking"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`が無い設定ファイルに足されたら、書き足さない
+        let without = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n";
+        let (_dir, path) = config_in_temp(without);
+        let changed = format!(
+            "{without}\n[database]\nengine = \"mysql\"\ndatabase = \"x\"\nusername = \"y\"\n"
+        );
+        let mut io = Changing {
+            script: Script::new(&["mysql", "", "", "shop", "app", "pw", "", "", ""]),
+            path: &path,
+            content: &changed,
+        };
+        let err = set(&mut io, &store, "shop@localhost", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the config file was changed"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
     }
 }

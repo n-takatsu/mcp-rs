@@ -210,13 +210,14 @@ async fn restore_on_interrupt(replaced: ReplacedEntries, unwritten: UnwrittenEnt
 
 /// 入れ直した資格情報を、前の中身に戻す。`say`に結果を出す（#710・#715）
 fn restore_entries(store: &dyn SecretStore, entries: ReplacedList, mut say: impl FnMut(&str)) {
-    for (entry, previous) in entries {
+    for (entry, previous, kind) in entries {
         match store.set(&entry, &previous) {
             Ok(()) => say(&format!(
                 "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now were not checked)."
             )),
             Err(e) => say(&format!(
-                "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs wordpress-keyring set {}",
+                "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs {} set {}",
+                kind.command(),
                 quote_arg(&entry)
             )),
         }
@@ -316,8 +317,26 @@ struct Setup<'a> {
 #[derive(Clone, Default)]
 struct ReplacedEntries(std::sync::Arc<std::sync::Mutex<ReplacedList>>);
 
-/// 資格情報の項目の名前と、前の中身
-type ReplacedList = Vec<(String, Zeroizing<String>)>;
+/// 資格情報の項目の名前と、前の中身と、その種類
+type ReplacedList = Vec<(String, Zeroizing<String>, CredentialKind)>;
+
+/// この実行で入れた資格情報の種類。戻せない・消せないときに案内する
+/// コマンドを決める（#779）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialKind {
+    WordPress,
+    Database,
+}
+
+impl CredentialKind {
+    /// 項目を扱うサブコマンド
+    fn command(self) -> &'static str {
+        match self {
+            CredentialKind::WordPress => "wordpress-keyring",
+            CredentialKind::Database => "database-keyring",
+        }
+    }
+}
 
 impl ReplacedEntries {
     fn lock(&self) -> std::sync::MutexGuard<'_, ReplacedList> {
@@ -352,24 +371,31 @@ impl ReplacedEntries {
 /// （#774）。Ctrl+Cを受けるタスクが消せるように、共有する。設定ファイルに
 /// 書く間はロックを持ち、書けたら外す
 #[derive(Clone, Default)]
-struct UnwrittenEntries(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+struct UnwrittenEntries(std::sync::Arc<std::sync::Mutex<UnwrittenList>>);
+
+/// 資格情報の項目の名前と、その種類
+type UnwrittenList = Vec<(String, CredentialKind)>;
 
 impl UnwrittenEntries {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, UnwrittenList> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn push(&self, entry: &str) {
+    fn push(&self, entry: &str, kind: CredentialKind) {
         let mut entries = self.lock();
-        if !entries.iter().any(|name| name == entry) {
-            entries.push(entry.to_string());
+        if !entries.iter().any(|(name, _)| name == entry) {
+            entries.push((entry.to_string(), kind));
         }
     }
 
     fn remove(&self, entry: &str) {
-        self.lock().retain(|name| name != entry);
+        self.lock().retain(|(name, _)| name != entry);
+    }
+
+    fn contains(&self, entry: &str) -> bool {
+        self.lock().iter().any(|(name, _)| name == entry)
     }
 }
 
@@ -377,17 +403,18 @@ impl UnwrittenEntries {
 /// 出す（#774）
 fn delete_unwritten_entries(
     store: &dyn SecretStore,
-    entries: Vec<String>,
+    entries: UnwrittenList,
     mut say: impl FnMut(&str),
 ) {
-    for entry in entries {
+    for (entry, kind) in entries {
         match store.delete(&entry) {
             Ok(true) => say(&format!(
                 "Deleted the credentials named '{entry}' from the OS credential store (not in a config file yet)."
             )),
             Ok(false) => {}
             Err(e) => say(&format!(
-                "Could not delete the credentials named '{entry}' ({e}). Delete them with: mcp-rs wordpress-keyring delete {}",
+                "Could not delete the credentials named '{entry}' ({e}). Delete them with: mcp-rs {} delete {}",
+                kind.command(),
                 quote_arg(&entry)
             )),
         }
@@ -502,13 +529,13 @@ impl Setup<'_> {
                 check_store(self.store)?;
             }
             let (content, wordpress) = self.new_config(uses, carry.as_ref())?;
-            // 書く間はCtrl+Cで消さず、書けたら消すものから外す（#774）
+            // 書く間はCtrl+Cで消さず、書けたら消すものから外す（#774）。
+            // ここまでに作った項目（WordPressとデータベース。#779）は、
+            // すべてこの設定ファイルが指す
             let backup = {
                 let mut unwritten = self.unwritten_entries.lock();
                 let backup = write_config_file(&self.config_path, &content)?;
-                if let Some((_, entry)) = &wordpress {
-                    unwritten.retain(|name| name != entry);
-                }
+                unwritten.clear();
                 backup
             };
             if let Some(backup) = backup {
@@ -915,13 +942,14 @@ impl Setup<'_> {
     fn restore_replaced_entries(&mut self) {
         // ロックを持ったまま戻す（Ctrl+Cを受けたタスクは、終わるまで待つ）
         let mut replaced = self.replaced_entries.lock();
-        for (entry, previous) in std::mem::take(&mut *replaced) {
+        for (entry, previous, kind) in std::mem::take(&mut *replaced) {
             match self.store.set(&entry, &previous) {
                 Ok(()) => self.io.say(&format!(
                     "Restored the previous credentials named '{entry}' in the OS credential store (the ones entered now did not work)."
                 )),
                 Err(e) => self.io.say(&format!(
-                    "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs wordpress-keyring set {}",
+                    "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs {} set {}",
+                    kind.command(),
                     quote_arg(&entry)
                 )),
             }
@@ -932,15 +960,16 @@ impl Setup<'_> {
     /// レビュー。足せなかったサイトの項目）。戻したら`true`
     fn restore_replaced_entry(&mut self, entry: &str) -> bool {
         let mut replaced = self.replaced_entries.lock();
-        let Some(index) = replaced.iter().position(|(name, _)| name == entry) else {
+        let Some(index) = replaced.iter().position(|(name, ..)| name == entry) else {
             return false;
         };
-        let (entry, previous) = replaced.remove(index);
+        let (entry, previous, kind) = replaced.remove(index);
         match self.store.set(&entry, &previous) {
             Ok(()) => true,
             Err(e) => {
                 self.io.say(&format!(
-                    "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs wordpress-keyring set {}",
+                    "Could not restore the previous credentials named '{entry}' ({e}). Enter them again with: mcp-rs {} set {}",
+                    kind.command(),
                     quote_arg(&entry)
                 ));
                 false
@@ -1125,7 +1154,7 @@ impl Setup<'_> {
         // 新しい項目は、書いた後のエラーでも消すものに残る（読み戻しの失敗で
         // 項目が残ることがあるため）
         self.enter_credentials(&url, &entry, true)?;
-        if self.unwritten_entries.lock().contains(&entry) && !self.new_entries.contains(&entry) {
+        if self.unwritten_entries.contains(&entry) && !self.new_entries.contains(&entry) {
             self.new_entries.push(entry.clone());
         }
         Ok((url, entry))
@@ -1196,7 +1225,7 @@ impl Setup<'_> {
                 // 上書きしない（PR #671のレビュー）
                 let reserved: Vec<String> =
                     wordpress.iter().map(|(_, entry)| entry.clone()).collect();
-                let answers = ask_database(self.io, self.store, None, &reserved)?;
+                let answers = self.ask_database(&reserved)?;
                 content.push('\n');
                 content.push_str(&database_toml(&answers)?);
             }
@@ -1237,8 +1266,20 @@ impl Setup<'_> {
             .into_iter()
             .filter_map(|site| site.keyring)
             .collect();
-        let answers = ask_database(self.io, self.store, None, &reserved)?;
-        let backup = append_to_config_file(&self.config_path, &database_toml(&answers)?)?;
+        let answers = self.ask_database(&reserved)?;
+        let section = database_toml(&answers)?;
+        // 書く間はCtrl+Cで消さず、書けたら消すものから外す（#779）。質問の
+        // 間に、ほかで設定ファイルが変わっていれば（`[database]`が足された
+        // 等）、書き足さない（重複した`[database]`で壊さない）
+        let backup = {
+            let mut unwritten = self.unwritten_entries.lock();
+            check_unchanged(&self.config_path, &content, "init")?;
+            let backup = append_to_config_file(&self.config_path, &section)?;
+            if let Some(entry) = &answers.keyring {
+                unwritten.retain(|(name, _)| name != entry);
+            }
+            backup
+        };
         self.io.say(&format!(
             "Kept the previous config file as {}",
             backup.display()
@@ -1249,6 +1290,41 @@ impl Setup<'_> {
             self.config_path.display()
         ));
         Ok(())
+    }
+
+    /// `[database]`の値を聞き、パスワードを資格情報ストアに入れる。設定
+    /// ファイルに書けずに終わったら戻せるように、既にあった項目は前の中身を、
+    /// 新しい項目は名前を覚える（#779。WordPressの`enter_credentials`と同じ）
+    fn ask_database(
+        &mut self,
+        reserved: &[String],
+    ) -> Result<DatabaseAnswers, Box<dyn std::error::Error>> {
+        let questions = ask_database_questions(self.io, self.store, None, reserved)?;
+        let Some(entry) = &questions.answers.keyring else {
+            return Ok(questions.answers);
+        };
+        // ロックは`restore_on_interrupt`と同じ順（入れ直し、新しい項目）で
+        // 取り、入れ終わるまで持つ（入れた直後のCtrl+Cでも残さない）
+        let mut replaced = self.replaced_entries.lock();
+        check_database_entry(self.store, entry, questions.new_name)?;
+        if !replaced.iter().any(|(name, ..)| name == entry) {
+            // 前の中身を読めなければ、戻せないので入れない
+            match self.store.get(entry)? {
+                Some(previous) => {
+                    replaced.push((entry.clone(), previous, CredentialKind::Database))
+                }
+                None => self.unwritten_entries.push(entry, CredentialKind::Database),
+            }
+        }
+        store_database_password(
+            self.io,
+            self.store,
+            &questions.answers,
+            entry,
+            questions.password,
+        )?;
+        drop(replaced);
+        Ok(questions.answers)
     }
 
     /// WordPressのサイトを足すかを聞き、足す（#657）。足したサイトの、URLと
@@ -1328,7 +1404,7 @@ impl Setup<'_> {
                 let mut unwritten = self.unwritten_entries.lock();
                 let written = write_config_file(&self.config_path, &new_text);
                 if written.is_ok() {
-                    unwritten.retain(|name| *name != entry);
+                    unwritten.retain(|(name, _)| *name != entry);
                 }
                 written
             };
@@ -1385,9 +1461,11 @@ impl Setup<'_> {
     fn forget_new_entry(&mut self, entry: &str) -> Result<bool, Box<dyn std::error::Error>> {
         match self.new_entries.iter().position(|name| name == entry) {
             Some(index) => {
+                // 消せてから、消すものの一覧から外す（#779。消せなければ、
+                // 終わるときにもう一度消す）
+                self.store.delete(entry)?;
                 self.new_entries.remove(index);
                 self.unwritten_entries.remove(entry);
-                self.store.delete(entry)?;
                 Ok(true)
             }
             None => Ok(false),
@@ -1509,13 +1587,17 @@ impl Setup<'_> {
         // 戻せないので、書かない（PR #712のレビュー）
         let mut replaced = self.replaced_entries.lock();
         if !self.new_entries.iter().any(|name| name == entry)
-            && !replaced.iter().any(|(name, _)| name == entry)
+            && !replaced.iter().any(|(name, ..)| name == entry)
         {
             // ロックは`restore_on_interrupt`と同じ順（入れ直し、新しい項目）
             // で取る
             match self.store.get(entry)? {
-                Some(previous) => replaced.push((entry.to_string(), previous)),
-                None if not_in_config => self.unwritten_entries.push(entry),
+                Some(previous) => {
+                    replaced.push((entry.to_string(), previous, CredentialKind::WordPress))
+                }
+                None if not_in_config => self
+                    .unwritten_entries
+                    .push(entry, CredentialKind::WordPress),
                 None => {}
             }
         }
@@ -1724,8 +1806,10 @@ impl Setup<'_> {
         launch: &Launch,
     ) -> io::Result<Vec<String>> {
         let mut remove = Vec::new();
-        let new_urls = self.new_config_site_urls();
         for other in others {
+            // 質問ごとに、今の設定ファイルを読み直す（#779。質問の間に手で
+            // サイトを消したら、足したサイトとみなさない）
+            let new_urls = self.new_config_site_urls();
             let name = &other.name;
             // 起動で実際に読む設定ファイルで照合する（PR #671のレビュー）
             let effective = other.effective_config();
@@ -2901,6 +2985,30 @@ pub(crate) fn ask_database(
     entry: Option<&str>,
     reserved: &[String],
 ) -> Result<DatabaseAnswers, Box<dyn std::error::Error>> {
+    let questions = ask_database_questions(io, store, entry, reserved)?;
+    if let Some(entry) = &questions.answers.keyring {
+        check_database_entry(store, entry, questions.new_name)?;
+        store_database_password(io, store, &questions.answers, entry, questions.password)?;
+    }
+    Ok(questions.answers)
+}
+
+/// `ask_database_questions`の答え。パスワードは、まだ資格情報ストアに
+/// 入れていない（#779）
+struct DatabaseQuestions {
+    answers: DatabaseAnswers,
+    password: Zeroizing<String>,
+    /// 項目の名前を、資格情報ストアに無い名前として選んだか（#779）
+    new_name: bool,
+}
+
+/// `[database]`の値を聞く。パスワードは入れない（`ask_database`）
+fn ask_database_questions(
+    io: &mut dyn Prompt,
+    store: &dyn SecretStore,
+    entry: Option<&str>,
+    reserved: &[String],
+) -> Result<DatabaseQuestions, Box<dyn std::error::Error>> {
     io.say("Database");
     let engine = loop {
         let answer = io
@@ -2933,6 +3041,7 @@ pub(crate) fn ask_database(
             io.ask_hidden("Password (not shown while typing; leave empty if there is none): ")?
         }
     };
+    let mut new_name = false;
     let keyring = if password.is_empty() {
         None
     } else {
@@ -2965,7 +3074,10 @@ pub(crate) fn ask_database(
                     // 設定ファイルに無い項目（別の設定ファイルのWordPressの
                     // サイト等）も、確かめずに上書きしない（#692）
                     match database_entry(store, &answer)? {
-                        None => break answer,
+                        None => {
+                            new_name = true;
+                            break answer;
+                        }
                         Some(DatabaseEntry::Other) => io.say(&format!(
                             "'{answer}' already holds other credentials (for example a WordPress site's) in the OS credential store. Choose another name."
                         )),
@@ -3059,29 +3171,56 @@ pub(crate) fn ask_database(
     // 資格情報は、すべての質問と確認が済んでから入れる（#774。途中で止めた
     // ときに、どの設定にも無い項目を残したり、既にある項目を上書きしたまま
     // にしたりしない）
-    if let Some(entry) = &answers.keyring {
-        // 質問の間に、別の種類の項目が作られていたら上書きしない（#774）
-        if let Some(DatabaseEntry::Other) = database_entry(store, entry)? {
-            return Err(format!(
-                "'{entry}' now holds other credentials (for example a WordPress site's) in the OS credential store. Run the command again and choose another name"
-            )
-            .into());
-        }
-        store_database_credentials(
-            store,
-            entry,
-            &DatabaseKeyringCredentials {
-                host: answers.host.clone(),
-                port: answers.port,
-                username: answers.username.clone(),
-                password,
-            },
-        )?;
-        io.say(&format!(
-            "Stored the password as '{entry}' in the OS credential store."
-        ));
+    Ok(DatabaseQuestions {
+        answers,
+        password,
+        new_name,
+    })
+}
+
+/// 質問の間に変わった項目には、パスワードを入れない。別の種類の項目
+/// （#774）や、新しい名前として選んだのに作られていた項目（#779。別の
+/// ところで使い始めた項目を上書きしない）なら、エラー
+fn check_database_entry(
+    store: &dyn SecretStore,
+    entry: &str,
+    new_name: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match database_entry(store, entry)? {
+        Some(DatabaseEntry::Other) => Err(format!(
+            "'{entry}' now holds other credentials (for example a WordPress site's) in the OS credential store. Run the command again and choose another name"
+        )
+        .into()),
+        Some(DatabaseEntry::Database { .. }) if new_name => Err(format!(
+            "'{entry}' was created in the OS credential store while the questions were asked. Run the command again and choose another name"
+        )
+        .into()),
+        _ => Ok(()),
     }
-    Ok(answers)
+}
+
+/// `[database]`のパスワードを、`entry`の名前で資格情報ストアに入れる
+fn store_database_password(
+    io: &mut dyn Prompt,
+    store: &dyn SecretStore,
+    answers: &DatabaseAnswers,
+    entry: &str,
+    password: Zeroizing<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    store_database_credentials(
+        store,
+        entry,
+        &DatabaseKeyringCredentials {
+            host: answers.host.clone(),
+            port: answers.port,
+            username: answers.username.clone(),
+            password,
+        },
+    )?;
+    io.say(&format!(
+        "Stored the password as '{entry}' in the OS credential store."
+    ));
+    Ok(())
 }
 
 /// `[既定]`付きで聞く。空の答えは`default`
@@ -3205,6 +3344,18 @@ fn is_loopback_host(host: &str) -> bool {
             .trim_end_matches(']')
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// 質問の間に、ほかで設定ファイルが変わっていないかを確かめる（#779）。
+/// `original`は、質問の前に読んだ中身。変わっていれば（読めなくなった
+/// ときも）、`mcp-rs <command>`をやり直すように知らせるエラー
+pub(crate) fn check_unchanged(path: &Path, original: &str, command: &str) -> io::Result<()> {
+    if std::fs::read_to_string(path).ok().as_deref() == Some(original) {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "the config file was changed while mcp-rs {command} was asking. Run mcp-rs {command} again"
+    )))
 }
 
 /// 設定ファイルの最後に`section`を書き足す（#590）。前のファイルを控えに
@@ -3951,7 +4102,7 @@ mod tests {
         }
     }
 
-    fn setup<'a>(io: &'a mut Script, store: &'a dyn SecretStore) -> Setup<'a> {
+    fn setup<'a>(io: &'a mut dyn Prompt, store: &'a dyn SecretStore) -> Setup<'a> {
         Setup {
             io,
             store,
@@ -5282,7 +5433,11 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         (dir, path)
     }
 
-    fn database_setup<'a>(io: &'a mut Script, store: &'a MemoryStore, path: &Path) -> Setup<'a> {
+    fn database_setup<'a>(
+        io: &'a mut dyn Prompt,
+        store: &'a MemoryStore,
+        path: &Path,
+    ) -> Setup<'a> {
         Setup {
             config_path: path.to_path_buf(),
             ..setup(io, store)
@@ -6220,7 +6375,10 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             .wordpress_credentials(&[], &[])
             .map(|(_, entry)| assert_eq!(entry, "shop.example.com"))
             .unwrap();
-        assert_eq!(*unwritten.lock(), ["shop.example.com"]);
+        assert_eq!(
+            *unwritten.lock(),
+            [("shop.example.com".to_string(), CredentialKind::WordPress)]
+        );
         let mut said = Vec::new();
         delete_unwritten_entries(&store, std::mem::take(&mut *unwritten.lock()), |line| {
             said.push(line.to_string())
@@ -6249,7 +6407,10 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut setup = setup(&mut io, &store);
         assert!(setup.wordpress_credentials(&[], &[]).is_err());
         let unwritten = std::mem::take(&mut *setup.unwritten_entries.lock());
-        assert_eq!(unwritten, ["shop.example.com"]);
+        assert_eq!(
+            unwritten,
+            [("shop.example.com".to_string(), CredentialKind::WordPress)]
+        );
         assert!(store.inner.get("shop.example.com").unwrap().is_some());
         delete_unwritten_entries(&store, unwritten, |_| {});
         assert!(store.inner.get("shop.example.com").unwrap().is_none());
@@ -7135,5 +7296,261 @@ allow_write = true
             .unwrap();
         let config: crate::config::McpConfig = toml::from_str(&content).unwrap();
         assert!(config.database.is_some(), "{content}");
+    }
+
+    /// 決めた質問の前に、別のところでの変更（資格情報ストア・設定ファイル）を
+    /// 1回だけ起こす（#779）
+    struct Hooked<'a> {
+        script: Script,
+        on: &'static str,
+        hook: Option<Box<dyn FnOnce() + 'a>>,
+    }
+
+    impl<'a> Hooked<'a> {
+        fn new(answers: &[&str], on: &'static str, hook: impl FnOnce() + 'a) -> Self {
+            Self {
+                script: Script::new(answers),
+                on,
+                hook: Some(Box::new(hook)),
+            }
+        }
+    }
+
+    impl Prompt for Hooked<'_> {
+        fn ask(&mut self, question: &str) -> io::Result<String> {
+            if question.contains(self.on) {
+                if let Some(hook) = self.hook.take() {
+                    hook();
+                }
+            }
+            self.script.ask(question)
+        }
+        fn ask_hidden(&mut self, question: &str) -> io::Result<Zeroizing<String>> {
+            self.ask(question).map(Zeroizing::new)
+        }
+        fn say(&mut self, text: &str) {
+            self.script.say(text);
+        }
+    }
+
+    /// `database_step`の答え（新しい項目`app@db.example.com`）
+    const DATABASE_ANSWERS: [&str; 11] = [
+        "y",              // データベースも使う
+        "",               // postgresql
+        "db.example.com", // ホスト
+        "",               // 5432
+        "app",            // データベース名
+        "reader",         // ユーザー名
+        "s3cret",         // パスワード
+        "",               // 項目の名前: app@db.example.com
+        "",               // ssl_mode: verify-full
+        "",               // CAのファイル無し
+        "",               // 書き込みは許さない
+    ];
+
+    fn database_credentials(password: &str) -> DatabaseKeyringCredentials {
+        DatabaseKeyringCredentials {
+            host: "db.example.com".to_string(),
+            port: 5432,
+            username: "reader".to_string(),
+            password: Zeroizing::new(password.to_string()),
+        }
+    }
+
+    fn database_password(store: &MemoryStore) -> String {
+        crate::security::keyring_store::load_database_credentials(
+            store,
+            "app@db.example.com",
+            "db.example.com",
+            5432,
+            "reader",
+        )
+        .unwrap()
+        .password
+        .to_string()
+    }
+
+    /// 質問の間に`[database]`が足されたら、書き足さずに止める（重複した
+    /// `[database]`で壊さない）。新しく入れたパスワードは消すものに残り、
+    /// 終わるときに消える（#779）
+    #[test]
+    fn test_database_step_stops_when_the_config_file_changed() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let changed = format!(
+            "{WORDPRESS_ONLY_CONFIG}\n[database]\nengine = \"postgresql\"\ndatabase = \"other\"\nusername = \"u\"\n"
+        );
+        let store = MemoryStore::default();
+        let mut io = Hooked::new(&DATABASE_ANSWERS, "TLS", || {
+            std::fs::write(&path, &changed).unwrap()
+        });
+        let mut s = database_setup(&mut io, &store, &path);
+        let unwritten = s.unwritten_entries.clone();
+        let err = s.database_step().unwrap_err().to_string();
+        assert!(
+            err.contains("the config file was changed while mcp-rs init was asking"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        assert_eq!(
+            *unwritten.lock(),
+            [("app@db.example.com".to_string(), CredentialKind::Database)]
+        );
+        let mut said = Vec::new();
+        delete_unwritten_entries(&store, std::mem::take(&mut *unwritten.lock()), |line| {
+            said.push(line.to_string())
+        });
+        assert_eq!(database_entry(&store, "app@db.example.com").unwrap(), None);
+        assert!(said[0].contains("Deleted the credentials named 'app@db.example.com'"));
+    }
+
+    /// 書けた新しい項目は、消すものから外れる（#779）
+    #[test]
+    fn test_database_step_keeps_the_written_entry() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&DATABASE_ANSWERS);
+        let mut s = database_setup(&mut io, &store, &path);
+        let unwritten = s.unwritten_entries.clone();
+        s.database_step().unwrap();
+        assert!(unwritten.lock().is_empty());
+        assert!(s.replaced_entries.is_empty());
+        assert_eq!(database_password(&store), "s3cret");
+    }
+
+    /// 置き換えたデータベースの項目は、設定ファイルに書けずに終わったら、
+    /// 前の中身に戻す（#779）
+    #[test]
+    fn test_replaced_database_entry_is_restored() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        store_database_credentials(&store, "app@db.example.com", &database_credentials("old"))
+            .unwrap();
+        let mut answers = DATABASE_ANSWERS.to_vec();
+        answers.insert(8, "y"); // 置き換える
+        let mut io = Hooked::new(&answers, "TLS", || {
+            std::fs::write(&path, format!("{WORDPRESS_ONLY_CONFIG}# changed\n")).unwrap()
+        });
+        let mut s = database_setup(&mut io, &store, &path);
+        assert!(s.database_step().is_err());
+        assert_eq!(database_password(&store), "s3cret");
+        assert!(s.unwritten_entries.lock().is_empty());
+        s.restore_replaced_entries();
+        drop(s);
+        assert_eq!(database_password(&store), "old");
+        assert!(io
+            .script
+            .shown
+            .iter()
+            .any(|line| line
+                .contains("Restored the previous credentials named 'app@db.example.com'")));
+    }
+
+    /// データベースの項目を戻せない・消せないときは、`database-keyring`で
+    /// 直すように知らせる（#779）
+    #[test]
+    fn test_database_entries_point_to_database_keyring() {
+        let mut said = Vec::new();
+        delete_unwritten_entries(
+            &BrokenStore,
+            vec![("app-db".to_string(), CredentialKind::Database)],
+            |line| said.push(line.to_string()),
+        );
+        restore_entries(
+            &BrokenStore,
+            vec![(
+                "app-db".to_string(),
+                Zeroizing::new("old".to_string()),
+                CredentialKind::Database,
+            )],
+            |line| said.push(line.to_string()),
+        );
+        assert!(
+            said[0].contains("mcp-rs database-keyring delete app-db"),
+            "{said:?}"
+        );
+        assert!(
+            said[1].contains("mcp-rs database-keyring set app-db"),
+            "{said:?}"
+        );
+    }
+
+    /// 新しい名前として選んだ項目が、保存の前に別のところで作られていたら、
+    /// 上書きせずに止める（#779）
+    #[test]
+    fn test_database_entry_created_meanwhile_is_not_overwritten() {
+        let (_dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let store = MemoryStore::default();
+        let mut io = Hooked::new(&DATABASE_ANSWERS, "TLS", || {
+            store_database_credentials(
+                &store,
+                "app@db.example.com",
+                &database_credentials("theirs"),
+            )
+            .unwrap()
+        });
+        let mut s = database_setup(&mut io, &store, &path);
+        let err = s.database_step().unwrap_err().to_string();
+        assert!(
+            err.contains("was created in the OS credential store"),
+            "{err}"
+        );
+        assert!(s.unwritten_entries.lock().is_empty());
+        assert!(s.replaced_entries.is_empty());
+        drop(s);
+        assert_eq!(database_password(&store), "theirs");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            WORDPRESS_ONLY_CONFIG
+        );
+    }
+
+    /// 資格情報を消せなければ、消すものの一覧に残す（#779）
+    #[test]
+    fn test_new_entry_stays_listed_when_it_cannot_be_deleted() {
+        let store = BrokenStore;
+        let mut io = Script::new(&[]);
+        let mut s = setup(&mut io, &store);
+        s.new_entries.push("shop".to_string());
+        s.unwritten_entries.push("shop", CredentialKind::WordPress);
+        assert!(s.forget_new_entry("shop").is_err());
+        assert_eq!(s.new_entries, ["shop"]);
+        assert!(s.unwritten_entries.contains("shop"));
+    }
+
+    /// 重複する登録を消すかは、質問ごとに読み直した設定ファイルで決める
+    /// （#779。質問の間に手で消したサイトは、足したサイトとみなさない）
+    #[test]
+    fn test_duplicates_use_the_config_file_read_for_each_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut others = Vec::new();
+        for name in ["a", "b"] {
+            let path = dir.path().join(format!("{name}.toml"));
+            std::fs::write(
+                &path,
+                "[handlers.wordpress]\nenabled = true\nurl = \"https://shop.example.com\"\nkeyring = \"shop\"\n",
+            )
+            .unwrap();
+            others.push(OtherServer {
+                name: format!("mcp-rs-{name}"),
+                config: Some(path.display().to_string()),
+                env_config: None,
+            });
+        }
+        let store = MemoryStore::default();
+        let mut script = Script::new(&[]);
+        let mut s = setup(&mut script, &store);
+        write_new_sites(&mut s, dir.path(), &["https://shop.example.com"]);
+        let new_path = s.config_path.clone();
+        drop(s);
+        // 最初の質問の前（その登録の判定に使う設定を読んだ後）に、サイトを消す
+        let mut io = Hooked::new(&["", ""], "mcp-rs-a", || {
+            std::fs::write(&new_path, "[handlers.wordpress]\nenabled = true\n").unwrap()
+        });
+        let mut s = setup(&mut io, &store);
+        s.config_path = new_path.clone();
+        let remove = s
+            .choose_duplicates_to_remove("Claude Desktop", &others, &launch())
+            .unwrap();
+        assert_eq!(remove, ["mcp-rs-a"]);
     }
 }
