@@ -3039,6 +3039,13 @@ fn ask_database_questions(
     entry: Option<&str>,
     reserved: &[String],
 ) -> Result<DatabaseQuestions, Box<dyn std::error::Error>> {
+    // 名前を渡されたとき（`database-keyring set <名前>`）は、質問を始める前に
+    // 項目があるかを読む。無かった項目が質問の間に作られていたら、上書き
+    // しない（PR #782のレビュー）
+    let given_is_new = match entry {
+        Some(entry) => database_entry(store, entry)?.is_none(),
+        None => false,
+    };
     io.say("Database");
     let engine = loop {
         let answer = io
@@ -3079,7 +3086,10 @@ fn ask_database_questions(
         // 既にある項目を確かめるので、名前を聞く前に確かめる
         check_store(store)?;
         let entry = match entry {
-            Some(entry) => entry.to_string(),
+            Some(entry) => {
+                new_name = given_is_new;
+                entry.to_string()
+            }
             None => {
                 let reserved: Vec<String> = reserved
                     .iter()

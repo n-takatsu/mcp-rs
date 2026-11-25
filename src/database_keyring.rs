@@ -196,9 +196,13 @@ fn set(
     check_store(store)?;
     // WordPressの資格情報等を、データベースの資格情報で上書きしない。
     // データベースの資格情報なら、今までどおり入れ直せる（#692）
-    if let Some(DatabaseEntry::Other) = database_entry(store, name)? {
+    let found = database_entry(store, name)?;
+    if let Some(DatabaseEntry::Other) = found {
         return Err(not_database(name).into());
     }
+    // 始めに無かった項目が、質問の間に作られていたら、上書きしない
+    // （PR #782のレビュー）
+    let existed = found.is_some();
     let content = std::fs::read_to_string(path).ok();
     let existing = match &content {
         Some(content) => database_section(content).map_err(|e| {
@@ -210,7 +214,9 @@ fn set(
         None => None,
     };
     match (content, existing) {
-        (Some(content), Some(settings)) => update(io, store, name, path, &content, &settings),
+        (Some(content), Some(settings)) => {
+            update(io, store, name, existed, path, &content, &settings)
+        }
         (content, _) => {
             io.say(&format!(
                 "{} has no [database]. Answer a few questions to set it up.\n",
@@ -308,6 +314,7 @@ fn update(
     io: &mut dyn Prompt,
     store: &dyn SecretStore,
     name: &str,
+    existed: bool,
     path: &Path,
     content: &str,
     written: &DatabaseSettings,
@@ -360,7 +367,7 @@ fn update(
         username: (username != expanded.username).then(|| username.clone()),
     };
     if changes.is_empty() {
-        save(store, name, &credentials)?;
+        save(store, name, existed, &credentials)?;
         io.say(&format!(
             "Stored the password as '{name}' in the OS credential store."
         ));
@@ -390,7 +397,7 @@ fn update(
             return Ok(());
         }
         let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
-        check_kind(store, name)?;
+        check_kind(store, name, existed)?;
         // 書いた後の読み戻しの失敗でも、前の中身に戻す（PR #778のレビュー）
         let result = store_database_credentials(store, name, &credentials)
             .map_err(Into::into)
@@ -405,7 +412,7 @@ fn update(
     // 設定を変えると答えて書けなかったら、項目を前の中身に戻す（PR #782の
     // レビュー）。変えないと答えたら、項目は残す
     let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
-    check_kind(store, name)?;
+    check_kind(store, name, existed)?;
     let result = store_database_credentials(store, name, &credentials)
         .map_err(Into::into)
         .and_then(|()| {
@@ -433,16 +440,23 @@ fn update(
 fn save(
     store: &dyn SecretStore,
     name: &str,
+    existed: bool,
     credentials: &DatabaseKeyringCredentials,
 ) -> Result<(), String> {
-    check_kind(store, name)?;
+    check_kind(store, name, existed)?;
     store_database_credentials(store, name, credentials)
 }
 
-/// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）
-fn check_kind(store: &dyn SecretStore, name: &str) -> Result<(), String> {
+/// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）。始めに
+/// 無かった（`existed`が偽）のに、質問の間に作られていても、エラー
+/// （PR #782のレビュー）
+fn check_kind(store: &dyn SecretStore, name: &str, existed: bool) -> Result<(), String> {
     match database_entry(store, name)? {
         Some(DatabaseEntry::Other) => Err(not_database(name)),
+        Some(DatabaseEntry::Database { .. }) if !existed => Err(format!(
+            "'{}' was created in the OS credential store while the questions were asked. Run the command again",
+            name.trim()
+        )),
         _ => Ok(()),
     }
 }
@@ -858,6 +872,69 @@ ssl_mode = "verify-full"
             crate::security::keyring_store::load_wordpress_credentials(&store, "app@db").is_ok()
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+    }
+
+    /// 始めに無かった項目が、質問の間に別の実行で作られた: 上書きしない。
+    /// 始めからあった項目は、今までどおり入れ直せる（PR #782のレビュー）
+    #[test]
+    fn test_set_does_not_overwrite_an_entry_created_during_the_questions() {
+        struct Creating<'a> {
+            script: Script,
+            store: &'a MemoryStore,
+        }
+        impl Prompt for Creating<'_> {
+            fn ask(&mut self, question: &str) -> std::io::Result<String> {
+                self.script.ask(question)
+            }
+            fn ask_hidden(&mut self, question: &str) -> std::io::Result<Zeroizing<String>> {
+                old_entry(self.store);
+                self.script.ask_hidden(question)
+            }
+            fn say(&mut self, text: &str) {
+                self.script.say(text);
+            }
+        }
+        let created = "was created in the OS credential store while the questions were asked";
+
+        // `[database]`のある設定ファイル
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        let mut io = Creating {
+            script: Script::new(&["", "", "", "new-pass", "y"]),
+            store: &store,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(created), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`の無い設定ファイル（localhost、書き込みは許さない）
+        let without = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n";
+        let (_dir, path) = config_in_temp(without);
+        let store = MemoryStore::default();
+        let mut io = Creating {
+            script: Script::new(&["", "", "", "app", "reader", "new-pass", "", ""]),
+            store: &store,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(created), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), without);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // 始めからあった項目は入れ直せる（書き足す）
+        let mut io = Script::new(&["", "", "", "app", "reader", "new-pass", "", "", ""]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let stored =
+            load_database_credentials(&store, "app@db", "localhost", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "new-pass");
     }
 
     /// 展開できた値は、`${`を含んでも既定にする（#774）
