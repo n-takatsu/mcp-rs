@@ -1438,30 +1438,71 @@ const SLUG_SPACE_OCTETS: &[&str] = &[
 ];
 
 /// WordPressが保存するとき（`sanitize_title`の`remove_accents`）に、ASCIIの
-/// 文字にする文字なら、その文字数（#781）。Latin-1・ラテン文字拡張Aの文字
+/// 文字にする文字なら、その文字（#781）。Latin-1・ラテン文字拡張Aの文字
 /// （×・÷を除く）、`ª`・`º`、ラテン文字拡張Bの一部（`Ơ`・`Ư`・`Ǎ`〜`ǜ`・
-/// `Ș`〜`ț`）、ベトナム語の文字、`€`（`E`になる）。`Æ`・`Þ`・`Ĳ`・`Œ`等は
-/// 2文字。ここに無い文字は`None`で、符号化した長さで数える（長いスラッグで、
-/// 残る文字を見落として断ることはあっても、誤って通さない）
-fn ascii_letters_after_remove_accents(c: char) -> Option<usize> {
-    match c {
-        '\u{c6}' | '\u{e6}' | '\u{de}' | '\u{fe}' | '\u{132}' | '\u{133}' | '\u{152}'
-        | '\u{153}' => Some(2),
+/// `Ș`〜`ț`）、ベトナム語の文字、`€`（`E`になる）。小文字で返す（WordPressも
+/// 後で小文字にする）。`%`の後で16進の数字になりうるので、文字そのものを
+/// 返す（PR #781のレビュー）。ここに無い文字は`None`で、符号化した長さで
+/// 数える（長いスラッグで、残る文字を見落として断ることはあっても、誤って
+/// 通さない）。言語ごとの変換（ドイツ語の`ä`→`ae`等）は扱わない
+fn remove_accents_ascii(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{c6}' | '\u{e6}' => "ae",
+        '\u{de}' | '\u{fe}' => "th",
+        '\u{132}' | '\u{133}' => "ij",
+        '\u{152}' | '\u{153}' => "oe",
         '\u{aa}'
-        | '\u{ba}'
-        | '\u{20ac}'
-        | '\u{c0}'..='\u{d6}'
-        | '\u{d8}'..='\u{f6}'
-        | '\u{f8}'..='\u{17f}'
+        | '\u{c0}'..='\u{c5}'
+        | '\u{e0}'..='\u{e5}'
+        | '\u{100}'..='\u{105}'
+        | '\u{1cd}'
+        | '\u{1ce}'
+        | '\u{1ea0}'..='\u{1eb7}' => "a",
+        '\u{c7}' | '\u{e7}' | '\u{106}'..='\u{10d}' => "c",
+        '\u{d0}' | '\u{f0}' | '\u{10e}'..='\u{111}' => "d",
+        '\u{c8}'..='\u{cb}'
+        | '\u{e8}'..='\u{eb}'
+        | '\u{112}'..='\u{11b}'
+        | '\u{1eb8}'..='\u{1ec7}'
+        | '\u{20ac}' => "e",
+        '\u{11c}'..='\u{123}' => "g",
+        '\u{124}'..='\u{127}' => "h",
+        '\u{cc}'..='\u{cf}'
+        | '\u{ec}'..='\u{ef}'
+        | '\u{128}'..='\u{131}'
+        | '\u{1cf}'
+        | '\u{1d0}'
+        | '\u{1ec8}'..='\u{1ecb}' => "i",
+        '\u{134}' | '\u{135}' => "j",
+        '\u{136}'..='\u{138}' => "k",
+        '\u{139}'..='\u{142}' => "l",
+        '\u{d1}' | '\u{f1}' | '\u{143}'..='\u{14b}' => "n",
+        '\u{ba}'
+        | '\u{d2}'..='\u{d6}'
+        | '\u{d8}'
+        | '\u{f2}'..='\u{f6}'
+        | '\u{f8}'
+        | '\u{14c}'..='\u{151}'
         | '\u{1a0}'
         | '\u{1a1}'
+        | '\u{1d1}'
+        | '\u{1d2}'
+        | '\u{1ecc}'..='\u{1ee3}' => "o",
+        '\u{154}'..='\u{159}' => "r",
+        '\u{df}' | '\u{15a}'..='\u{161}' | '\u{17f}' | '\u{218}' | '\u{219}' => "s",
+        '\u{162}'..='\u{167}' | '\u{21a}' | '\u{21b}' => "t",
+        '\u{d9}'..='\u{dc}'
+        | '\u{f9}'..='\u{fc}'
+        | '\u{168}'..='\u{173}'
         | '\u{1af}'
         | '\u{1b0}'
-        | '\u{1cd}'..='\u{1dc}'
-        | '\u{218}'..='\u{21b}'
-        | '\u{1ea0}'..='\u{1ef9}' => Some(1),
-        _ => None,
-    }
+        | '\u{1d3}'..='\u{1dc}'
+        | '\u{1ee4}'..='\u{1ef1}' => "u",
+        '\u{174}' | '\u{175}' => "w",
+        '\u{dd}' | '\u{fd}' | '\u{ff}' | '\u{176}'..='\u{178}' | '\u{1ef2}'..='\u{1ef9}' => "y",
+        '\u{179}'..='\u{17e}' => "z",
+        _ => return None,
+    })
 }
 
 /// WordPressが保存するとき、スラッグに何か残るか（#779）。
@@ -1475,9 +1516,19 @@ fn ascii_letters_after_remove_accents(c: char) -> Option<usize> {
 /// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）
 fn slug_survives_sanitizing(slug: &str) -> bool {
     let stripped = slug_without_markup(&slug.replace('£', ""), '<');
+    // `remove_accents`は、`%xx`を探す前・小文字にする前に、アクセントの
+    // ある文字をASCIIの文字にする（`İ`は`i`＋結合文字ではなく`i`。
+    // `%c2%À0`は`%c2%a0`になる。PR #781のレビュー）
+    let mut converted = String::new();
+    for c in stripped.chars() {
+        match remove_accents_ascii(c) {
+            Some(ascii) => converted.push_str(ascii),
+            None => converted.push(c),
+        }
+    }
     // WordPressが符号化する前の文字。`%xx`は、ASCIIの3文字として数える
     let mut lowered = String::new();
-    let mut chars = stripped.chars();
+    let mut chars = converted.chars();
     while let Some(c) = chars.next() {
         if c == '%' {
             let octet: String = chars.clone().take(2).collect();
@@ -1487,12 +1538,6 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
                 chars.nth(1);
             }
             // オクテットでない`%`は、WordPressが取り除く
-        } else if let Some(letters) = ascii_letters_after_remove_accents(c) {
-            // `remove_accents`が、小文字にする前にASCIIの文字にする（`İ`は
-            // `I`。小文字にすると`i`＋結合文字になる。PR #781のレビュー）。
-            // 文字そのものは決めず、16進の数字でない`z`で数える（エンティティ
-            // の中なら、後で消える）
-            lowered.extend(std::iter::repeat_n('z', letters));
         } else {
             lowered.extend(c.to_lowercase());
         }
@@ -10444,6 +10489,12 @@ mod tests {
         // エンティティの中の`é`も、エンティティごと消える（PR #781のレビュー）
         assert!(!slug_survives_sanitizing("&é;"));
         assert!(!slug_survives_sanitizing("&æ;"));
+        // `%xx`を探す前に`À`が`a`になり、`%c2%a0`（NBSP）としてハイフンに
+        // なる（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("%c2%À0"));
+        assert!(!slug_survives_sanitizing("%e2%80%à6"));
+        assert!(slug_survives_sanitizing("À"));
+        assert!(slug_survives_sanitizing("%c2%a0abc"));
         // `İ`は、小文字にする前に`I`の1文字になる（`i`＋結合文字の9文字では
         // ない）。`&I;`は消え、200文字の中の`a`が残る（PR #781のレビュー）
         assert!(slug_survives_sanitizing(&format!(
