@@ -367,6 +367,9 @@ fn update(
         username: (username != expanded.username).then(|| username.clone()),
     };
     if changes.is_empty() {
+        // 設定ファイルは書かないが、質問の間に`[database]`のつなぐ先が
+        // 変わっていれば、古いつなぐ先で保存しない（PR #782のレビュー）
+        check_unchanged(path, content, "database-keyring set")?;
         save(store, name, existed, &credentials)?;
         io.say(&format!(
             "Stored the password as '{name}' in the OS credential store."
@@ -1198,6 +1201,27 @@ ssl_mode = "verify-full"
             .to_string();
         assert!(err.contains("the config file was changed"), "{err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        // 設定ファイルを変えない経路（既にこの項目を使う）でも、変わって
+        // いたら保存しない（PR #782のレビュー）
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let (_dir2, path2) = config_in_temp(&config);
+        let moved = config.replace("db.example.com", "db2.example.com");
+        let store2 = MemoryStore::default();
+        old_entry(&store2);
+        let mut io2 = Changing {
+            script: Script::new(&["", "", "", "new-pass"]),
+            path: &path2,
+            content: &moved,
+        };
+        let err2 = set(&mut io2, &store2, "app@db", &path2)
+            .unwrap_err()
+            .to_string();
+        assert!(err2.contains("the config file was changed"), "{err2}");
+        let stored =
+            load_database_credentials(&store2, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
         // 新しく作った項目は消す（PR #782のレビュー）
         assert!(err.contains("put 'shop@localhost' back as it was"), "{err}");
         assert_eq!(store.get("shop@localhost").unwrap(), None);
