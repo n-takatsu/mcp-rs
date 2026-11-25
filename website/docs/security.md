@@ -169,12 +169,13 @@ Limits (v0.24.0 and later):
 ```toml
 [transport.http]
 # max_request_size = 1048576          # bytes of a request body, and of a WebSocket message. Larger: HTTP 413
-# request_timeout_seconds = 30        # the TLS handshake, the request headers, and each wait for more of the body
+# request_timeout_seconds = 30        # the TLS handshake, the request headers, each wait for more of the body, idle connections, and sending a response
 # max_connections = 1024              # connections served at once; more wait. An open /ws connection counts toward websocket_max_connections (1000) instead
 # websocket_idle_timeout_seconds = 300  # close /ws when the client stops answering for this long. 0: no limit
 ```
 
-- A connection with no request in progress for `request_timeout_seconds` is closed, over HTTP/1.1 and HTTP/2 alike (v0.27.0 and later). Up to v0.26.0, an HTTP/2 connection that answered pings but sent no request, or a connection that sent nothing at all, stayed open, so clients could fill `max_connections` without authenticating. A tool call that takes longer, or a large response being sent, does not count as idle
+- A connection with no request in progress for `request_timeout_seconds` is closed, over HTTP/1.1 and HTTP/2 alike (v0.27.0 and later). Up to v0.26.0, an HTTP/2 connection that answered pings but sent no request, or a connection that sent nothing at all, stayed open, so clients could fill `max_connections` without authenticating. A tool call that takes longer does not count as idle. A large response being sent does not count as idle either, but only while its sending progresses (see the next item)
+- Over HTTP (HTTP/1.1 and HTTP/2), a response with a body must keep being sent: each part of it must be sent within `request_timeout_seconds` plus the time it takes at 64 KB/s. Otherwise mcp-rs closes the connection (v0.30.0 and later). Up to v0.29.0, an HTTP/2 client that stopped reading a response kept the connection open, because the response counted as a request in progress. This does not limit how long a tool call takes, only the sending of its response
 - `request_timeout_seconds` limits the TLS handshake and the request headers as a whole. It also limits how long a kept-alive connection waits for its next request. For the request body, it limits each wait for more data, not the total: a client that keeps sending a little at a time can take longer in total. This applies only after the client has passed the checks above. It does not limit how long a tool call takes
 - On `/ws`, mcp-rs sends a ping every 30 seconds (or every half of `websocket_idle_timeout_seconds`, when that is shorter). Clients, browsers included, answer pings automatically, and the answers count as activity. So a client that is only quiet stays connected, and only a connection that answers nothing for `websocket_idle_timeout_seconds` is closed (close code 1001)
 - A `/ws` connection opened with an OAuth access token is closed when the token expires (`exp`, plus `leeway_seconds`), with close code 1008. Up to v0.23.0, the token was checked only when connecting
