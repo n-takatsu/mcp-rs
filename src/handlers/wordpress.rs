@@ -1337,6 +1337,35 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
+/// `<?`の後の`instruction`で、処理命令が終わる位置（`?>`の`>`の次）。PHPの
+/// `strip_tags`と同じく、`"`の中（`'`は数えるが、終わりは止めない）と、
+/// `(`が`)`で閉じていない間は終えない。`\`の後の引用符は数えない。
+/// 終わらなければ`None`（PR #781のレビュー）
+fn processing_instruction_end(instruction: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut parentheses = 0i64;
+    let mut previous = '?';
+    for (i, c) in instruction.char_indices() {
+        match c {
+            '"' | '\'' if previous != '\\' => {
+                if quote == Some(c) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(c);
+                }
+            }
+            '(' if quote.is_none() => parentheses += 1,
+            ')' if quote.is_none() => parentheses -= 1,
+            '>' if parentheses == 0 && quote != Some('"') && previous == '?' => {
+                return Some(i + 1);
+            }
+            _ => {}
+        }
+        previous = c;
+    }
+    None
+}
+
 /// WordPressがスラッグを作るときに取り除く、HTMLのタグを除いた文字列
 /// （#750）。PHPの`strip_tags`と同じく、引用符の中の`>`ではタグを閉じず
 /// （`<a title='>→'>`は全部消える）、入れ子の`<`は数え、`<!--`は`-->`まで
@@ -1354,11 +1383,12 @@ fn slug_without_tags(slug: &str) -> String {
             rest = after;
             continue;
         }
-        // `<?`（PHPの処理命令）は、`?>`まで消す（PR #781のレビュー）
-        if after.starts_with('?') {
-            match after.find("?>") {
+        // `<?`（PHPの処理命令）は、`?>`まで消す（PR #781のレビュー）。
+        // `strip_tags`と同じく、`"`の中と、括弧が閉じていない間は終えない
+        if let Some(instruction) = after.strip_prefix('?') {
+            match processing_instruction_end(instruction) {
                 Some(end) => {
-                    rest = &after[end + 2..];
+                    rest = &instruction[end..];
                     continue;
                 }
                 None => return kept,
@@ -10623,6 +10653,11 @@ mod tests {
         // 残らない（PR #781のレビュー）
         assert!(!slug_survives_sanitizing("<?x>→"));
         assert!(slug_survives_sanitizing("<?x?>→"));
+        assert!(slug_survives_sanitizing("<?>→"));
+        // `"`の中・閉じていない括弧の間の`?>`では終わらない（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("<?\"?>→"));
+        assert!(!slug_survives_sanitizing("<?(?>→"));
+        assert!(slug_survives_sanitizing("<?\"x\"?>→"));
         assert!(slug_survives_sanitizing(&format!("{}ǝ", "-".repeat(198))));
         assert!(!slug_survives_sanitizing(&format!(
             "{}%21",
