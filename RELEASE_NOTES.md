@@ -39,8 +39,13 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
   配列でない値も断る。固定ページや、カテゴリー・タグの無いカスタム投稿
   タイプに渡すと、送る前に断る（以前は、WordPressが無視するのに成功と
   返していた）。同じ分類を`categories`と`terms.categories`の2つで渡すのも断る
-- **`slug`**（#750）: 文字・数字を含まない値（`!!!`等）は、空と同じく断る
-- **`get_comments`**（#639）: コメントした人のメールアドレスを出さない
+- **`terms`**（#774）: タクソノミーに無い項目のIDを渡すと、送る前に断る
+  （以前は、WordPressがそのIDを黙って飛ばし、ほかの項目だけを外して成功と
+  返していた）
+- **`slug`**（#750・#774）: 文字・数字を含まない値（`!!!`、エンコードした
+  `%c2%a0`等）は、空と同じく断る
+- **`get_comments`**（#639・#774）: コメントした人のメールアドレスを出さない。
+  `post_id`が正の整数でなければ断る（以前は、全投稿のコメントを返していた）
 - **`create_post_with_embeds`**（#680）: 本文に足さなかったURLを、結果に
   「Not embedded (unsupported URL)」として出す。YouTube・SNSのURLは、
   ホストが完全に一致するかで判定するので、ほかのサイトのURL
@@ -81,7 +86,8 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
   プラグインを止めてから終了コード0で終わる。設定ファイルが無くても、
   エラーで終わらず、`mcp_rs_status`だけで起動する（HTTPモードと
   `mcp-rs check`、`--config`で渡したファイルが無いときは、今までどおり
-  エラー）
+  エラー）。既定の`~/.config/mcp-rs/config.toml`を権限等で確かめられない
+  ときは、設定なしで起動せずにエラーで終わる（#774）
 - **ログ**（#741・#759）: Windows以外で、空・相対パスの`XDG_STATE_HOME`は
   無視して`~/.local/state`を使う（ログ・監査ログの既定の場所が変わり
   うる）。ログの保持は、ファイルを切り替えるたびにも適用し、mcp-rsが作る
@@ -93,7 +99,9 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
   type = "http"`の設定ファイルは、クライアントに登録しない。Copilot CLIの
   設定は、`COPILOT_HOME`があればその中を使う。`wordpress-keyring set`は、
   `https://`でないサイトを登録しない。Windowsで、FAT32・exFAT等のACLの
-  無いファイルシステムには、設定ファイル等を書かずにエラーにする
+  無いファイルシステムには、設定ファイル等を書かずにエラーにする。
+  `init`は、環境変数`MCP_RS_CONFIG`が相対パスなら止める（クライアントは
+  それぞれの作業フォルダで読むため。#774）
 - **ライブラリとして使う場合**: mcp-rs本体の動きは変わらない
   - 本体が使わないものを外した（#760）: 動的な設定（`config::dynamic`）、
     WebSocketのクライアント（`transport::websocket`）、`types`のMCPの型
@@ -113,9 +121,11 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
     `plugin_proxy::wait_for_cleanups`は`CleanupReport`を返す（#684）
   - IDSの`TrafficPattern`に`path_last_seen`を足した（#724）。
     `RequestData::query_params`は`HashMap<String, Vec<String>>`になる（#759）
-  - PostgreSQLのエンジンは、作った設定と違う接続先の`connect`を
-    `ConfigurationError`で断る。`health_check`・`get_version`は接続先に
-    問い合わせる（#758）
+  - PostgreSQLのエンジンは、作った設定と違う接続先・`ssl_mode`・
+    `ssl_root_cert`の`connect`を`ConfigurationError`で断る（#758・#774）。
+    `health_check`・`get_version`は接続先に問い合わせる（#758）
+  - ゼロトラストのアクセスポリシーの時間の範囲は、終わりの分の終わり
+    （`23:59`なら23:59:59）までを含む（#774）
   - `Cargo.toml`の下限を`url = "2.5.9"`・`mysql_async = "0.37"`に上げ、
     `mysql-backend`の機能に`lru = "0.18.2"`を足した
 
@@ -139,7 +149,11 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
   `create_comment`は、既定で承認待ち（`hold`）で作る。`get_comments`に
   `status`を足した
 - **リビジョン**: `get_revisions`・`get_revision`・`restore_revision`。
-  書き戻しは、題・本文・抜粋だけを変える
+  書き戻しは、題・本文・抜粋だけを変える。投稿タイプが対応しない項目
+  （本文の無いカスタム投稿タイプ等）は送らず、結果には書き戻した項目だけを
+  挙げる
+- **抜粋**: `update_post`で抜粋（`excerpt`）を変えられ、`get_post`は抜粋も
+  出す（#774）
 - **カスタム投稿タイプと独自のタクソノミー**: 設定の`post_types`
   （例: `["product"]`）に書いた型だけを使う（既定は今までどおり`post`・
   `page`だけ）。新しいツール: `get_post_types`・`get_taxonomies`・
@@ -227,6 +241,26 @@ v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`のレビュー（
   外した（#732）
 - MongoDB・Redisのエンジンは、`[database]`では使えないことを書いた
   （v0.31.0で使えるようにする予定）（#758）
+
+### 🔧 このリリースのPRのレビューの指摘（#774）
+
+v0.30.0のリリースのPR（#773）のレビュー（CodeRabbit）の指摘を、
+#776・#777・#778で直した。主なもの（上の互換性に書いたものを除く）:
+
+- **終了・ログ**: HTTPモードで、待ち受けを止めてからプラグインを止める。
+  ログの切り替えで、前のファイルの先頭の行が書けなくても、新しいファイルに
+  切り替わる。監査ログのファイルのロックは5秒まで待つ
+- **STDIO・HTTP**: EOFの後の処理のパニックはエラーで終わる。キーが重複した
+  JSONの要求を`-32600`で断る。`/ws`で期限までに終わらない要求には、`id`を
+  付けたエラー（`-32001`）を返す
+- **IDS**: CMD-005が`x;rm victim`のような普通の語の引数も検知する
+- **WordPress**: PUTで、成功の状態コードの後に本文の受信が失敗しても
+  送り直さない。不正なUTF-8の応答はエラーにする
+- **`mcp-rs init`・`database-keyring`**: `database-keyring set`は、設定が
+  使っている項目を変える前に聞き、断れば変えない。データベースの
+  パスワードは、すべての質問と確認の後で入れる。Ctrl+C・エラーで終わる
+  とき、設定ファイルに書いていない新しい資格情報の項目を消す。MySQL・
+  MariaDBで`[::1]`のような角括弧付きのIPv6アドレスにつなげる
 
 ### 確かめたこと
 
