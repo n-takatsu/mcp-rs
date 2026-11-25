@@ -1337,37 +1337,29 @@ fn post_status_or_draft(args: &HashMap<String, serde_json::Value>) -> Result<Str
     }
 }
 
-/// WordPressがスラッグを作るときに取り除く、HTMLのタグ（`<…>`）と
-/// エンティティ（`&…;`。`sanitize_title_with_dashes`の`&.+?;`）を除いた
-/// 文字列（#750）。`&amp;`等だけのスラッグも、WordPressでは空になるため
-fn slug_without_markup(slug: &str) -> String {
+/// WordPressがスラッグを作るときに取り除く、HTMLのタグ（`open`が`<`。
+/// `<…>`）またはエンティティ（`open`が`&`。`&…;`。`sanitize_title_with_dashes`
+/// の`&.+?;`）を除いた文字列（#750）。`&amp;`等だけのスラッグも、
+/// WordPressでは空になるため。WordPressは、タグを符号化の前に、エンティティを
+/// 符号化して200文字に切り詰めた後に取り除くので、別々に呼ぶ（#781）
+fn slug_without_markup(slug: &str, open: char) -> String {
+    let close = if open == '<' { '>' } else { ';' };
     let mut rest = slug;
     let mut kept = String::new();
-    // 閉じる文字がもう残っていない（`>`・`;`）。後ろの`<`・`&`ごとに残り
-    // 全体を探し直すと、長い入力で時間が2乗で増えるため、覚えておく
-    let mut no_more_gt = false;
-    let mut no_more_semicolon = false;
-    while let Some(i) = rest.find(['<', '&']) {
+    while let Some(i) = rest.find(open) {
         kept.push_str(&rest[..i]);
-        let (open, close, no_more) = if rest[i..].starts_with('<') {
-            ('<', '>', &mut no_more_gt)
-        } else {
-            ('&', ';', &mut no_more_semicolon)
+        // 閉じる文字が無ければ、残りはそのまま（WordPressも取り除かない）。
+        // 後ろの`open`ごとに残り全体を探し直すと、長い入力で時間が2乗で
+        // 増えるため、ここで終える
+        let Some(end) = rest[i + 1..].find(close) else {
+            rest = &rest[i..];
+            break;
         };
-        let found = if *no_more {
-            None
+        if open == '&' && end == 0 {
+            kept.push(open);
+            rest = &rest[i + 1..];
         } else {
-            let found = rest[i + 1..].find(close);
-            *no_more = found.is_none();
-            found
-        };
-        // 閉じる文字が無ければ、そのまま残す（WordPressも取り除かない）
-        match found {
-            Some(end) if !(open == '&' && end == 0) => rest = &rest[i + 1 + end + 1..],
-            _ => {
-                kept.push(open);
-                rest = &rest[i + 1..];
-            }
+            rest = &rest[i + 1 + end + 1..];
         }
     }
     kept.push_str(rest);
@@ -1445,6 +1437,20 @@ const SLUG_SPACE_OCTETS: &[&str] = &[
     "%e2%80%af",
 ];
 
+/// WordPressが保存するとき（`sanitize_title`の`remove_accents`）に、ASCIIの
+/// 文字にする文字か（#781）。Latin-1・ラテン文字拡張Aの文字（×・÷を除く）、
+/// `ª`・`º`、ラテン文字拡張Bの一部（`Ơ`・`Ư`・`Ǎ`〜`ǜ`・`Ș`〜`ț`）、ベトナム語
+/// の文字、`€`（`E`になる）。ここに無い文字は、符号化した長さで数える
+/// （長いスラッグで、残る文字を見落として断ることはあっても、誤って通さない）
+fn becomes_ascii_letters(c: char) -> bool {
+    matches!(c,
+        '\u{aa}' | '\u{ba}' | '\u{20ac}'
+        | '\u{c0}'..='\u{d6}' | '\u{d8}'..='\u{f6}' | '\u{f8}'..='\u{17f}'
+        | '\u{1a0}' | '\u{1a1}' | '\u{1af}' | '\u{1b0}'
+        | '\u{1cd}'..='\u{1dc}' | '\u{218}'..='\u{21b}'
+        | '\u{1ea0}'..='\u{1ef9}')
+}
+
 /// WordPressが保存するとき、スラッグに何か残るか（#779）。
 /// `sanitize_title_with_dashes`（`save`）と同じく、ASCIIでない文字を
 /// `%xx`にし、パーセントエンコード（`%xx`）はそのまま残して、決まった
@@ -1452,9 +1458,10 @@ const SLUG_SPACE_OCTETS: &[&str] = &[
 /// 英数字・`_`・`%xx`だけ（ほかのASCIIの記号・空白・ハイフンは消える）。
 /// その前の`remove_accents`が消す`£`は先に取り除き、`utf8_uri_encode`と
 /// 同じく、符号化した後の200文字（ASCIIは1文字、ほかはUTF-8のバイト数×3）
-/// に収まる文字までを見る（#781）
+/// に収まる文字までを見る。`remove_accents`がASCIIの文字にする文字（`é`等）
+/// が200文字に収まれば、残る。エンティティは、切り詰めた後に取り除く（#781）
 fn slug_survives_sanitizing(slug: &str) -> bool {
-    let stripped = slug_without_markup(&slug.replace('£', ""));
+    let stripped = slug_without_markup(&slug.replace('£', ""), '<');
     // WordPressが符号化する前の文字。`%xx`は、ASCIIの3文字として数える
     let mut lowered = String::new();
     let mut chars = stripped.chars();
@@ -1480,6 +1487,12 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
             }
             encoded.push(c.to_ascii_lowercase());
             length += 1;
+        } else if becomes_ascii_letters(c) {
+            // `remove_accents`がASCIIの文字（1〜2文字）にするので、収まれば残る
+            if length < SLUG_ENCODED_MAX_LENGTH {
+                return true;
+            }
+            break;
         } else {
             let mut buf = [0u8; 4];
             let bytes = c.encode_utf8(&mut buf).as_bytes();
@@ -1501,7 +1514,7 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
     for octets in SLUG_SPACE_OCTETS {
         encoded = encoded.replace(octets, "-");
     }
-    encoded
+    slug_without_markup(&encoded, '&')
         .chars()
         .any(|c| c.is_ascii_alphanumeric() || c == '_' || c == '%')
 }
@@ -10300,9 +10313,15 @@ mod tests {
     fn test_slug_without_markup_long_input() {
         let slug = "&<".repeat(500_000);
         let started = std::time::Instant::now();
-        assert_eq!(slug_without_markup(&slug), slug);
+        assert_eq!(
+            slug_without_markup(&slug_without_markup(&slug, '<'), '&'),
+            slug
+        );
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert_eq!(slug_without_markup("a&amp;b<i>c</i>&x"), "abc&x");
+        assert_eq!(
+            slug_without_markup(&slug_without_markup("a&amp;b<i>c</i>&x", '<'), '&'),
+            "abc&x"
+        );
     }
 
     #[test]
@@ -10400,6 +10419,18 @@ mod tests {
         assert!(slug_survives_sanitizing(&format!("{}→", "…".repeat(21))));
         assert!(!slug_survives_sanitizing(&format!("{}a", "-".repeat(200))));
         assert!(slug_survives_sanitizing(&format!("{}a", "-".repeat(199))));
+        // エンティティは200文字に切り詰めた後に取り除く。`remove_accents`が
+        // `e`にする`é`は、198文字の後でも収まる（#781）
+        assert!(!slug_survives_sanitizing(&format!(
+            "{}→",
+            "&amp;".repeat(40)
+        )));
+        assert!(slug_survives_sanitizing("&amp;→"));
+        assert!(slug_survives_sanitizing(&format!("{}é", "…".repeat(22))));
+        assert!(!slug_survives_sanitizing(&format!(
+            "--{}é",
+            "%e2%80%94".repeat(22)
+        )));
         // `%xx`はASCIIの3文字として数える（2文字＋9文字×22個で200文字）
         assert!(!slug_survives_sanitizing(&format!(
             "--{}a",
