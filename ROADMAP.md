@@ -42,6 +42,8 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 
 2026-11-24の見直しで、v0.30.0は、過去の版のレビュー（CodeRabbit）の指摘の修正で大きくなったので、mcp-rs本体に当たる修正と使いやすさに絞った「本体の強化」の版にした。v0.31.0はデータベースだけの版にし、プラグインと配布はv0.32.0に分けた。
 
+2026-11-26の見直しで、WordPressの道具を広げる項目（#783・#786・#788・#789）のために、v0.33.0「WordPressの強化」を足した。#789はv0.32.0のプラグインの仕組み（#787）の上に作るので、v0.32.0の後に置く。v0.30.0のレビューで後回しにした指摘（#785）は、データを壊しうる指摘を含むので、データベースの版のv0.31.0で直す（データベースだけの方針の例外）。
+
 MCPのクライアント（Claude Desktop・Claude Code等）から使える機能に絞る（#419で範囲を見直した。SAML・LDAP・MFA・マルチテナント・請求システム・ゼロコピー/分散キャッシュは対象外。SAML・LDAPとの連携は、OAuth 2.1の認可サーバー（IdP）側で行う）。
 
 ### 🔜 v0.30.0のリリースの後（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/9)）
@@ -61,6 +63,10 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #609 マイクロセグメンテーション（表ごとの許可）を、`execute_command`にもかける
 - #768 データベースのライブラリのコード（列の暗号化・ゼロトラスト・MySQL）のレビューの指摘
 
+**v0.30.0のレビューで後回しにした指摘**
+
+- #785 `/wp/v2`の外のタクソノミーのIDを確かめる・`init`で新しい設定ファイルに置き換えるときの、質問中の編集を確かめる
+
 ### 📅 v0.32.0: プラグインと配布（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/11)）
 
 **プラグイン**
@@ -68,17 +74,30 @@ MCPのクライアント（Claude Desktop・Claude Code等）から使える機�
 - #615 プラグインのコンテナで、許可した行き先にだけ通信できるようにする（egressの許可リスト）
 - #616 プラグインを、ストアのように探して入れ、管理する
 - #766 STDIOで取り消したプラグインの呼び出しを、プラグインにも取り消しとして伝える
+- #775 プラグインの起動の途中でも、止める合図で後片付けして終わる
+- #787 プラグインに、本体に登録したWordPressのサイトを使わせる（資格情報の受け渡しと通信先の制限。#789の土台）
 
 **配布**
 
 - #634 wingetで配る（#578の続き。外部の審査と、書き込みの鍵が要る）
 - #669 Claude Desktopの拡張機能の公式ディレクトリに申請する（#632の続き。実際のClaude Desktopでの確認と、Anthropicの審査が要る）
 
+### 📅 v0.33.0: WordPressの強化（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/12)）
+
+WordPress本体の機能は本体の道具に足し、プラグイン（WooCommerce等）向けの機能は、v0.32.0のプラグインの仕組み（#787）に載せる。
+
+- #786 WordPress本体のまだ使っていない機能を道具に足す（メニュー・再利用ブロック・サイト内検索・プラグインの一覧）
+- #783 SEOの改善に使う道具（SEOプラグインの値・alt・内部リンク・古い記事）
+- #788 許可した名前空間だけを通す、汎用のRESTツール
+- #789 WordPressのメジャーなプラグインと連携するプラグイン（Redirection・WooCommerce・ACF・多言語）
+
 ### 📦 v1.0.0（2027年6月頃、[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/3)）
 
-v0.32.0までで機能をそろえ、v1.0.0までは安定化と、実際に使って見つかった問題の修正に充てる。
+v0.33.0までで機能をそろえ、v1.0.0までは安定化と、実際に使って見つかった問題の修正に充てる。
 
 - #449 sqlxが対応したらRUSTSEC-2026-0459（同梱のSQLiteの脆弱性）の無視を外す（sqlxの対応待ち）
+- #658 設定ファイルの版と、`mcp-rs config migrate`（互換性の無い変更のときに設定ファイルを更新する）
+- #662 プラグインのMCPのプロンプトを中継する
 
 ---
 
@@ -89,7 +108,8 @@ v0.32.0までで機能をそろえ、v1.0.0までは安定化と、実際に使�
 - [Milestone v0.30.0](https://github.com/n-takatsu/mcp-rs/milestone/9) - 本体の強化（WordPress・MCP・導入）。リリース済み、#668だけが残る
 - [Milestone v0.31.0](https://github.com/n-takatsu/mcp-rs/milestone/10) - データベース
 - [Milestone v0.32.0](https://github.com/n-takatsu/mcp-rs/milestone/11) - プラグインと配布
-- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - 安定化（v0.32.0より後）
+- [Milestone v0.33.0](https://github.com/n-takatsu/mcp-rs/milestone/12) - WordPressの強化
+- [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - 安定化（v0.33.0より後）
 - 完了: [v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8)（導入を簡単にする（続き）と使いやすさ）・[v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6)（セキュリティの強化）・[v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7)（MCPの新しい版）・[Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（HTTPモードの認可・ツールの権限・監査ログ）
 
 ## 📚 ドキュメント
