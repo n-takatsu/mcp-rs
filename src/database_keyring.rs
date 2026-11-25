@@ -370,7 +370,13 @@ fn update(
         // 設定ファイルは書かないが、質問の間に`[database]`のつなぐ先が
         // 変わっていれば、古いつなぐ先で保存しない（PR #782のレビュー）
         check_unchanged(path, content, "database-keyring set")?;
-        save(store, name, existed, &credentials)?;
+        // 保存の直前に、別の種類の項目になっていないかをもう一度確かめる
+        // （#774）。書いた後の読み戻しに失敗したら、前の中身に戻す（ほかの
+        // 経路と同じ。PR #773の3回目のレビュー）
+        let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
+        check_kind(store, name, existed)?;
+        store_database_credentials(store, name, &credentials)
+            .map_err(|e| put_back_entry(store, name, previous, e.into()))?;
         io.say(&format!(
             "Stored the password as '{name}' in the OS credential store."
         ));
@@ -436,18 +442,6 @@ fn update(
             }
         });
     result.map_err(|e| put_back_entry(store, name, previous, e))
-}
-
-/// 項目を保存する。保存の直前に、別の種類の項目になっていないかを
-/// もう一度確かめる（質問の間に別の端末で作られた場合。#774）
-fn save(
-    store: &dyn SecretStore,
-    name: &str,
-    existed: bool,
-    credentials: &DatabaseKeyringCredentials,
-) -> Result<(), String> {
-    check_kind(store, name, existed)?;
-    store_database_credentials(store, name, credentials)
 }
 
 /// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）。始めに
@@ -827,6 +821,20 @@ ssl_mode = "verify-full"
             .to_string();
         assert!(err.contains("put 'app@db' back as it was"), "{err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), without);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`が既にこの項目を使い、パスワードだけを入れ直すときも
+        // 同じ（PR #773の3回目のレビュー）
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        old_entry(&store.inner);
+        let (_dir, path) = config_in_temp(&config);
+        let mut io = Script::new(&["", "", "", "new-pass"]);
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
         let stored =
             load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
         assert_eq!(*stored.password, "old-pass");
