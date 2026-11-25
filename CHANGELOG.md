@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   リリースのタグで`.mcpb`をリリースに付けた後に、その版・URL・SHA256を
   書き込んで登録する。認証はGitHub ActionsのOIDCで行い、鍵やトークンは
   持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
+  v0.30.0は、マージの後に手で実行して登録した。README・導入ガイドに、
+  公式のMCP Registryに載っていることを書いた
 
 ## [0.30.0] - 2026-11-26
 

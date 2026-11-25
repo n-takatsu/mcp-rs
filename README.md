@@ -41,7 +41,7 @@ Ask Claude to draft, schedule, and publish WordPress posts, upload media, or mod
 - **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
 - **Custom Post Types**: Products, events and other post types that the site exposes in the REST API, when allowed in `post_types`, with their own taxonomies ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types))
 - **Prompts**: Ready-made requests in the client's menu: draft a post, review a post's SEO, moderate comments (and summarize a database table)
-- **Claude Desktop Extension**: Install `mcp-rs-<version>.mcpb` from a release and enter the site in Claude Desktop's settings ([docs](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension))
+- **Claude Desktop Extension**: Install `mcp-rs-<version>.mcpb` from a release and enter the site in Claude Desktop's settings ([docs](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension)). Listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.n-takatsu/mcp-rs) as `io.github.n-takatsu/mcp-rs`
 - **Multiple Sites**: Use several WordPress sites from one mcp-rs; each tool takes a `site` argument ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites))
 
 ### Live Demo Site
