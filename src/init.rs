@@ -608,7 +608,7 @@ impl Setup<'_> {
                         .to_string()
                 };
                 if confirm(self.io, &question, true)? {
-                    self.enter_credentials(&url, &entry)?;
+                    self.enter_credentials(&url, &entry, false)?;
                     continue;
                 }
             }
@@ -1075,7 +1075,6 @@ impl Setup<'_> {
             }
         };
 
-        let mut new_entry = false;
         match load_wordpress_credentials(self.store, &entry) {
             Ok(stored) if site_origin(&url).as_deref() == Some(stored.site_url.as_str()) => {
                 let reuse = confirm(
@@ -1104,7 +1103,7 @@ impl Setup<'_> {
                     .into());
                 }
             }
-            Err(KeyringError::NotFound(_)) => new_entry = true,
+            Err(KeyringError::NotFound(_)) => {}
             // 前の形の登録・mcp-rsのものではない登録は、上書きを聞く
             Err(KeyringError::Invalid(_)) | Err(KeyringError::MissingSiteUrl(_)) => {
                 if !confirm(
@@ -1120,18 +1119,13 @@ impl Setup<'_> {
             }
             Err(e) => return Err(e.into()),
         }
-        // 新しい項目は、入れる前にCtrl+Cで消すものに加える（#774。入れた
-        // 直後のCtrl+Cでも残さない。無い項目を消しても害は無い）
-        if new_entry {
-            self.unwritten_entries.push(&entry);
-        }
-        // 既にある項目の前の中身は、`enter_credentials`が覚える（#710）。
-        // エラーでも消すものに残す（書いた後の読み戻しの失敗で、項目が
-        // 残ることがあるため。PR #778のレビュー）
-        self.enter_credentials(&url, &entry)?;
-        // 入れる間に別のところで作られた項目は、前の中身に戻すもので、新しい
-        // 項目ではない（`enter_credentials`が消すものから外す）
-        if new_entry && self.unwritten_entries.lock().contains(&entry) {
+        // 新しい項目か、既にある項目の前の中身かは、`enter_credentials`が
+        // 入力の後に読み直して決める（#710・#774。入力の間に別のところで
+        // 作られた項目を、新しい項目として消さない。PR #778のレビュー）。
+        // 新しい項目は、書いた後のエラーでも消すものに残る（読み戻しの失敗で
+        // 項目が残ることがあるため）
+        self.enter_credentials(&url, &entry, true)?;
+        if self.unwritten_entries.lock().contains(&entry) && !self.new_entries.contains(&entry) {
             self.new_entries.push(entry.clone());
         }
         Ok((url, entry))
@@ -1482,11 +1476,16 @@ impl Setup<'_> {
         }
     }
 
-    /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる
+    /// ユーザー名とアプリケーションパスワードを聞き、`entry`の名前で入れる。
+    /// `not_in_config`は、`entry`をまだ設定ファイルに書いていないとき`true`。
+    /// そのときは、入力の後に読み直して無かった項目を、入れる前にCtrl+Cで
+    /// 消すものに加える（#774。入れた直後のCtrl+Cでも残さない。入力の失敗・
+    /// 入力の間に別のところで作られた項目は加えない。PR #778のレビュー）
     fn enter_credentials(
         &mut self,
         url: &str,
         entry: &str,
+        not_in_config: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let username = loop {
             let answer = self.io.ask("WordPress username: ")?;
@@ -1512,12 +1511,12 @@ impl Setup<'_> {
         if !self.new_entries.iter().any(|name| name == entry)
             && !replaced.iter().any(|(name, _)| name == entry)
         {
-            if let Some(previous) = self.store.get(entry)? {
-                replaced.push((entry.to_string(), previous));
-                // 前の中身に戻す項目は、新しい項目として消さない（PR #778の
-                // レビュー。質問の間に別のところで作られた場合）。ロックは
-                // `restore_on_interrupt`と同じ順（入れ直し、新しい項目）で取る
-                self.unwritten_entries.remove(entry);
+            // ロックは`restore_on_interrupt`と同じ順（入れ直し、新しい項目）
+            // で取る
+            match self.store.get(entry)? {
+                Some(previous) => replaced.push((entry.to_string(), previous)),
+                None if not_in_config => self.unwritten_entries.push(entry),
+                None => {}
             }
         }
         store_wordpress_credentials(
@@ -5050,11 +5049,11 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let store = MemoryStore::default();
         let mut io = Script::new(&["editor", "wrong"]);
         setup(&mut io, &store)
-            .enter_credentials("https://example.com", "example.com")
+            .enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         let mut io = Script::new(&["editor", "right"]);
         setup(&mut io, &store)
-            .enter_credentials("https://example.com", "example.com")
+            .enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         assert_eq!(
             *load_wordpress_credentials(&store, "example.com")
@@ -5162,7 +5161,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&["editor", "new password"]);
         let mut s = setup(&mut io, &store);
         s.replaced_entries = shared.clone();
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         // Ctrl+Cを受けたタスクが、共有した記録から戻す
         let mut shown = Vec::new();
@@ -5179,7 +5178,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&["editor", "newer password"]);
         let mut s = setup(&mut io, &store);
         s.replaced_entries = shared.clone();
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         s.replaced_entries.clear();
         assert!(shared.take().is_empty());
@@ -5222,9 +5221,9 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         // 中身だけを覚えて戻す（PR #712のレビュー）
         let mut io = Script::new(&["editor", "second", "editor", "third"]);
         let mut s = setup(&mut io, &store);
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
-        s.enter_credentials("https://example.com", "example.com")
+        s.enter_credentials("https://example.com", "example.com", false)
             .unwrap();
         assert_eq!(s.replaced_entries.len(), 1);
         s.restore_replaced_entries();
@@ -5243,7 +5242,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         let mut io = Script::new(&["editor", "new"]);
         let mut s = setup(&mut io, &store);
         assert!(s
-            .enter_credentials("https://example.com", "example.com")
+            .enter_credentials("https://example.com", "example.com", false)
             .is_err());
         assert!(s.replaced_entries.is_empty());
     }
@@ -6263,6 +6262,7 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
         struct Racing<'a> {
             script: Script,
             store: &'a MemoryStore,
+            fail: bool,
         }
         impl Prompt for Racing<'_> {
             fn ask(&mut self, question: &str) -> io::Result<String> {
@@ -6270,16 +6270,47 @@ file_path = "C:/Users/me/.mcp-rs/logs/audit.log"
             }
             fn ask_hidden(&mut self, question: &str) -> io::Result<Zeroizing<String>> {
                 self.store.set("shop.example.com", "other").unwrap();
+                if self.fail {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"));
+                }
                 self.script.ask_hidden(question)
             }
             fn say(&mut self, text: &str) {
                 self.script.say(text);
             }
         }
+        // 入力の読み取りに失敗しても、別のところで作られた項目を消すものに
+        // 加えない（PR #778のレビュー）
+        let store = MemoryStore::default();
+        let mut io = Racing {
+            script: Script::new(&["https://shop.example.com", "", "editor"]),
+            store: &store,
+            fail: true,
+        };
+        let mut setup = Setup {
+            io: &mut io,
+            store: &store,
+            config_path: PathBuf::from("unused.toml"),
+            explicit_config: false,
+            kept_config: None,
+            previous: Vec::new(),
+            superseded: Vec::new(),
+            suggested_url: None,
+            new_entries: Vec::new(),
+            secret_backups: Vec::new(),
+            replaced_entries: ReplacedEntries::default(),
+            unwritten_entries: UnwrittenEntries::default(),
+        };
+        assert!(setup.wordpress_credentials(&[], &[]).is_err());
+        assert!(setup.unwritten_entries.lock().is_empty());
+        assert!(setup.new_entries.is_empty());
+        assert!(store.get("shop.example.com").unwrap().is_some());
+
         let store = MemoryStore::default();
         let mut io = Racing {
             script: Script::new(&["https://shop.example.com", "", "editor", "pw"]),
             store: &store,
+            fail: false,
         };
         let mut setup = Setup {
             io: &mut io,
