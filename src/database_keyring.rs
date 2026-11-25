@@ -256,9 +256,16 @@ fn database_section(content: &str) -> Result<Option<DatabaseSettings>, String> {
 
 /// つなぐ先の値を聞く。展開できなかった`${VAR}`は既定にせず、値そのものを
 /// 聞く。既定がある場合も、`${...}`の答えは断る。資格情報には、mcp-rsが
-/// 実際につなぐ先を入れるため（#692・PR #696のレビュー）
-fn ask_resolved(io: &mut dyn Prompt, label: &str, value: &str) -> std::io::Result<String> {
-    let has_default = !value.contains("${");
+/// 実際につなぐ先を入れるため（#692・PR #696のレビュー）。`expanded`は、
+/// `[database]`の展開ができたか。できたなら、値に`${`があっても既定にする
+/// （展開した値はそのまま使われるため。#774）
+fn ask_resolved(
+    io: &mut dyn Prompt,
+    label: &str,
+    value: &str,
+    expanded: bool,
+) -> std::io::Result<String> {
+    let has_default = expanded || !value.contains("${");
     loop {
         let answer = if has_default {
             ask_with_default(io, label, value)?
@@ -267,7 +274,7 @@ fn ask_resolved(io: &mut dyn Prompt, label: &str, value: &str) -> std::io::Resul
                 "{label} that mcp-rs connects to ({value} could not be expanded): "
             ))?
         };
-        if !answer.is_empty() && !answer.contains("${") {
+        if !answer.is_empty() && (!answer.contains("${") || (has_default && answer == value)) {
             return Ok(answer);
         }
         io.say("Enter the value itself, not an environment variable.");
@@ -288,16 +295,21 @@ fn update(
     // 結び付けるため）。展開できなければ、書いてあるまま見せ、展開できな
     // かった値は既定にしない（`ask_resolved`）
     let mut expanded = written.clone();
-    if let Err(e) = crate::config::McpConfig::expand_database_config(&mut expanded) {
-        expanded = written.clone();
-        io.say(&format!("Could not expand [database] ({e})."));
-    }
+    let expanded_ok = match crate::config::McpConfig::expand_database_config(&mut expanded) {
+        // 無効な`[database]`は展開しない。値はそのまま
+        Ok(()) => expanded.is_enabled(),
+        Err(e) => {
+            expanded = written.clone();
+            io.say(&format!("Could not expand [database] ({e})."));
+            false
+        }
+    };
     io.say(&format!(
         "[database] in {}: {}",
         path.display(),
         expanded.describe()
     ));
-    let host = ask_resolved(io, "Host", expanded.host())?;
+    let host = ask_resolved(io, "Host", expanded.host(), expanded_ok)?;
     let default_port = expanded.port();
     let port = loop {
         let answer = io.ask(&format!("Port [{default_port}]: "))?;
@@ -309,54 +321,130 @@ fn update(
             _ => io.say("Enter a port number (1-65535)."),
         }
     };
-    let username = ask_resolved(io, "User name", &expanded.username)?;
+    let username = ask_resolved(io, "User name", &expanded.username, expanded_ok)?;
     let password = ask_database_password(io)?;
-    store_database_credentials(
-        store,
-        name,
-        &DatabaseKeyringCredentials {
-            host: host.clone(),
-            port,
-            username: username.clone(),
-            password,
-        },
-    )?;
-    io.say(&format!(
-        "Stored the password as '{name}' in the OS credential store."
-    ));
+    let credentials = DatabaseKeyringCredentials {
+        host: host.clone(),
+        port,
+        username: username.clone(),
+        password,
+    };
 
     let changes = Changes {
-        keyring: written.keyring.as_deref() != Some(name),
+        // 読むときと同じく、前後の空白を除いて比べる（PR #778のレビュー）
+        keyring: written.keyring.as_deref().map(str::trim) != Some(name.trim()),
         password: written.password.is_some(),
         host: (host != expanded.host()).then(|| host.clone()),
         port: (port != expanded.port()).then_some(port),
         username: (username != expanded.username).then(|| username.clone()),
     };
     if changes.is_empty() {
+        save(store, name, &credentials)?;
+        io.say(&format!(
+            "Stored the password as '{name}' in the OS credential store."
+        ));
         io.say(
             "[database] already uses it. mcp-rs reads the new password the next time it starts.",
         );
         return Ok(());
     }
     let summary = changes.summary(name);
+    // 設定が既にこの項目を指していて、つなぐ先が変わる: 項目だけを変えると、
+    // 設定と食い違い、起動で使えなくなる。保存の前に聞き、設定を書けな
+    // かったら項目を前の中身に戻す（#774）
+    let target_changes =
+        changes.host.is_some() || changes.port.is_some() || changes.username.is_some();
+    if !changes.keyring && target_changes {
+        if !confirm(
+            io,
+            &format!(
+                "[database] in {} already uses '{name}'. Store the password and change [database]: {summary}?",
+                path.display()
+            ),
+            true,
+        )? {
+            io.say(&format!(
+                "Kept '{name}' and the config file as they are."
+            ));
+            return Ok(());
+        }
+        let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
+        check_kind(store, name)?;
+        // 書いた後の読み戻しの失敗でも、前の中身に戻す（PR #778のレビュー）
+        let result = store_database_credentials(store, name, &credentials)
+            .map_err(Into::into)
+            .and_then(|()| {
+                io.say(&format!(
+                    "Stored the password as '{name}' in the OS credential store."
+                ));
+                change_config(io, path, content, name, &changes)
+            });
+        if let Err(e) = result {
+            let restored = match &previous {
+                Some(previous) => store.set(name.trim(), previous),
+                None => store.delete(name.trim()).map(|_| ()),
+            };
+            return Err(match restored {
+                Ok(()) => format!("{e} (put '{name}' back as it was)"),
+                Err(r) => format!("{e} (and could not put '{name}' back as it was: {r})"),
+            }
+            .into());
+        }
+        return Ok(());
+    }
+    save(store, name, &credentials)?;
+    io.say(&format!(
+        "Stored the password as '{name}' in the OS credential store."
+    ));
     if confirm(
         io,
         &format!("Change [database] in {}: {summary}?", path.display()),
         true,
     )? {
-        let updated = edit_database(content, name, &changes)?;
-        let backup = make_backup(path, true)?;
-        write_atomically(path, &updated, true)?;
-        io.say(&format!(
-            "Changed [database] in {} (kept the previous file as {}). mcp-rs uses it the next time it starts.",
-            path.display(),
-            backup.display()
-        ));
+        change_config(io, path, content, name, &changes)?;
     } else {
         io.say(&format!(
             "Kept the config file as it is. To use the stored password, change [database]: {summary}."
         ));
     }
+    Ok(())
+}
+
+/// 項目を保存する。保存の直前に、別の種類の項目になっていないかを
+/// もう一度確かめる（質問の間に別の端末で作られた場合。#774）
+fn save(
+    store: &dyn SecretStore,
+    name: &str,
+    credentials: &DatabaseKeyringCredentials,
+) -> Result<(), String> {
+    check_kind(store, name)?;
+    store_database_credentials(store, name, credentials)
+}
+
+/// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）
+fn check_kind(store: &dyn SecretStore, name: &str) -> Result<(), String> {
+    match database_entry(store, name)? {
+        Some(DatabaseEntry::Other) => Err(not_database(name)),
+        _ => Ok(()),
+    }
+}
+
+/// `[database]`に`changes`を加えて書く。前のファイルは控えに残す
+fn change_config(
+    io: &mut dyn Prompt,
+    path: &Path,
+    content: &str,
+    name: &str,
+    changes: &Changes,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let updated = edit_database(content, name, changes)?;
+    let backup = make_backup(path, true)?;
+    write_atomically(path, &updated, true)?;
+    io.say(&format!(
+        "Changed [database] in {} (kept the previous file as {}). mcp-rs uses it the next time it starts.",
+        path.display(),
+        backup.display()
+    ));
     Ok(())
 }
 
@@ -596,6 +684,165 @@ ssl_mode = "verify-full"
         set(&mut io, &store, "app@db", &path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
         assert!(io.shown.iter().any(|s| s.contains("Kept the config file")));
+    }
+
+    /// 設定が既にこの項目を指していて、ホストを変える: 保存の前に聞く。
+    /// 断れば、項目も設定ファイルも変えない（#774）
+    #[test]
+    fn test_set_asks_before_changing_the_entry_the_config_uses() {
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let store = MemoryStore::default();
+        store_database_credentials(
+            &store,
+            "app@db",
+            &DatabaseKeyringCredentials {
+                host: "db.example.com".to_string(),
+                port: 5432,
+                username: "reader".to_string(),
+                password: Zeroizing::new("old-pass".to_string()),
+            },
+        )
+        .unwrap();
+
+        let (_dir, path) = config_in_temp(&config);
+        let mut io = Script::new(&["db2.example.com", "", "", "new-pass", "n"]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // 認めれば、項目と設定ファイルの両方を変える
+        let mut io = Script::new(&["db2.example.com", "", "", "new-pass", "y"]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("host = \"db2.example.com\""), "{content}");
+        let stored =
+            load_database_credentials(&store, "app@db", "db2.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "new-pass");
+    }
+
+    fn old_entry(store: &dyn SecretStore) {
+        store_database_credentials(
+            store,
+            "app@db",
+            &DatabaseKeyringCredentials {
+                host: "db.example.com".to_string(),
+                port: 5432,
+                username: "reader".to_string(),
+                password: Zeroizing::new("old-pass".to_string()),
+            },
+        )
+        .unwrap();
+    }
+
+    /// 前後に空白のある`keyring`も、この項目を指すとみなし、保存の前に
+    /// 聞く（PR #778のレビュー）
+    #[test]
+    fn test_set_trims_the_keyring_of_the_config() {
+        let config = HAND_WRITTEN.replace(
+            "password = \"${MCP_DB_PASSWORD}\"",
+            "keyring = \" app@db \"",
+        );
+        let store = MemoryStore::default();
+        old_entry(&store);
+        let (_dir, path) = config_in_temp(&config);
+        let mut io = Script::new(&["db2.example.com", "", "", "new-pass", "n"]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+        assert!(io.shown.iter().any(|s| s.contains("already uses 'app@db'")));
+    }
+
+    /// 書いた後の読み戻しに失敗しても、項目を前の中身に戻し、設定ファイルは
+    /// 変えない（PR #778のレビュー）
+    #[test]
+    fn test_set_restores_the_entry_when_the_read_back_fails() {
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        old_entry(&store.inner);
+        let (_dir, path) = config_in_temp(&config);
+        let mut io = Script::new(&["db2.example.com", "", "", "new-pass", "y"]);
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+    }
+
+    /// パスワードを聞いている間に、同じ名前でWordPressの資格情報が
+    /// 作られた: 上書きしない（#774）
+    #[test]
+    fn test_set_checks_the_entry_again_before_saving() {
+        struct Racing<'a> {
+            script: Script,
+            store: &'a MemoryStore,
+        }
+        impl Prompt for Racing<'_> {
+            fn ask(&mut self, question: &str) -> std::io::Result<String> {
+                self.script.ask(question)
+            }
+            fn ask_hidden(&mut self, question: &str) -> std::io::Result<Zeroizing<String>> {
+                store_wordpress_credentials(
+                    self.store,
+                    "app@db",
+                    &WordPressKeyringCredentials {
+                        site_url: "https://example.com".to_string(),
+                        username: "editor".to_string(),
+                        application_password: Zeroizing::new("app pass".to_string()),
+                    },
+                )
+                .unwrap();
+                self.script.ask_hidden(question)
+            }
+            fn say(&mut self, text: &str) {
+                self.script.say(text);
+            }
+        }
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        let mut io = Racing {
+            script: Script::new(&["", "", "", "s3cret", ""]),
+            store: &store,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not mcp-rs database credentials"), "{err}");
+        assert!(
+            crate::security::keyring_store::load_wordpress_credentials(&store, "app@db").is_ok()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+    }
+
+    /// 展開できた値は、`${`を含んでも既定にする（#774）
+    #[test]
+    fn test_set_uses_an_expanded_value_with_a_dollar_brace() {
+        std::env::set_var("MCP_RS_TEST_DB_HOST_774", "svc${blue}");
+        let config = HAND_WRITTEN
+            .replace(
+                "host = \"db.example.com\"",
+                "host = \"${MCP_RS_TEST_DB_HOST_774}\"",
+            )
+            .replace("password = \"${MCP_DB_PASSWORD}\"", "password = \"plain\"");
+        let (_dir, path) = config_in_temp(&config);
+        let store = MemoryStore::default();
+        let mut io = Script::new(&["", "", "", "s3cret", "n"]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let stored =
+            load_database_credentials(&store, "app@db", "svc${blue}", 5432, "reader").unwrap();
+        assert_eq!(stored.host, "svc${blue}");
+        assert!(!io
+            .shown
+            .iter()
+            .any(|s| s == "Enter the value itself, not an environment variable."));
     }
 
     /// WordPressの資格情報等の名前には、データベースの資格情報を入れない

@@ -168,7 +168,10 @@ Not checked yet: the HTTP mode settings.
 
 Options:
   --config <path>  Config file to check, as for starting mcp-rs. Without
-                   it, ~/.config/mcp-rs/config.toml is checked
+                   it, ~/.config/mcp-rs/config.toml is checked. If the
+                   environment variable MCP_RS_CONFIG is set, that file is
+                   checked instead (as when starting mcp-rs). Unset it to
+                   check another file
   --offline        Do not connect to the WordPress site or the database,
                    and do not start the plugins (only their settings and
                    commands are checked)
@@ -737,7 +740,7 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// 知らせる
 fn report_plugin_cleanups(cleanups: &crate::plugin_proxy::CleanupReport, report: &mut Report) {
     const ITEM: &str = "plugin cleanup";
-    const HOW: &str = "check for any left over with docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin";
+    const HOW: &str = "check for any left over with docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin (with the --context and --namespace of the plugin)";
     for failure in &cleanups.failures {
         report.push(Status::Warn, ITEM, format!("{failure}; {HOW}"));
     }
@@ -1278,6 +1281,11 @@ mod tests {
         );
         assert!(
             shown.contains("kubectl get jobs,secrets -l mcp-rs.plugin"),
+            "{shown}"
+        );
+        // 既定と違う接続先のJobを見落とさない（#774）
+        assert!(
+            shown.contains("with the --context and --namespace of the plugin"),
             "{shown}"
         );
     }

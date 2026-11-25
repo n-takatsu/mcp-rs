@@ -78,13 +78,40 @@ $freeBefore = Get-FreeBytes $current
 # --- ビルド先の target ディレクトリ --------------------------------------
 # 掃除・ビルド・スタンプのすべてで、cargo build が実際に使う target ディレクトリを使う
 # このディレクトリは一括削除の対象から外し、clean と sweep だけで扱う
-# （優先順: -CargoArgs の --target-dir、CARGO_TARGET_DIR、<worktree>/target）
+# （優先順: -CargoArgs の --target-dir、cargo metadata の target_directory。
+#  cargo metadata が使えないときは、CARGO_TARGET_DIR、<worktree>/target）
+# target_directory は、CARGO_TARGET_DIR と .cargo/config.toml の build.target-dir を
+# 含めて cargo が決めたもの（#774）
 $targetDir = $null
 for ($i = 0; $i -lt $CargoArgs.Count; $i++) {
     if ($CargoArgs[$i] -eq '--target-dir' -and $i + 1 -lt $CargoArgs.Count) {
         $targetDir = $CargoArgs[$i + 1]
     } elseif ($CargoArgs[$i] -like '--target-dir=*') {
         $targetDir = $CargoArgs[$i].Substring('--target-dir='.Length)
+    }
+}
+if (-not $targetDir) {
+    # ビルド先に関わる引数（--config・--manifest-path）は metadata にも渡し、
+    # ビルドと同じ場所を求める。ビルドだけの引数（--release 等）は渡さない（PR #778）
+    $metadataArgs = @()
+    for ($i = 0; $i -lt $CargoArgs.Count; $i++) {
+        if ($CargoArgs[$i] -in @('--config', '--manifest-path') -and $i + 1 -lt $CargoArgs.Count) {
+            $metadataArgs += $CargoArgs[$i], $CargoArgs[$i + 1]
+            $i++
+        } elseif ($CargoArgs[$i] -like '--config=*' -or $CargoArgs[$i] -like '--manifest-path=*') {
+            $metadataArgs += $CargoArgs[$i]
+        }
+    }
+    Push-Location $current
+    try {
+        $metadata = cargo metadata --format-version 1 --no-deps @metadataArgs 2>$null
+        if ($LASTEXITCODE -eq 0 -and $metadata) {
+            $targetDir = ($metadata | Out-String | ConvertFrom-Json).target_directory
+        }
+    } catch {
+        $targetDir = $null
+    } finally {
+        Pop-Location
     }
 }
 if (-not $targetDir) { $targetDir = $env:CARGO_TARGET_DIR }

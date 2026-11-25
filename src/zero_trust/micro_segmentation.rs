@@ -131,11 +131,16 @@ fn parse_hhmm(s: &str) -> Option<chrono::NaiveTime> {
 /// `now`が`[start, end]`の範囲内かを判定する。`start > end`の場合は日を
 /// またぐ範囲（例: 22:00-06:00）として扱う。`now`を引数として受け取る
 /// ことで、実際の壁時計時刻に依存せずテストできるようにしている。
+///
+/// 範囲は分の単位で、`end`の分の終わりまでを含む（`23:59`なら23:59:59まで）。
+/// `now`の秒以下を切り捨ててから比べる。
 fn is_within_time_window(
     now: chrono::NaiveTime,
     start: chrono::NaiveTime,
     end: chrono::NaiveTime,
 ) -> bool {
+    use chrono::Timelike;
+    let now = chrono::NaiveTime::from_hms_opt(now.hour(), now.minute(), 0).unwrap_or(now);
     if start <= end {
         now >= start && now <= end
     } else {
@@ -402,6 +407,22 @@ mod tests {
         assert!(is_within_time_window(inside, start, end));
         assert!(!is_within_time_window(before, start, end));
         assert!(!is_within_time_window(after, start, end));
+    }
+
+    #[test]
+    fn is_within_time_window_includes_the_whole_end_minute() {
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let end = chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap();
+        let last_second = chrono::NaiveTime::from_hms_milli_opt(23, 59, 59, 999).unwrap();
+        assert!(is_within_time_window(last_second, start, end));
+
+        // 日をまたぐ範囲でも、`end`の分の終わりまでを含み、次の分は含まない。
+        let start = chrono::NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = chrono::NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        let end_minute = chrono::NaiveTime::from_hms_opt(6, 0, 30).unwrap();
+        let next_minute = chrono::NaiveTime::from_hms_opt(6, 1, 0).unwrap();
+        assert!(is_within_time_window(end_minute, start, end));
+        assert!(!is_within_time_window(next_minute, start, end));
     }
 
     #[test]

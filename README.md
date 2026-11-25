@@ -50,7 +50,7 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 
 ## **Security**
 
-- **Credentials Out of Files**: `mcp-rs init` keeps the WordPress Application Password and the database password in the OS credential store. They can also be stored encrypted with AES-GCM-256 (PBKDF2 key derivation), or read from an environment variable
+- **Credentials Out of Files**: `mcp-rs init` keeps the WordPress Application Password and the database password in the OS credential store. The WordPress credentials can also be stored encrypted with AES-GCM-256 (PBKDF2 key derivation). Either password can also be read from an environment variable
 - **HTTP Mode Authentication**: API keys, or OAuth 2.1 access tokens (JWT) issued by an external authorization server
 - **Per-Caller Tool Limits**: Allow each API key or token only the tools it needs (for example `@read_only`)
 - **TLS/mTLS**: HTTPS with a minimum TLS version, and optional client certificates

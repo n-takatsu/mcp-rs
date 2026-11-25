@@ -575,6 +575,40 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// A [`MemoryStore`] for tests whose first `set` succeeds, but whose next
+/// `get` (the read-back) fails once. Later calls work normally.
+#[cfg(test)]
+#[derive(Default)]
+pub struct ReadBackFailingStore {
+    pub inner: MemoryStore,
+    /// 0: before the first `set`, 1: the next `get` fails, 2: done
+    state: std::sync::Mutex<u8>,
+}
+
+#[cfg(test)]
+impl SecretStore for ReadBackFailingStore {
+    fn get(&self, name: &str) -> Result<Option<Zeroizing<String>>, KeyringError> {
+        let mut state = self.state.lock().unwrap();
+        if *state == 1 {
+            *state = 2;
+            return Err(KeyringError::Unavailable("read-back failed".to_string()));
+        }
+        self.inner.get(name)
+    }
+
+    fn set(&self, name: &str, secret: &str) -> Result<(), KeyringError> {
+        let mut state = self.state.lock().unwrap();
+        if *state == 0 {
+            *state = 1;
+        }
+        self.inner.set(name, secret)
+    }
+
+    fn delete(&self, name: &str) -> Result<bool, KeyringError> {
+        self.inner.delete(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

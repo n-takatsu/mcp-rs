@@ -579,7 +579,13 @@ impl SignatureDetector {
                 "CMD-005",
                 "Semicolon Command",
                 DetectionType::Other,
-                &format!(r"(?i);\s*(?:rm|del|format|kill){}", shell_command_tail()),
+                // `rm`は、普通の語の引数（`x;rm victim`）も見る（#774）。
+                // 小文字だけ（`; RM Williams`等の文に当てない）。`del`等は
+                // 英語以外の文（`; del Toro`）に出るので、今までどおり
+                &format!(
+                    r"(?i);\s*(?:(?-i:rm)\s+[\w./-]+|(?:rm|del|format|kill){})",
+                    shell_command_tail()
+                ),
                 Severity::Critical,
                 "Semicolon command chaining",
                 vec![],
@@ -1250,6 +1256,38 @@ mod tests {
             "{:?}",
             result.pattern_names
         );
+    }
+
+    /// CMD-005は、`rm`に続く普通の語の引数（拡張子なし）も検知する（#774）。
+    /// `del`・大文字の`RM`・`; cat lovers`等の普通の文には当たらない
+    #[tokio::test]
+    async fn test_semicolon_rm_with_a_plain_argument_is_detected() {
+        let detector = SignatureDetector::new().await.unwrap();
+        for value in ["x;rm victim", "x; rm  victim_dir", "a;rm notes"] {
+            let result = detector
+                .detect(&request_with(&[("q", value)], &[], None))
+                .await
+                .unwrap();
+            assert!(
+                result
+                    .pattern_names
+                    .contains(&"Semicolon Command".to_string()),
+                "{value}: {:?}",
+                result.pattern_names
+            );
+        }
+        for body in [
+            r#"{"note":"I like dogs; cat lovers disagree"}"#,
+            r#"{"note":"films; del Toro directed it"}"#,
+            r#"{"note":"boots; RM Williams makes them"}"#,
+            r#"{"note":"room; rmdir is not rm"}"#,
+        ] {
+            let result = detector
+                .detect(&request_with(&[], &[], Some(body)))
+                .await
+                .unwrap();
+            assert!(!result.matched, "{body}: {:?}", result.pattern_names);
+        }
     }
 
     /// PR #764のレビューの変更後も、普通の文・jQuery・文の中の設定ファイルの
