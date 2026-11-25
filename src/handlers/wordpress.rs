@@ -1438,17 +1438,30 @@ const SLUG_SPACE_OCTETS: &[&str] = &[
 ];
 
 /// WordPressが保存するとき（`sanitize_title`の`remove_accents`）に、ASCIIの
-/// 文字にする文字か（#781）。Latin-1・ラテン文字拡張Aの文字（×・÷を除く）、
-/// `ª`・`º`、ラテン文字拡張Bの一部（`Ơ`・`Ư`・`Ǎ`〜`ǜ`・`Ș`〜`ț`）、ベトナム語
-/// の文字、`€`（`E`になる）。ここに無い文字は、符号化した長さで数える
-/// （長いスラッグで、残る文字を見落として断ることはあっても、誤って通さない）
-fn becomes_ascii_letters(c: char) -> bool {
-    matches!(c,
-        '\u{aa}' | '\u{ba}' | '\u{20ac}'
-        | '\u{c0}'..='\u{d6}' | '\u{d8}'..='\u{f6}' | '\u{f8}'..='\u{17f}'
-        | '\u{1a0}' | '\u{1a1}' | '\u{1af}' | '\u{1b0}'
-        | '\u{1cd}'..='\u{1dc}' | '\u{218}'..='\u{21b}'
-        | '\u{1ea0}'..='\u{1ef9}')
+/// 文字にする文字なら、その文字数（#781）。Latin-1・ラテン文字拡張Aの文字
+/// （×・÷を除く）、`ª`・`º`、ラテン文字拡張Bの一部（`Ơ`・`Ư`・`Ǎ`〜`ǜ`・
+/// `Ș`〜`ț`）、ベトナム語の文字、`€`（`E`になる）。`Æ`・`Þ`・`Ĳ`・`Œ`等は
+/// 2文字。ここに無い文字は`None`で、符号化した長さで数える（長いスラッグで、
+/// 残る文字を見落として断ることはあっても、誤って通さない）
+fn ascii_letters_after_remove_accents(c: char) -> Option<usize> {
+    match c {
+        '\u{c6}' | '\u{e6}' | '\u{de}' | '\u{fe}' | '\u{132}' | '\u{133}' | '\u{152}'
+        | '\u{153}' => Some(2),
+        '\u{aa}'
+        | '\u{ba}'
+        | '\u{20ac}'
+        | '\u{c0}'..='\u{d6}'
+        | '\u{d8}'..='\u{f6}'
+        | '\u{f8}'..='\u{17f}'
+        | '\u{1a0}'
+        | '\u{1a1}'
+        | '\u{1af}'
+        | '\u{1b0}'
+        | '\u{1cd}'..='\u{1dc}'
+        | '\u{218}'..='\u{21b}'
+        | '\u{1ea0}'..='\u{1ef9}' => Some(1),
+        _ => None,
+    }
 }
 
 /// WordPressが保存するとき、スラッグに何か残るか（#779）。
@@ -1459,7 +1472,7 @@ fn becomes_ascii_letters(c: char) -> bool {
 /// その前の`remove_accents`が消す`£`は先に取り除き、`utf8_uri_encode`と
 /// 同じく、符号化した後の200文字（ASCIIは1文字、ほかはUTF-8のバイト数×3）
 /// に収まる文字までを見る。`remove_accents`がASCIIの文字にする文字（`é`等）
-/// が200文字に収まれば、残る。エンティティは、切り詰めた後に取り除く（#781）
+/// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）
 fn slug_survives_sanitizing(slug: &str) -> bool {
     let stripped = slug_without_markup(&slug.replace('£', ""), '<');
     // WordPressが符号化する前の文字。`%xx`は、ASCIIの3文字として数える
@@ -1480,19 +1493,24 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
     }
     let mut encoded = String::new();
     let mut length = 0;
-    for c in lowered.chars() {
+    'encode: for c in lowered.chars() {
         if c.is_ascii() {
             if length >= SLUG_ENCODED_MAX_LENGTH {
                 break;
             }
             encoded.push(c.to_ascii_lowercase());
             length += 1;
-        } else if becomes_ascii_letters(c) {
-            // `remove_accents`がASCIIの文字（1〜2文字）にするので、収まれば残る
-            if length < SLUG_ENCODED_MAX_LENGTH {
-                return true;
+        } else if let Some(letters) = ascii_letters_after_remove_accents(c) {
+            // `remove_accents`がASCIIの文字にする。文字そのものは決めず、
+            // 16進の数字でない`z`で数える（エンティティの中なら、後で消える。
+            // PR #781のレビュー）
+            for _ in 0..letters {
+                if length >= SLUG_ENCODED_MAX_LENGTH {
+                    break 'encode;
+                }
+                encoded.push('z');
+                length += 1;
             }
-            break;
         } else {
             let mut buf = [0u8; 4];
             let bytes = c.encode_utf8(&mut buf).as_bytes();
@@ -10427,6 +10445,12 @@ mod tests {
         )));
         assert!(slug_survives_sanitizing("&amp;→"));
         assert!(slug_survives_sanitizing(&format!("{}é", "…".repeat(22))));
+        assert!(slug_survives_sanitizing("é"));
+        // エンティティの中の`é`も、エンティティごと消える（PR #781のレビュー）
+        assert!(!slug_survives_sanitizing("&é;"));
+        assert!(!slug_survives_sanitizing("&æ;"));
+        // `æ`は`ae`の2文字。198文字の後では、`a`だけが入る
+        assert!(slug_survives_sanitizing(&format!("{}æ", "…".repeat(22))));
         assert!(!slug_survives_sanitizing(&format!(
             "--{}é",
             "%e2%80%94".repeat(22)
