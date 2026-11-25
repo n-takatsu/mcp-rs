@@ -79,6 +79,14 @@ pub struct HttpConfig {
     /// next request on a kept-alive connection), and each wait for more of
     /// the request body (not the whole body). It does not limit how long a
     /// tool call takes.
+    ///
+    /// It is also used after the request (#779): a connection with no
+    /// request in progress for this long is closed (HTTP/1.1 and HTTP/2,
+    /// #592; HTTP/2 also uses it for keep-alive pings), and so is a
+    /// connection whose response body stops being sent: each part of the
+    /// body must be sent within this time plus the time it takes at
+    /// 64 KiB/s (#759). A response being sent does not count as idle only
+    /// while its sending progresses.
     pub timeout_ms: u64,
     /// Network access policy
     #[serde(default)]
@@ -1079,7 +1087,12 @@ pub struct ReceivedRequest {
     /// クライアントの`id`のまま届く（内部の相関IDに置き換えない）。取り消す
     /// 要求は、同じ呼び出し元（`caller`）から来た要求のうち、`original_id`が
     /// `requestId`と同じものとして探す。ほかの呼び出し元の要求は、同じ
-    /// `id`でも取り消さない
+    /// `id`でも取り消さない。
+    ///
+    /// `/ws`は、1つの接続のメッセージを1つずつ処理する（前の要求の応答を
+    /// 返すまで、次を読まない）。このため、`/ws`で処理中の要求への取り消しを
+    /// 同じ`/ws`の接続で送っても、その要求が終わるまで届かない。処理中の
+    /// 要求を取り消すには、取り消しをHTTP（`/mcp`）で送る（#779）
     pub original_id: Option<Value>,
     /// 呼び出し元（APIキー・トークンの名前と使えるツール、接続元の
     /// IPアドレス、#749）
@@ -2996,8 +3009,9 @@ async fn handle_jsonrpc_request(
     if request.get("id").is_none() {
         // Notification (no ID)
         // 確かめたJSONを渡す（#774。元の文字列は、重複したキーがあると
-        // 受信側が読めない）
-        RequestChannel::forward_notification(permit, request.to_string(), caller, protocol_version);
+        // 受信側が読めない）。上で書き出したもの（`request`と同じ）を使い
+        // 回す（#779）
+        RequestChannel::forward_notification(permit, request_str, caller, protocol_version);
 
         // JSON-RPC 2.0: the server MUST NOT reply to a notification. MCP's
         // HTTP transport acknowledges an accepted notification with
@@ -3269,7 +3283,12 @@ impl AuthFailureLimiter {
 
     /// 認証が通ったとき、`begin`で数えた1回分を戻す。数えたときと同じ
     /// 時間枠のときだけ（#705。前の時間枠で始めた認証が、新しい時間枠の
-    /// 失敗を減らさないように）
+    /// 失敗を減らさないように）。
+    ///
+    /// 戻して数が0になったアドレスは、表から消す（#779）。数には確かめて
+    /// いる最中のものも入るので、0なら、その時間枠に失敗も確かめている最中の
+    /// ものも無い。以前は残したので、認証の通るアドレスが時間枠の間、表の
+    /// 枠を占め続け、表が埋まると、新しいアドレスはまとめた数で429になりえた
     fn succeeded(&self, attempt: &AuthAttempt) {
         let mut failures = self
             .failures
@@ -3279,8 +3298,14 @@ impl AuthFailureLimiter {
             Some(client) => failures.clients.get_mut(&client),
             None => failures.overflow.as_mut(),
         };
-        if let Some(entry) = entry.filter(|entry| entry.1 == attempt.window_started) {
-            entry.0 = entry.0.saturating_sub(1);
+        let Some(entry) = entry.filter(|entry| entry.1 == attempt.window_started) else {
+            return;
+        };
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 == 0 {
+            if let Some(client) = attempt.client {
+                failures.clients.remove(&client);
+            }
         }
     }
 }
@@ -6772,6 +6797,39 @@ mod tests {
         assert!(limiter.begin(d, start).is_some());
         // 窓が過ぎたアドレスは忘れるので、空いた分は、アドレスごとに数える
         assert_eq!(limiter.begin(d, later).unwrap().client, Some(d));
+    }
+
+    /// 認証が通って数が0になったアドレスは、表から消す（#779）。残すと、
+    /// 認証の通るアドレスで表が埋まり、新しいアドレスがまとめた数で
+    /// 数えられた
+    #[test]
+    fn test_auth_failure_limiter_success_frees_the_entry() {
+        let limiter = AuthFailureLimiter::new(3, std::time::Duration::from_secs(60), 1);
+        let start = std::time::Instant::now();
+        let a: IpAddr = "192.0.2.1".parse().unwrap();
+        let b: IpAddr = "192.0.2.2".parse().unwrap();
+        let entries = |limiter: &AuthFailureLimiter| limiter.failures.lock().unwrap().clients.len();
+
+        // 確かめている最中のものが残っている間は、消さない
+        let first = limiter.begin(a, start).unwrap();
+        let second = limiter.begin(a, start).unwrap();
+        limiter.succeeded(&first);
+        assert_eq!(entries(&limiter), 1);
+        // 最後の1つが通ったら消す。空いた枠で、ほかのアドレスを
+        // アドレスごとに数える
+        limiter.succeeded(&second);
+        assert_eq!(entries(&limiter), 0);
+        let other = limiter.begin(b, start).unwrap();
+        assert_eq!(other.client, Some(b));
+
+        // 失敗が残っているアドレスは、通っても消さない（1つ目は失敗、
+        // `succeeded`を呼ばない）
+        assert!(limiter.begin(b, start).is_some());
+        let ok = limiter.begin(b, start).unwrap();
+        limiter.succeeded(&ok);
+        limiter.succeeded(&other);
+        assert_eq!(entries(&limiter), 1);
+        assert!(limiter.begin(a, start).unwrap().client.is_none());
     }
 
     #[tokio::test]
