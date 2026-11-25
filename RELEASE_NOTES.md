@@ -6,7 +6,7 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
 
 ## 🧱 v0.30.0 - 本体の強化（WordPress・MCP・導入）
 
-**Release Date:** 2026-11-25
+**Release Date:** 2026-11-26
 **Focus:** 1つのmcp-rsで複数のWordPressのサイトを使い、コメント・リビジョン・カスタム投稿タイプを扱う。MCPのプロンプトとリソースのテンプレートを出す。Claude Desktopの拡張機能（`.mcpb`）を付け、`mcp-rs init`でデータベースだけ・2つ目以降のサイトも設定できる。過去の版のレビュー（CodeRabbit）の指摘を直す。いくつかの修正は今の設定の動きを変えるので、更新の前に「互換性」を確かめる
 
 ### ⚠️ 互換性（更新の前に確かめる）
@@ -39,11 +39,13 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
   配列でない値も断る。固定ページや、カテゴリー・タグの無いカスタム投稿
   タイプに渡すと、送る前に断る（以前は、WordPressが無視するのに成功と
   返していた）。同じ分類を`categories`と`terms.categories`の2つで渡すのも断る
-- **`terms`**（#774）: タクソノミーに無い項目のIDを渡すと、送る前に断る
-  （以前は、WordPressがそのIDを黙って飛ばし、ほかの項目だけを外して成功と
-  返していた）
-- **`slug`**（#750・#774）: 文字・数字を含まない値（`!!!`、エンコードした
-  `%c2%a0`等）は、空と同じく断る
+- **`terms`・`categories`・`tags`**（#774・#779）: タクソノミーに無い項目の
+  IDを渡すと、送る前に断る（以前は、WordPressがそのIDを黙って飛ばし、
+  ほかの項目だけを外して成功と返していた）。空の配列（全部外す）と、
+  `/wp/v2`の外のタクソノミーは調べない
+- **`slug`**（#750・#774・#779）: WordPressが保存すると空になる値（`!!!`、
+  エンコードした`%c2%a0`、タグ・エンティティだけの値等）は、空と同じく
+  断る。WordPressが残す値（`→`等の記号、`%c3%97`、`_`等）は通す
 - **`get_comments`**（#639・#774）: コメントした人のメールアドレスを出さない。
   `post_id`が正の整数でなければ断る（以前は、全投稿のコメントを返していた）
 - **`create_post_with_embeds`**（#680）: 本文に足さなかったURLを、結果に
@@ -146,14 +148,16 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
 
 - **コメント**: `create_comment`（返信は`parent`）・`update_comment`（承認・
   スパム・ゴミ箱・本文の変更）・`delete_comment`（既定はゴミ箱）。
-  `create_comment`は、既定で承認待ち（`hold`）で作る。`get_comments`に
-  `status`を足した
+  `create_comment`は、既定で承認待ち（`hold`）で作る。WordPressが頼んだ
+  状態と違う状態で作ったら、作成済みであることとIDを返してエラーにする
+  （#779）。`get_comments`に`status`を足した
 - **リビジョン**: `get_revisions`・`get_revision`・`restore_revision`。
   書き戻しは、題・本文・抜粋だけを変える。投稿タイプが対応しない項目
   （本文の無いカスタム投稿タイプ等）は送らず、結果には書き戻した項目だけを
   挙げる
 - **抜粋**: `update_post`で抜粋（`excerpt`）を変えられ、`get_post`は抜粋も
-  出す（#774）
+  出す（#774）。抜粋に対応しない投稿タイプに抜粋だけを渡したら、エラーに
+  する（#779）
 - **カスタム投稿タイプと独自のタクソノミー**: 設定の`post_types`
   （例: `["product"]`）に書いた型だけを使う（既定は今までどおり`post`・
   `page`だけ）。新しいツール: `get_post_types`・`get_taxonomies`・
@@ -261,6 +265,27 @@ v0.30.0のリリースのPR（#773）のレビュー（CodeRabbit）の指摘を
   パスワードは、すべての質問と確認の後で入れる。Ctrl+C・エラーで終わる
   とき、設定ファイルに書いていない新しい資格情報の項目を消す。MySQL・
   MariaDBで`[::1]`のような角括弧付きのIPv6アドレスにつなげる
+
+### 🔧 このリリースのPRの2回目のレビューの指摘（#779）
+
+#773の2回目のレビュー（CodeRabbit）の指摘を、#780・#781・#782で直した。
+主なもの（上に書いたものを除く）:
+
+- **HTTP**: 認証の失敗の数が0に戻ったアドレスを、覚える表から消す
+  （#705の変更で、認証の通るアドレスが表を埋め、新しいアドレスが429に
+  なりえた）。`timeout_ms`（`request_timeout_seconds`）が、本文のある応答の
+  送信の期限にも使われることを説明に書いた
+- **`mcp-rs init`**: データベースの資格情報も、設定ファイルを書けなかった
+  とき・Ctrl+Cのときに戻す。質問の間に設定ファイルが変わったら書かずに
+  止める。質問の間に別のところで作られた項目を上書きしない
+- **`mcp-rs database-keyring set`**: 質問の間に設定ファイルが変わったら、
+  書かずに止め、入れたパスワードを前の中身に戻す。始めに無かった項目が
+  質問の間に作られていたら、上書きしない
+- **設定**: `${a}/b-${c}`のように、値全体が1つの`${...}`でないパスを、
+  埋まらなかった値として捨てない
+- **`mcp-rs check`**: `--help`に、`MCP_RS_CONFIG`が`--config`より先に使われる
+  ことを書いた。プラグインの後片付けの案内で、`docker_command`・
+  `kubectl_command`に読み替えると書いた
 
 ### 確かめたこと
 
