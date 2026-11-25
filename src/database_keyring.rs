@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::config::DatabaseSettings;
 use crate::init::{
     append_to_config_file, ask_database, ask_database_password, ask_with_default, check_store,
-    confirm, database_toml, make_backup, write_atomically, Prompt, Terminal,
+    check_unchanged, confirm, database_toml, make_backup, put_back_entry, write_atomically, Prompt,
+    Terminal,
 };
 use crate::security::keyring_store::{
     database_entry, store_database_credentials, DatabaseEntry, DatabaseKeyringCredentials,
@@ -195,9 +196,13 @@ fn set(
     check_store(store)?;
     // WordPressの資格情報等を、データベースの資格情報で上書きしない。
     // データベースの資格情報なら、今までどおり入れ直せる（#692）
-    if let Some(DatabaseEntry::Other) = database_entry(store, name)? {
+    let found = database_entry(store, name)?;
+    if let Some(DatabaseEntry::Other) = found {
         return Err(not_database(name).into());
     }
+    // 始めに無かった項目が、質問の間に作られていたら、上書きしない
+    // （PR #782のレビュー）
+    let existed = found.is_some();
     let content = std::fs::read_to_string(path).ok();
     let existing = match &content {
         Some(content) => database_section(content).map_err(|e| {
@@ -209,16 +214,21 @@ fn set(
         None => None,
     };
     match (content, existing) {
-        (Some(content), Some(settings)) => update(io, store, name, path, &content, &settings),
+        (Some(content), Some(settings)) => {
+            update(io, store, name, existed, path, &content, &settings)
+        }
         (content, _) => {
             io.say(&format!(
                 "{} has no [database]. Answer a few questions to set it up.\n",
                 path.display()
             ));
-            let answers = ask_database(io, store, Some(name), &[])?;
-            if content.is_some() {
-                if confirm(io, &format!("Add [database] to {}?", path.display()), true)? {
-                    let backup = append_to_config_file(path, &database_toml(&answers)?)?;
+            // 書き足せなかったら、項目を前の中身に戻す（PR #782のレビュー）。
+            // 入れられなかったときは、`ask_database`が戻す
+            let (answers, previous) = ask_database(io, store, Some(name), &[])?;
+            if let Some(content) = &content {
+                let added = add_section(io, path, content, &answers)
+                    .map_err(|e| put_back_entry(store, name, previous, e))?;
+                if let Some(backup) = added {
                     io.say(&format!(
                         "Added [database] to {} (kept the previous file as {}).",
                         path.display(),
@@ -237,6 +247,23 @@ fn set(
             Ok(())
         }
     }
+}
+
+/// `[database]`を書き足すかを聞き、書き足す。書き足したら控えのパス、
+/// 断られたら`None`
+fn add_section(
+    io: &mut dyn Prompt,
+    path: &Path,
+    content: &str,
+    answers: &crate::init::DatabaseAnswers,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    if !confirm(io, &format!("Add [database] to {}?", path.display()), true)? {
+        return Ok(None);
+    }
+    // 質問の間に変わった設定ファイルには書き足さない（#779。
+    // `[database]`が足されていると、重複して壊れる）
+    check_unchanged(path, content, "database-keyring set")?;
+    Ok(Some(append_to_config_file(path, &database_toml(answers)?)?))
 }
 
 /// 設定ファイルの`[database]`。無ければ`None`
@@ -287,6 +314,7 @@ fn update(
     io: &mut dyn Prompt,
     store: &dyn SecretStore,
     name: &str,
+    existed: bool,
     path: &Path,
     content: &str,
     written: &DatabaseSettings,
@@ -339,7 +367,10 @@ fn update(
         username: (username != expanded.username).then(|| username.clone()),
     };
     if changes.is_empty() {
-        save(store, name, &credentials)?;
+        // 設定ファイルは書かないが、質問の間に`[database]`のつなぐ先が
+        // 変わっていれば、古いつなぐ先で保存しない（PR #782のレビュー）
+        check_unchanged(path, content, "database-keyring set")?;
+        save(store, name, existed, &credentials)?;
         io.say(&format!(
             "Stored the password as '{name}' in the OS credential store."
         ));
@@ -369,7 +400,7 @@ fn update(
             return Ok(());
         }
         let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
-        check_kind(store, name)?;
+        check_kind(store, name, existed)?;
         // 書いた後の読み戻しの失敗でも、前の中身に戻す（PR #778のレビュー）
         let result = store_database_credentials(store, name, &credentials)
             .map_err(Into::into)
@@ -379,35 +410,32 @@ fn update(
                 ));
                 change_config(io, path, content, name, &changes)
             });
-        if let Err(e) = result {
-            let restored = match &previous {
-                Some(previous) => store.set(name.trim(), previous),
-                None => store.delete(name.trim()).map(|_| ()),
-            };
-            return Err(match restored {
-                Ok(()) => format!("{e} (put '{name}' back as it was)"),
-                Err(r) => format!("{e} (and could not put '{name}' back as it was: {r})"),
+        return result.map_err(|e| put_back_entry(store, name, previous, e));
+    }
+    // 設定を変えると答えて書けなかったら、項目を前の中身に戻す（PR #782の
+    // レビュー）。変えないと答えたら、項目は残す
+    let previous = store.get(name.trim()).map_err(|e| e.to_string())?;
+    check_kind(store, name, existed)?;
+    let result = store_database_credentials(store, name, &credentials)
+        .map_err(Into::into)
+        .and_then(|()| {
+            io.say(&format!(
+                "Stored the password as '{name}' in the OS credential store."
+            ));
+            if confirm(
+                io,
+                &format!("Change [database] in {}: {summary}?", path.display()),
+                true,
+            )? {
+                change_config(io, path, content, name, &changes)
+            } else {
+                io.say(&format!(
+                    "Kept the config file as it is. To use the stored password, change [database]: {summary}."
+                ));
+                Ok(())
             }
-            .into());
-        }
-        return Ok(());
-    }
-    save(store, name, &credentials)?;
-    io.say(&format!(
-        "Stored the password as '{name}' in the OS credential store."
-    ));
-    if confirm(
-        io,
-        &format!("Change [database] in {}: {summary}?", path.display()),
-        true,
-    )? {
-        change_config(io, path, content, name, &changes)?;
-    } else {
-        io.say(&format!(
-            "Kept the config file as it is. To use the stored password, change [database]: {summary}."
-        ));
-    }
-    Ok(())
+        });
+    result.map_err(|e| put_back_entry(store, name, previous, e))
 }
 
 /// 項目を保存する。保存の直前に、別の種類の項目になっていないかを
@@ -415,16 +443,23 @@ fn update(
 fn save(
     store: &dyn SecretStore,
     name: &str,
+    existed: bool,
     credentials: &DatabaseKeyringCredentials,
 ) -> Result<(), String> {
-    check_kind(store, name)?;
+    check_kind(store, name, existed)?;
     store_database_credentials(store, name, credentials)
 }
 
-/// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）
-fn check_kind(store: &dyn SecretStore, name: &str) -> Result<(), String> {
+/// 項目が別の種類（WordPressの資格情報等）なら、エラー（#774）。始めに
+/// 無かった（`existed`が偽）のに、質問の間に作られていても、エラー
+/// （PR #782のレビュー）
+fn check_kind(store: &dyn SecretStore, name: &str, existed: bool) -> Result<(), String> {
     match database_entry(store, name)? {
         Some(DatabaseEntry::Other) => Err(not_database(name)),
+        Some(DatabaseEntry::Database { .. }) if !existed => Err(format!(
+            "'{}' was created in the OS credential store while the questions were asked. Run the command again",
+            name.trim()
+        )),
         _ => Ok(()),
     }
 }
@@ -438,6 +473,9 @@ fn change_config(
     changes: &Changes,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let updated = edit_database(content, name, changes)?;
+    // 質問の間に、ほかで設定ファイルが変わっていれば、古い中身から作った
+    // ものを書かない（#779。変わった分が失われる）
+    check_unchanged(path, content, "database-keyring set")?;
     let backup = make_backup(path, true)?;
     write_atomically(path, &updated, true)?;
     io.say(&format!(
@@ -775,6 +813,23 @@ ssl_mode = "verify-full"
         let stored =
             load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
         assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`の無い設定ファイルで、質問の後に入れたときも同じ
+        // （PR #782のレビュー）
+        let without = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n";
+        let store = crate::security::keyring_store::ReadBackFailingStore::default();
+        old_entry(&store.inner);
+        let (_dir, path) = config_in_temp(without);
+        // localhost（ssl_mode: prefer）、書き込みは許さない
+        let mut io = Script::new(&["", "", "", "app", "reader", "new-pass", "", ""]);
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), without);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
     }
 
     /// パスワードを聞いている間に、同じ名前でWordPressの資格情報が
@@ -820,6 +875,69 @@ ssl_mode = "verify-full"
             crate::security::keyring_store::load_wordpress_credentials(&store, "app@db").is_ok()
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+    }
+
+    /// 始めに無かった項目が、質問の間に別の実行で作られた: 上書きしない。
+    /// 始めからあった項目は、今までどおり入れ直せる（PR #782のレビュー）
+    #[test]
+    fn test_set_does_not_overwrite_an_entry_created_during_the_questions() {
+        struct Creating<'a> {
+            script: Script,
+            store: &'a MemoryStore,
+        }
+        impl Prompt for Creating<'_> {
+            fn ask(&mut self, question: &str) -> std::io::Result<String> {
+                self.script.ask(question)
+            }
+            fn ask_hidden(&mut self, question: &str) -> std::io::Result<Zeroizing<String>> {
+                old_entry(self.store);
+                self.script.ask_hidden(question)
+            }
+            fn say(&mut self, text: &str) {
+                self.script.say(text);
+            }
+        }
+        let created = "was created in the OS credential store while the questions were asked";
+
+        // `[database]`のある設定ファイル
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        let mut io = Creating {
+            script: Script::new(&["", "", "", "new-pass", "y"]),
+            store: &store,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(created), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`の無い設定ファイル（localhost、書き込みは許さない）
+        let without = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n";
+        let (_dir, path) = config_in_temp(without);
+        let store = MemoryStore::default();
+        let mut io = Creating {
+            script: Script::new(&["", "", "", "app", "reader", "new-pass", "", ""]),
+            store: &store,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(created), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), without);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // 始めからあった項目は入れ直せる（書き足す）
+        let mut io = Script::new(&["", "", "", "app", "reader", "new-pass", "", "", ""]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        let stored =
+            load_database_credentials(&store, "app@db", "localhost", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "new-pass");
     }
 
     /// 展開できた値は、`${`を含んでも既定にする（#774）
@@ -1015,5 +1133,132 @@ ssl_mode = "verify-full"
         assert_eq!(database_entry(&store, "app@db").unwrap(), None);
         assert!(delete(&store, "app@db").is_err());
         assert!(show(&store, "missing").is_err());
+    }
+
+    /// パスワードを聞いている間に、設定ファイルを書き換える（#779）
+    struct Changing<'a> {
+        script: Script,
+        path: &'a Path,
+        content: &'a str,
+    }
+
+    impl Prompt for Changing<'_> {
+        fn ask(&mut self, question: &str) -> std::io::Result<String> {
+            self.script.ask(question)
+        }
+        fn ask_hidden(&mut self, question: &str) -> std::io::Result<Zeroizing<String>> {
+            std::fs::write(self.path, self.content).unwrap();
+            self.script.ask_hidden(question)
+        }
+        fn say(&mut self, text: &str) {
+            self.script.say(text);
+        }
+    }
+
+    /// 質問の間に設定ファイルが変わったら、古い中身から作ったものを書かずに
+    /// 止め、項目を前の中身に戻す（#779）
+    #[test]
+    fn test_set_stops_when_the_config_file_changed() {
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let store = MemoryStore::default();
+        old_entry(&store);
+        let (_dir, path) = config_in_temp(&config);
+        let changed = format!("{config}# changed by hand\n");
+        let mut io = Changing {
+            script: Script::new(&["db2.example.com", "", "", "new-pass", "y"]),
+            path: &path,
+            content: &changed,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "the config file was changed while mcp-rs database-keyring set was asking"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // `[database]`が無い設定ファイルに足されたら、書き足さない
+        let without = "[server]\n\n[transport]\ntype = \"stdio\"\n\n[handlers]\n";
+        let (_dir, path) = config_in_temp(without);
+        let changed = format!(
+            "{without}\n[database]\nengine = \"mysql\"\ndatabase = \"x\"\nusername = \"y\"\n"
+        );
+        let mut io = Changing {
+            script: Script::new(&["mysql", "", "", "shop", "app", "pw", "", "", ""]),
+            path: &path,
+            content: &changed,
+        };
+        let err = set(&mut io, &store, "shop@localhost", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the config file was changed"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        // 設定ファイルを変えない経路（既にこの項目を使う）でも、変わって
+        // いたら保存しない（PR #782のレビュー）
+        let config =
+            HAND_WRITTEN.replace("password = \"${MCP_DB_PASSWORD}\"", "keyring = \"app@db\"");
+        let (_dir2, path2) = config_in_temp(&config);
+        let moved = config.replace("db.example.com", "db2.example.com");
+        let store2 = MemoryStore::default();
+        old_entry(&store2);
+        let mut io2 = Changing {
+            script: Script::new(&["", "", "", "new-pass"]),
+            path: &path2,
+            content: &moved,
+        };
+        let err2 = set(&mut io2, &store2, "app@db", &path2)
+            .unwrap_err()
+            .to_string();
+        assert!(err2.contains("the config file was changed"), "{err2}");
+        let stored =
+            load_database_credentials(&store2, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+
+        // 新しく作った項目は消す（PR #782のレビュー）
+        assert!(err.contains("put 'shop@localhost' back as it was"), "{err}");
+        assert_eq!(store.get("shop@localhost").unwrap(), None);
+
+        // 別の項目に変える経路でも、前の中身に戻す（PR #782のレビュー）
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let changed = format!(
+            "{HAND_WRITTEN}# changed by hand
+"
+        );
+        let mut io = Changing {
+            script: Script::new(&["", "", "", "new-pass", "y"]),
+            path: &path,
+            content: &changed,
+        };
+        let err = set(&mut io, &store, "app@db", &path)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the config file was changed"), "{err}");
+        assert!(err.contains("put 'app@db' back as it was"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "old-pass");
+    }
+
+    /// 設定を変えないと答えたら、保存した項目は残す
+    #[test]
+    fn test_set_keeps_the_entry_when_the_change_is_declined() {
+        let (_dir, path) = config_in_temp(HAND_WRITTEN);
+        let store = MemoryStore::default();
+        old_entry(&store);
+        let mut io = Script::new(&["", "", "", "new-pass", "n"]);
+        set(&mut io, &store, "app@db", &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), HAND_WRITTEN);
+        let stored =
+            load_database_credentials(&store, "app@db", "db.example.com", 5432, "reader").unwrap();
+        assert_eq!(*stored.password, "new-pass");
     }
 }
