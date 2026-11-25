@@ -1390,7 +1390,11 @@ fn slug_without_tags(slug: &str) -> String {
         }
         // `<?`（PHPの処理命令）は、`?>`まで消す（PR #781のレビュー）。
         // `strip_tags`と同じく、`"`の中と、括弧が閉じていない間は終えない
-        if let Some(instruction) = after.strip_prefix('?') {
+        // `<?xml`は、PHPでは普通のタグに戻る（PR #781のレビュー）
+        let xml = after
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case("?xml"));
+        if let Some(instruction) = after.strip_prefix('?').filter(|_| !xml) {
             match processing_instruction_end(instruction) {
                 Some(end) => {
                     rest = &instruction[end..];
@@ -1612,7 +1616,17 @@ fn remove_accents_ascii(c: char) -> Option<&'static str> {
     })
 }
 
-/// WordPressが保存するとき、スラッグに何か残るか（#779）。
+/// WordPressが保存するとき、スラッグに何か残るか（#779）。WordPressは、
+/// RESTの引数としてスラッグを1回整え（`sanitize_title`）、保存するときに
+/// もう1回整える。1回目で取り除かれた記号の後に`%xx`ができる（`%c2!%a0`は
+/// `%c2%a0`になり、2回目で空になる）ので、2回なぞる（PR #781のレビュー）
+fn slug_survives_sanitizing(slug: &str) -> bool {
+    sanitized_slug(&sanitized_slug(slug))
+        .chars()
+        .any(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// WordPressがスラッグを1回整えた結果（`sanitize_title`の`save`）。
 /// `sanitize_title_with_dashes`（`save`）と同じく、ASCIIでない文字を
 /// `%xx`にし、パーセントエンコード（`%xx`）はそのまま残して、決まった
 /// 記号を取り除く・ハイフンにする。`%c3%97`（×）は`x`になる。残るのは
@@ -1620,8 +1634,10 @@ fn remove_accents_ascii(c: char) -> Option<&'static str> {
 /// その前の`remove_accents`が消す`£`は先に取り除き、`utf8_uri_encode`と
 /// 同じく、符号化した後の200文字（ASCIIは1文字、ほかはUTF-8のバイト数×3）
 /// に収まる文字までを見る。`remove_accents`がASCIIの文字にする文字（`é`等）
-/// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）
-fn slug_survives_sanitizing(slug: &str) -> bool {
+/// は、その文字数で数える。エンティティは、切り詰めた後に取り除く（#781）。
+/// 最後に、`%`・英数字・空白・`_`・`-`のほかを取り除く（空白をハイフンに
+/// する等の、残るかに関わらない処理はしない）
+fn sanitized_slug(slug: &str) -> String {
     let stripped = slug_without_tags(&slug.replace('£', ""));
     // `remove_accents`は、`%xx`を探す前・小文字にする前に、アクセントの
     // ある文字をASCIIの文字にする（`İ`は`i`＋結合文字ではなく`i`。
@@ -1679,12 +1695,12 @@ fn slug_survives_sanitizing(slug: &str) -> bool {
     for octets in SLUG_SPACE_OCTETS {
         encoded = encoded.replace(octets, "-");
     }
+    // 切り詰めで`%xx`の途中が切れた`%`は残るが、2回目で消える（PR #781の
+    // レビュー）
     slug_without_entities(&encoded)
         .chars()
-        // `%`だけは残らない（切り詰めで`%xx`の途中が切れた`%`は、公開済みの
-        // 投稿を保存し直すときに消える。`%xx`は16進の数字が残る。PR #781の
-        // レビュー）
-        .any(|c| c.is_ascii_alphanumeric() || c == '_')
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '%' | ' ' | '_' | '-'))
+        .collect()
 }
 
 /// ツール引数の`slug`を取り出す。省略時は`None`（WordPressに送らない）。
@@ -4298,6 +4314,10 @@ impl WordPressHandler {
             true,
         )
         .await?;
+        // この確認は、書き込むときにもIDがあることまでは保証しない。確認の後、
+        // 書き込みの前に別の管理者が項目を消すと、WordPressはそのIDを黙って
+        // 飛ばし、ほかの項目を外して成功と返す（PR #781のレビュー。確認と
+        // 書き込みを1つにする方法がREST APIに無いため、そのままにする）
         let url = format!("{}/wp-json/wp/v2/{}/{}", self.base_url, endpoint, post_id);
 
         info!("Updating WordPress {}: {}", post_type, post_id);
@@ -6015,7 +6035,6 @@ impl WordPressHandler {
                     || date_given
                     || categories.as_ref().is_some_and(|c| !c.is_empty())
                     || tags.as_ref().is_some_and(|t| !t.is_empty())
-                    || featured_media_id.is_some()
                     || slug.is_some()
                     || terms.as_ref().is_some_and(|t| !t.is_empty());
 
@@ -6042,9 +6061,12 @@ impl WordPressHandler {
                 // 抜粋に対応しない投稿タイプでは、WordPressは抜粋を黙って捨てる
                 // （`create_advanced_post`と同じ）
                 let excerpt_dropped = excerpt_given && post.excerpt.is_none();
+                // アイキャッチ画像は、応答に反映されたときだけ数える（対応しない
+                // 投稿タイプでは、WordPressは黙って無視する。PR #781のレビュー）
                 let other_given = other_given
                     || (categories_cleared && post.categories.is_some())
-                    || (tags_cleared && post.tags.is_some());
+                    || (tags_cleared && post.tags.is_some())
+                    || featured_media_id.is_some_and(|id| post.featured_media == Some(id));
                 // 抜粋だけを渡したなら、保存したいものが保存されていないので
                 // エラーにする（#779）。WordPressは更新日時だけは変えるので、
                 // 「何も変わっていない」とは言わない（PR #781のレビュー）
@@ -10666,6 +10688,12 @@ mod tests {
         // PHPは最後の引用符だけを覚える。`'"'`の後は`'`の中なので、`(`を
         // 数えない（PR #781のレビュー）
         assert!(slug_survives_sanitizing("<?'\"'(?>a"));
+        // `<?xml`は普通のタグ。1回目で取り除いた記号の後にできた`%xx`は、
+        // 2回目で消える（PR #781のレビュー）
+        assert!(slug_survives_sanitizing("-<?xml>a"));
+        assert!(slug_survives_sanitizing("-<?XML version='1.0'>a"));
+        assert!(!slug_survives_sanitizing("%c2!%a0"));
+        assert!(!slug_survives_sanitizing("%e2%80!%94"));
         assert!(slug_survives_sanitizing(&format!("{}ǝ", "-".repeat(198))));
         assert!(!slug_survives_sanitizing(&format!(
             "{}%21",
@@ -12836,6 +12864,21 @@ X-WP-TotalPages: 1",
                 "post_type": "product",
                 "excerpt": "要約",
                 "tags": []
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], true, "{}", tool_text(&result));
+
+        // アイキャッチ画像も、応答に反映されていなければ数えない
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "excerpt": "要約",
+                "featured_media_id": 42
             }),
         )
         .await
