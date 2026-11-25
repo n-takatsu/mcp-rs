@@ -47,6 +47,7 @@ Notes:
   - If it keeps the WordPress credentials in the OS credential store (`keyring`, as `mcp-rs init` writes), leave the three fields empty
   - If it reads them from `${WORDPRESS_URL}`, `${WORDPRESS_USERNAME}` and `${WORDPRESS_PASSWORD}`, fill in the three fields: the extension passes them as those variables. If they are left empty, mcp-rs starts without WordPress and `mcp_rs_status` says what is missing
   - The extension always runs mcp-rs in STDIO mode, even if the file sets `[transport] type = "http"`
+- The extension is also listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.n-takatsu/mcp-rs) as `io.github.n-takatsu/mcp-rs`, with the same file and SHA256 as the release. Clients and directories that read the registry can find it there
 - The extension is not signed. Check the file with its `.sha256` or `gh attestation verify mcp-rs-<version>.mcpb --repo n-takatsu/mcp-rs`. To update, install the extension file of the new release
 - Do not also register mcp-rs with `mcp-rs init` for Claude Desktop: the same tools would appear twice. Claude Code and VS Code (GitHub Copilot) cannot use the extension; use `mcp-rs init` for them
 - While mcp-rs runs, the password is in its environment, as with `env` in the Claude Desktop config file
