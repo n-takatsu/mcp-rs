@@ -12,7 +12,7 @@ use crate::handlers::database::{
 use async_trait::async_trait;
 use chrono::Utc;
 
-use super::connection::{open_pools, SqlitePools};
+use super::connection::{open_pools, pools_key, SqlitePools};
 use super::SqliteConnection;
 use std::sync::Arc;
 
@@ -56,6 +56,11 @@ impl DatabaseEngine for SqliteEngine {
             .get_or_try_init(|| open_pools(config))
             .await?
             .clone();
+        // 別のファイル・書き込みの許し方の設定なら、共有のプールを使わず、
+        // その接続だけのプールを開く（PR #798のレビュー）
+        if pools.key != pools_key(config) {
+            return Ok(Box::new(SqliteConnection::new(config.clone()).await?));
+        }
         Ok(Box::new(SqliteConnection::with_pools(
             pools,
             config.clone(),

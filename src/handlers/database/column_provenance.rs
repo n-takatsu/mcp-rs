@@ -875,6 +875,14 @@ mod tests {
                 "{sql}"
             );
         }
+        // 書き込みの道具でも、関数の名前で断る（文の種類ではなく。PR #798のレビュー）
+        for sql in [
+            "INSERT INTO users (id) VALUES (load_extension('/tmp/evil.so'))",
+            "UPDATE users SET name = fts3_tokenizer('simple')",
+        ] {
+            let err = validate_single_write_statement(sql, &sqlite).unwrap_err();
+            assert!(err.to_string().contains("()"), "{sql}: {err}");
+        }
         assert!(validate_single_query_statement("SELECT sqlite_version()", &sqlite).is_ok());
         // ふつうの引用符つきの名前・U&の文字列は通す
         assert!(validate_single_query_statement(r#"SELECT "id" FROM users"#, &pg).is_ok());

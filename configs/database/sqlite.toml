@@ -13,7 +13,8 @@
 engine = "sqlite"
 # The path of the database file (relative to this file's folder).
 # host, port, username, password, keyring, ssl_mode and ssl_root_cert are not
-# used with SQLite: mcp-rs refuses to start when one of them is set
+# used with SQLite: when one of them is set, mcp-rs starts without the
+# database tools and shows the reason in mcp_rs_status
 database = "data/app.db"
 
 # true also offers execute_command (one INSERT, UPDATE, or DELETE at a time),

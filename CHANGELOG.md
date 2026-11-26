@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[database]`で、SQLiteを使えるようにした（`engine = "sqlite"`、#528）。
   `database`にデータベースのファイルのパスを書く（相対パスは設定ファイルの
   フォルダが基準）。`host`・`port`・`username`・`password`・`keyring`・
-  `ssl_mode`・`ssl_root_cert`は使わないので、書いてあれば起動しない。
+  `ssl_mode`・`ssl_root_cert`は使わないので、書いてあれば、データベースの
+  ツールを出さずに起動し、`mcp_rs_status`で理由を知らせる（資格情報ストアは
+  読まない）。
   PostgreSQL・MySQLと同じ安全性にそろえた
   - ファイルは作らない。無ければ、データベースのツールを出さずに起動し、
     `mcp_rs_status`・`mcp-rs check`で知らせる
@@ -30,8 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 1つのSQLの時間の上限（`query_timeout_seconds`）。SQLiteの進み具合の
     コールバックで止める。ほかのプログラムのロックも、同じ時間まで待つ
   - 行数・結果のバイト数の上限。値は、列で宣言した型ではなく、値の型で返す
-  - `get_schema`は、表・ビューの列・主キー・外部キー・インデックスを返す
-    （表の名前はSQLに埋め込まない）
+  - `get_schema`は、表・ビューの列（生成列も）・主キー・外部キー・インデックスを
+    返す（表の名前はSQLに埋め込まない）。参照する列を書かない外部キーは、
+    参照する表の主キーの列にする
+  - 起動のときに、ファイルの中身を読み、SQLiteのファイルかを確かめる
+  - `execute_command`の`last_insert_id`は、INSERTで行を足したときだけ返す
   - SQLの関数`load_extension()`・`fts3_tokenizer()`を断る
   - 同梱のSQLiteの脆弱性（RUSTSEC-2026-0459、#449）は、細工したデータベースの
     ファイルを開くと当たる。信頼できるファイルだけを開くよう、文書と設定の

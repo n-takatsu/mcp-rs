@@ -233,7 +233,9 @@ impl DatabaseSettings {
         if let Some(cert) = self.ssl_root_cert.as_mut() {
             resolve(cert);
         }
-        if self.is_sqlite() && !self.database.trim().is_empty() {
+        // `:memory:`・`file:`のURIは、パスにつなぐと、検証で断れなくなる
+        // （PR #798のレビュー）。そのまま残し、`validate`で断る
+        if self.is_sqlite() && !self.database.trim().is_empty() && !is_sqlite_uri(&self.database) {
             resolve(&mut self.database);
         }
     }
@@ -338,7 +340,7 @@ impl DatabaseSettings {
                     .to_string(),
             );
         }
-        if path == ":memory:" || path.starts_with("file:") || path.starts_with("sqlite:") {
+        if is_sqlite_uri(path) {
             return Err(format!(
                 "database.database = \"{path}\" is not a file path: for engine = \"sqlite\", write the path of an existing database file"
             ));
@@ -359,6 +361,12 @@ impl DatabaseSettings {
         }
         Ok(())
     }
+}
+
+/// SQLiteの、ファイルのパスではない書き方（`:memory:`・`file:`・`sqlite:`のURI）か
+fn is_sqlite_uri(value: &str) -> bool {
+    let value = value.trim();
+    value == ":memory:" || value.starts_with("file:") || value.starts_with("sqlite:")
 }
 
 impl PluginConfig {
@@ -1972,6 +1980,11 @@ impl McpConfig {
             return Ok(());
         }
         Self::expand_database_config(config).map_err(|e| e.to_string())?;
+        // SQLiteは資格情報を使わないので、書いてはいけない項目（`keyring`等）を、
+        // 資格情報ストアを読む前に断る（PR #798のレビュー）
+        if config.is_sqlite() {
+            return config.validate();
+        }
         let Some(name) = config.keyring.clone() else {
             return Ok(());
         };
@@ -3159,6 +3172,33 @@ start_timeout_seconds = 300
             assert!(example.validate().is_ok());
             assert!(!example.allow_write());
         }
+
+        // `:memory:`・URIは、パスにつながずに断る（PR #798のレビュー）
+        for uri in [":memory:", "file:app.db?mode=rwc"] {
+            let mut memory = DatabaseSettings {
+                engine: "sqlite".to_string(),
+                database: uri.to_string(),
+                ..Default::default()
+            };
+            memory.resolve_paths(Some(base));
+            assert_eq!(memory.database, uri);
+            assert!(memory
+                .validate()
+                .unwrap_err()
+                .contains("is not a file path"));
+        }
+
+        // `keyring`は、資格情報ストアを読む前に断る（PR #798のレビュー）
+        let mut with_keyring = DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: "/srv/app.db".to_string(),
+            keyring: Some("app".to_string()),
+            ..Default::default()
+        };
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let err =
+            McpConfig::resolve_database_credentials_with(&mut with_keyring, &store).unwrap_err();
+        assert!(err.contains("database.keyring is not used"), "{err}");
 
         // 環境変数で渡すパスは、展開の後の値をそのまま使う
         let mut from_env = DatabaseSettings {

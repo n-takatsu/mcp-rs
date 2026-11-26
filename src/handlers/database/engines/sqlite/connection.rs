@@ -64,6 +64,8 @@ pub(crate) struct SqlitePools {
     read: SqlitePool,
     /// 書き込みの接続。`OPTION_READ_ONLY`のときは無い
     write: Option<SqlitePool>,
+    /// 開いたときの設定（`pools_key`）
+    pub(crate) key: (String, bool),
 }
 
 /// `:memory:`か
@@ -84,17 +86,28 @@ pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePool
         .options
         .get(OPTION_READ_ONLY)
         .is_some_and(|v| v == "true");
-    let busy = statement_timeout(config);
+    // sqlxは、ミリ秒が`i32`に収まらない`busy_timeout`でパニックする（PR #798の
+    // レビュー）。収まる長さ（約24日）までにする
+    let busy = statement_timeout(config).min(Duration::from_millis(i32::MAX as u64));
     let acquire = Duration::from_secs(if connection.timeout_seconds > 0 {
         u64::from(connection.timeout_seconds)
     } else {
         DEFAULT_CONNECT_TIMEOUT_SECS
     });
+    // プールに戻した接続の時間の上限は、いつも外す（PR #798のレビュー）。途中で
+    // 取り消された呼び出しは`disarm_deadline`まで進まないので、残った上限で、
+    // 後の呼び出し（準備済みの文・トランザクション）が止まらないように
     let pool_options = |max: u32| {
         SqlitePoolOptions::new()
             .max_connections(max.max(1))
             .min_connections(0)
             .acquire_timeout(acquire)
+            .after_release(|conn, _| {
+                Box::pin(async move {
+                    disarm_deadline(conn).await;
+                    Ok(true)
+                })
+            })
     };
     let open_error = |e: sqlx::Error| {
         DatabaseError::ConnectionFailed(format!("cannot open the SQLite database {path}: {e}"))
@@ -112,6 +125,7 @@ pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePool
         return Ok(Arc::new(SqlitePools {
             write: (!read_only).then(|| pool.clone()),
             read: pool,
+            key: pools_key(config),
         }));
     }
 
@@ -139,7 +153,33 @@ pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePool
                 .map_err(open_error)?,
         )
     };
-    Ok(Arc::new(SqlitePools { read, write }))
+    let pools = SqlitePools {
+        read,
+        write,
+        key: pools_key(config),
+    };
+    // SQLiteのファイルかを、中身を読んで確かめる（PR #798のレビュー。開くだけ
+    // では、ほかのファイルでも通る）
+    let mut conn = pools.read.acquire().await.map_err(open_error)?;
+    sqlx::query("SELECT count(*) FROM sqlite_schema")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(open_error)?;
+    drop(conn);
+    Ok(Arc::new(pools))
+}
+
+/// プールの開き方を決める設定（ファイルと、書き込みを許すか）。エンジンは、
+/// 同じ設定の接続にだけプールを共有する（PR #798のレビュー）
+pub(crate) fn pools_key(config: &DatabaseConfig) -> (String, bool) {
+    (
+        config.connection.host.trim().to_string(),
+        config
+            .connection
+            .options
+            .get(OPTION_READ_ONLY)
+            .is_some_and(|v| v == "true"),
+    )
 }
 
 /// 1つのSQLの時間の上限
@@ -305,13 +345,26 @@ async fn read_schema(
     let mut tables = Vec::new();
     let mut views = Vec::new();
     for (name, kind, sql) in objects {
-        // 列（cid・名前・型・NOT NULL・既定値・主キーの順番）
+        // 列（名前・型・NOT NULL・主キーの順番）。生成列も含める
+        // （`table_xinfo`。PR #798のレビュー）。仮想表の隠れた列（hidden = 1）は除く
         let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT name, type, \"notnull\", pk FROM pragma_table_info(?) ORDER BY cid",
+            "SELECT name, type, \"notnull\", pk FROM pragma_table_xinfo(?) \
+             WHERE hidden <> 1 ORDER BY cid",
         )
         .bind(&name)
         .fetch_all(&mut *tx)
         .await?;
+        // `WITHOUT ROWID`の表は、主キーの列にNULLを入れられない
+        let without_rowid: bool = kind == "table"
+            && sqlx::query_scalar::<_, i64>("SELECT wr FROM pragma_table_list(?)")
+                .bind(&name)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some_and(|wr| wr != 0);
+        // 主キーが`INTEGER`の1列だけなら、その列はrowidの別名で、NULLを入れられ
+        // ない。複合の主キーの列は、`NOT NULL`と書かなければNULLを入れられる
+        // （SQLiteの古い動き。PR #798のレビュー）
+        let primary_count = rows.iter().filter(|(_, _, _, pk)| *pk > 0).count();
         let mut primary: BTreeMap<i64, String> = BTreeMap::new();
         let columns = rows
             .into_iter()
@@ -319,11 +372,10 @@ async fn read_schema(
                 if pk > 0 {
                     primary.insert(pk, column.clone());
                 }
+                let rowid_alias =
+                    pk > 0 && primary_count == 1 && data_type.eq_ignore_ascii_case("INTEGER");
                 ColumnInfo {
-                    // 主キーの列は、`NOT NULL`と書かなくてもNULLを入れられる
-                    // （SQLiteの古い動き）が、INTEGERの主キーは入れられない
-                    nullable: not_null == 0
-                        && !(pk > 0 && data_type.eq_ignore_ascii_case("INTEGER")),
+                    nullable: not_null == 0 && !(pk > 0 && (rowid_alias || without_rowid)),
                     name: column,
                     data_type,
                     max_length: None,
@@ -341,24 +393,36 @@ async fn read_schema(
         }
 
         // 外部キー（id・seq・参照する表・列・参照する列）
-        let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?) ORDER BY id, seq",
+        let rows: Vec<(i64, i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, seq, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?) \
+             ORDER BY id, seq",
         )
         .bind(&name)
         .fetch_all(&mut *tx)
         .await?;
-        let foreign_keys = rows
-            .into_iter()
-            .map(
-                |(id, referenced_table, column, referenced_column)| ForeignKeyInfo {
-                    name: format!("fk_{name}_{id}"),
-                    column,
-                    referenced_table,
-                    // 参照する列を書かなければ、参照する表の主キー
-                    referenced_column: referenced_column.unwrap_or_default(),
-                },
-            )
-            .collect();
+        let mut foreign_keys = Vec::new();
+        for (id, seq, referenced_table, column, referenced_column) in rows {
+            // 参照する列を書かなければ、参照する表の主キーの、同じ順番の列
+            // （PR #798のレビュー）
+            let referenced_column = match referenced_column {
+                Some(column) => column,
+                None => sqlx::query_scalar::<_, String>(
+                    "SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk \
+                     LIMIT 1 OFFSET ?",
+                )
+                .bind(&referenced_table)
+                .bind(seq)
+                .fetch_optional(&mut *tx)
+                .await?
+                .unwrap_or_default(),
+            };
+            foreign_keys.push(ForeignKeyInfo {
+                name: format!("fk_{name}_{id}"),
+                column,
+                referenced_table,
+                referenced_column,
+            });
+        }
 
         // インデックス。式を含むインデックス（列の名前が無い）は、全体を除く
         // （MySQLと同じ。#717）
@@ -402,6 +466,14 @@ async fn read_schema(
     Ok((tables, views))
 }
 
+/// SQLが、1つのINSERT（REPLACEも）か
+fn is_insert(sql: &str) -> bool {
+    matches!(
+        sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::SQLiteDialect {}, sql).as_deref(),
+        Ok([sqlparser::ast::Statement::Insert(_)])
+    )
+}
+
 /// プールから受け取った接続
 type PooledSqlite = sqlx::pool::PoolConnection<sqlx::Sqlite>;
 
@@ -425,6 +497,9 @@ async fn acquire_with_deadline(
 /// エンジンが持つプールを使う（#528。以前は、接続ごとにプールを作っていた）
 pub struct SqliteConnection {
     pools: Arc<SqlitePools>,
+    /// `new`で開いた、この接続だけのプールか。`close`は、そのときだけプールを
+    /// 閉じる（エンジンのプールは、ほかの接続も使う。PR #798のレビュー）
+    owns_pools: bool,
     config: DatabaseConfig,
     fetch_limit: Option<usize>,
     byte_limit: Option<usize>,
@@ -436,7 +511,10 @@ impl SqliteConnection {
     /// エンジンのプールを共有する
     pub async fn new(config: DatabaseConfig) -> Result<Self, DatabaseError> {
         let pools = open_pools(&config).await?;
-        Ok(Self::with_pools(pools, config))
+        Ok(Self {
+            owns_pools: true,
+            ..Self::with_pools(pools, config)
+        })
     }
 
     /// 開いたプールで、接続を作る
@@ -452,6 +530,7 @@ impl SqliteConnection {
             fetch_limit: limit(OPTION_FETCH_LIMIT),
             byte_limit: limit(OPTION_BYTE_LIMIT),
             timeout: statement_timeout(&config),
+            owns_pools: false,
             pools,
             config,
         }
@@ -523,9 +602,11 @@ impl DatabaseConnection for SqliteConnection {
         let done = self
             .finish(conn, fired, result, DatabaseError::OperationFailed)
             .await?;
+        // 挿入の文で、行を足したときだけ返す。接続の「最後に挿入したrowid」は、
+        // UPDATE・DELETEでは前の挿入のまま（PR #798のレビュー）
         Ok(ExecuteResult {
             rows_affected: done.rows_affected(),
-            last_insert_id: (done.rows_affected() > 0 && done.last_insert_rowid() > 0)
+            last_insert_id: (done.rows_affected() > 0 && is_insert(sql))
                 .then(|| Value::Int(done.last_insert_rowid())),
             execution_time_ms: started.elapsed().as_millis() as u64,
         })
@@ -586,12 +667,19 @@ impl DatabaseConnection for SqliteConnection {
 
     async fn ping(&self) -> Result<(), DatabaseError> {
         let (mut conn, fired) = self.read_conn().await?;
-        let result = conn.ping().await;
+        // ファイルの中身を読む（`ping`は、接続の仕組みが応えるかだけ）
+        let result = sqlx::query("SELECT count(*) FROM sqlite_schema")
+            .fetch_one(&mut *conn)
+            .await
+            .map(|_| ());
         self.finish(conn, fired, result, DatabaseError::ConnectionFailed)
             .await
     }
 
     async fn close(&self) -> Result<(), DatabaseError> {
+        if !self.owns_pools {
+            return Ok(());
+        }
         self.pools.read.close().await;
         if let Some(write) = &self.pools.write {
             write.close().await;
@@ -664,11 +752,13 @@ mod tests {
             .unwrap();
         for sql in [
             "CREATE TABLE owners (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
-            "CREATE TABLE items (id INTEGER PRIMARY KEY, owner_id INTEGER REFERENCES owners(id), \
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, owner_id INTEGER REFERENCES owners, \
              name TEXT NOT NULL, price REAL, data BLOB)",
             "CREATE UNIQUE INDEX items_name ON items (name)",
             "CREATE INDEX items_lower ON items (lower(name))",
             "CREATE VIEW cheap AS SELECT name FROM items WHERE price < 2",
+            "CREATE TABLE pairs (a INTEGER, b TEXT, total INTEGER GENERATED ALWAYS AS (a * 2) VIRTUAL, \
+             PRIMARY KEY (a, b))",
             "INSERT INTO owners (name) VALUES ('o')",
             "INSERT INTO items (owner_id, name, price, data) VALUES \
              (1, 'a', 1.5, x'00ff'), (1, 'b', 2.5, NULL), (NULL, 'c', NULL, NULL)",
@@ -937,7 +1027,7 @@ mod tests {
             .unwrap();
         let schema = conn.get_schema().await.unwrap();
         let names: Vec<&str> = schema.tables.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["items", "owners"]);
+        assert_eq!(names, ["items", "owners", "pairs"]);
         let items = &schema.tables[0];
         assert_eq!(items.primary_keys, ["id"]);
         let id = &items.columns[0];
@@ -958,6 +1048,17 @@ mod tests {
         assert_eq!(schema.views[0].name, "cheap");
         assert!(schema.views[0].definition.contains("price < 2"));
 
+        // 生成列も返す。複合の主キーの`INTEGER`の列は、NULLを入れられる
+        // （PR #798のレビュー）
+        let pairs = &schema.tables[2];
+        let columns: Vec<(&str, bool)> = pairs
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.nullable))
+            .collect();
+        assert_eq!(columns, [("a", true), ("b", true), ("total", true)]);
+        assert_eq!(pairs.primary_keys, ["a", "b"]);
+
         let view = conn.get_table_schema("cheap").await.unwrap();
         assert_eq!(view.columns.len(), 1);
         // 名前は埋め込まないので、SQLとして読まれない
@@ -967,5 +1068,106 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("table not found"), "{err}");
+    }
+
+    /// UPDATEでは、前の挿入の`last_insert_id`を返さない（PR #798のレビュー）
+    #[tokio::test]
+    async fn test_last_insert_id_only_for_inserts() {
+        let (_dir, path) = database_file().await;
+        let mut config = config_for(&path, &[]);
+        config.pool.max_connections = 1;
+        let conn = SqliteConnection::new(config).await.unwrap();
+        let inserted = conn
+            .execute("INSERT INTO items (name) VALUES ('d')", &[])
+            .await
+            .unwrap();
+        assert_eq!(debug(&inserted.last_insert_id), debug(&Some(Value::Int(4))));
+        let updated = conn
+            .execute("UPDATE items SET price = 1 WHERE id = 1", &[])
+            .await
+            .unwrap();
+        assert_eq!(updated.rows_affected, 1);
+        assert!(updated.last_insert_id.is_none());
+    }
+
+    /// SQLiteのファイルでなければ、開くときに断る（PR #798のレビュー）
+    #[tokio::test]
+    async fn test_a_file_that_is_not_sqlite_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(
+            &path,
+            "this is not a database, just some text that is long enough\n".repeat(20),
+        )
+        .unwrap();
+        let path = path.to_string_lossy().into_owned();
+        let err = SqliteConnection::new(config_for(&path, &[(OPTION_READ_ONLY, "true")]))
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("cannot open the SQLite database"), "{err}");
+    }
+
+    /// 大きな時間の上限でも、sqlxの`busy_timeout`でパニックしない（PR #798の
+    /// レビュー）
+    #[tokio::test]
+    async fn test_a_long_timeout_does_not_panic() {
+        let (_dir, path) = database_file().await;
+        let mut config = config_for(&path, &[(OPTION_READ_ONLY, "true")]);
+        config.features.query_timeout = u32::MAX;
+        let conn = SqliteConnection::new(config).await.unwrap();
+        conn.query("SELECT 1", &[]).await.unwrap();
+    }
+
+    /// エンジンのプールを共有する接続は、`close`でプールを閉じない。別の
+    /// ファイルの設定には、その接続だけのプールを開く（PR #798のレビュー）
+    #[tokio::test]
+    async fn test_engine_connections_share_pools_safely() {
+        use crate::handlers::database::engine::DatabaseEngine;
+        let (_dir, path) = database_file().await;
+        let (_other_dir, other) = database_file().await;
+        let config = config_for(&path, &[(OPTION_READ_ONLY, "true")]);
+        let engine = super::super::SqliteEngine::new(config.clone())
+            .await
+            .unwrap();
+        let a = engine.connect(&config).await.unwrap();
+        let b = engine.connect(&config).await.unwrap();
+        a.close().await.unwrap();
+        b.query("SELECT 1", &[]).await.unwrap();
+
+        let writable = config_for(&other, &[]);
+        let c = engine.connect(&writable).await.unwrap();
+        c.execute("DELETE FROM items", &[]).await.unwrap();
+        let left = c.query("SELECT count(*) FROM items", &[]).await.unwrap();
+        assert_eq!(debug(&left.rows), debug(&[vec![Value::Int(0)]]));
+        let kept = b.query("SELECT count(*) FROM items", &[]).await.unwrap();
+        assert_eq!(debug(&kept.rows), debug(&[vec![Value::Int(3)]]));
+    }
+
+    /// 取り消した呼び出しの時間の上限は、接続に残らない。後の準備済みの文が、
+    /// 前の上限で止まらない（PR #798のレビュー）
+    #[tokio::test]
+    async fn test_a_cancelled_call_leaves_no_deadline() {
+        let mut config = create_test_config();
+        config.features.query_timeout = 1;
+        let conn = SqliteConnection::new(config).await.unwrap();
+        let endless = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) \
+                       SELECT count(*) FROM n";
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(200), conn.query(endless, &[])).await;
+        assert!(cancelled.is_err());
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let prepared = conn
+            .prepare(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000) \
+                 SELECT count(*) FROM n",
+            )
+            .await
+            .unwrap();
+        // 止まらずに最後まで読める（準備済みの文は、値を宣言の型で読むので、
+        // 式の値は`Null`になる。#528の前からの動き）
+        let result = prepared.query(&[]).await.unwrap();
+        assert_eq!(result.rows.len(), 1);
     }
 }

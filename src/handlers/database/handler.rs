@@ -1101,7 +1101,7 @@ impl McpHandler for DatabaseHandler {
         };
         let params_description = if sqlite {
             // SQLite（#528）は`?`。値は、渡した型（INTEGER・REAL・TEXT）のまま入る
-            "Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). Numbers are bound as INTEGER or REAL, booleans as 0 or 1, and strings as TEXT, so values returned by execute_query can be passed back as they are. Binary values (BLOB) are returned as base64; to pass one, pass it as hex text and use unhex(?) in the SQL".to_string()
+            "Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). Numbers are bound as INTEGER or REAL, booleans as 0 or 1, and strings as TEXT, so numbers, text and null returned by execute_query can be passed back as they are; infinite REAL values are returned as the strings \"Infinity\" and \"-Infinity\", which are bound as TEXT, so pass 9e999 or -9e999 in the SQL instead. Binary values (BLOB) are returned as base64; to pass one, pass it as hex text and use unhex(?) in the SQL".to_string()
         } else if mysql {
             // MySQL・MariaDB（#527）は`?`。文字列は、データベースが列の型に
             // 変換する
