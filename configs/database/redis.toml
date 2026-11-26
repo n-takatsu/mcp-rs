@@ -7,6 +7,7 @@
 # Connect with an ACL user that can only read what the AI client should see.
 # mcp-rs needs PING when it connects (and SELECT for a database other than 0):
 #   ACL SETUSER mcp_reader on >... ~app:* +@read -@dangerous +ping +select
+# (add +info for the server version and INFO keyspace in get_schema)
 # ~app:* limits the keys that commands such as GET read, but not SCAN:
 # scan_keys still lists the names of all keys in the database. Keep only keys
 # the AI client may see in this database (or in a Redis of its own), or leave

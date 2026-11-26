@@ -301,14 +301,19 @@ impl RedisHandler {
 
     /// コマンドを送り、結果を受け取る
     async fn send(&self, name: &str, args: &[String]) -> Result<redis::Value, McpError> {
+        self.send_raw(name, args)
+            .await
+            .map_err(|e| McpError::ExternalApi(format!("Redis {name}: {e}")))
+    }
+
+    /// `send`の、Redisのエラーをそのまま返すもの
+    async fn send_raw(&self, name: &str, args: &[String]) -> redis::RedisResult<redis::Value> {
         let mut cmd = redis::cmd(name);
         for arg in args {
             cmd.arg(arg);
         }
         let mut conn = self.conn.clone();
-        cmd.query_async::<redis::Value>(&mut conn)
-            .await
-            .map_err(|e| McpError::ExternalApi(format!("Redis {name}: {e}")))
+        cmd.query_async::<redis::Value>(&mut conn).await
     }
 
     /// 数を返すコマンドを送る
@@ -399,7 +404,7 @@ impl RedisHandler {
                     .iter()
                     .skip(3)
                     .any(|a| a.eq_ignore_ascii_case("BYSCORE") || a.eq_ignore_ascii_case("BYLEX"));
-                if let Some(limit) = option_value(&args, 3, "LIMIT") {
+                if let Some(limit) = option_value(&args, 3, "LIMIT")? {
                     let count = limit
                         .get(1)
                         .and_then(|c| c.parse::<i64>().ok())
@@ -431,7 +436,7 @@ impl RedisHandler {
             }
             Check::StreamRange => {
                 // XRANGE key start end [COUNT count]
-                match option_value(&args, 3, "COUNT") {
+                match option_value(&args, 3, "COUNT")? {
                     Some(count) => {
                         let count = count.first().and_then(|c| c.parse::<usize>().ok());
                         if !count.is_some_and(|c| c <= max) {
@@ -446,7 +451,7 @@ impl RedisHandler {
             }
             Check::Scan => {
                 // HSCAN key cursor [MATCH pattern] [COUNT count]
-                if let Some(count) = option_value(&args, 2, "COUNT") {
+                if let Some(count) = option_value(&args, 2, "COUNT")? {
                     let count = count.first().and_then(|c| c.parse::<usize>().ok());
                     if !count.is_some_and(|c| c <= max) {
                         return Err(McpError::InvalidParams(format!(
@@ -475,7 +480,20 @@ impl RedisHandler {
                 }
                 let mut total = 0usize;
                 for item in &items {
-                    let length = self.count(len_command, item).await?;
+                    // `MGET`は、文字列でない鍵に`nil`を返す。`STRLEN`はその鍵に
+                    // エラー（WRONGTYPE）を返すので、0と数える（PR #799のレビュー）
+                    let length = match self.send_raw(len_command, item).await {
+                        Ok(redis::Value::Int(n)) => n,
+                        Err(e) if e.code() == Some("WRONGTYPE") => 0,
+                        Ok(other) => {
+                            return Err(McpError::ExternalApi(format!(
+                                "Redis {len_command} returned {other:?} instead of a number"
+                            )))
+                        }
+                        Err(e) => {
+                            return Err(McpError::ExternalApi(format!("Redis {len_command}: {e}")))
+                        }
+                    };
                     total = total.saturating_add(usize::try_from(length).unwrap_or(0));
                 }
                 if total > self.limits.max_result_bytes {
@@ -537,13 +555,25 @@ impl RedisHandler {
                     // HSCAN・ZSCANは、項目と値の組
                     let per = if name == "SSCAN" { 1 } else { 2 };
                     truncated |= keep_items(items, max.saturating_mul(per));
-                    truncated |= keep_within_bytes(items, max_bytes);
+                    // 組を分けずに切る（PR #799のレビュー）
+                    truncated |= keep_within_bytes(items, max_bytes, per);
                 }
             }
         } else {
-            // 送る前に確かめた後に増えた分も、返さない（PR #799のレビュー）
-            truncated |= keep_items(&mut result, max);
-            truncated |= keep_within_bytes(&mut result, max_bytes);
+            // 送る前に確かめた後に増えた分も、返さない（PR #799のレビュー）。
+            // `ZRANGE … WITHSCORES`は、メンバーとスコアの組で数える
+            let per = if name == "ZRANGE"
+                && command_args
+                    .iter()
+                    .skip(3)
+                    .any(|a| a.eq_ignore_ascii_case("WITHSCORES"))
+            {
+                2
+            } else {
+                1
+            };
+            truncated |= keep_items(&mut result, max.saturating_mul(per));
+            truncated |= keep_within_bytes(&mut result, max_bytes, per);
         }
         Ok(json!({
             "command": name,
@@ -727,7 +757,12 @@ impl RedisHandler {
 /// 探す。位置の引数（鍵・範囲）は`from`より前なので、鍵の名前が`LIMIT`等でも
 /// 取り違えない（PR #799のレビュー）。`with_value`は、値を1つとるオプションの名前
 /// （`LIMIT`は2つ）
-fn option_value<'a>(args: &'a [String], from: usize, name: &str) -> Option<&'a [String]> {
+fn option_value<'a>(
+    args: &'a [String],
+    from: usize,
+    name: &str,
+) -> Result<Option<&'a [String]>, McpError> {
+    let mut found = None;
     let mut i = from;
     while i < args.len() {
         let option = args[i].to_ascii_uppercase();
@@ -737,11 +772,18 @@ fn option_value<'a>(args: &'a [String], from: usize, name: &str) -> Option<&'a [
             _ => 0,
         };
         if option == name {
-            return args.get(i + 1..i + 1 + width);
+            // Redisは後の値を使うので、2つ書くと上限の確かめを抜けられる
+            // （PR #799のレビュー）
+            if found.is_some() {
+                return Err(McpError::InvalidParams(format!(
+                    "{name} is given more than once"
+                )));
+            }
+            found = args.get(i + 1..i + 1 + width);
         }
         i += 1 + width;
     }
-    None
+    Ok(found)
 }
 
 /// `command`・`args`を読む。コマンドの名前は大文字にする。引数は、文字列か数
@@ -880,18 +922,19 @@ fn keep_items(value: &mut JsonValue, max: usize) -> bool {
     }
 }
 
-/// 結果のだいたいの大きさを`max`までにする。並びは後ろから外す。切ったら
-/// `true`
-fn keep_within_bytes(value: &mut JsonValue, max: usize) -> bool {
+/// 結果のだいたいの大きさを`max`までにする。並びは後ろから、`unit`個の組
+/// （`HSCAN`の項目と値等）を分けずに外す。切ったら`true`
+fn keep_within_bytes(value: &mut JsonValue, max: usize, unit: usize) -> bool {
     let size = |v: &JsonValue| serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
     if size(value) <= max {
         return false;
     }
+    let unit = unit.max(1);
     match value {
         JsonValue::Array(items) => {
             while !items.is_empty() && size(&JsonValue::Array(items.clone())) > max {
-                let keep = items.len() / 2;
-                items.truncate(keep);
+                let groups = items.len() / unit;
+                items.truncate(groups / 2 * unit);
             }
         }
         JsonValue::Object(object) => {
@@ -991,7 +1034,7 @@ impl McpHandler for RedisHandler {
                 name: "scan_keys".to_string(),
                 title: Some("List Redis keys".to_string()),
                 description: format!(
-                    "List keys of the configured Redis database with SCAN, without blocking the server. Returns at most {max_rows} keys and a cursor: when done is false, call again with that cursor for more. \
+                    "List keys of the configured Redis database with SCAN, without blocking the server. Returns about {max_rows} keys (SCAN can return a few more, which are not cut, so no key is skipped) and a cursor: when done is false, call again with that cursor for more. \
                      pattern is a glob such as user:* (default *), and type limits the keys to one type (string, list, set, zset, hash, stream)."
                 ),
                 input_schema: json!({
@@ -1197,13 +1240,37 @@ mod tests {
     #[test]
     fn test_option_value_skips_positional_arguments() {
         let zrange = s(&["LIMIT", "0", "-1"]);
-        assert_eq!(option_value(&zrange, 3, "LIMIT"), None);
+        assert_eq!(option_value(&zrange, 3, "LIMIT").unwrap(), None);
         let zrange = s(&["k", "0", "10", "BYSCORE", "LIMIT", "0", "5", "WITHSCORES"]);
-        assert_eq!(option_value(&zrange, 3, "LIMIT"), Some(&zrange[5..7]));
+        assert_eq!(
+            option_value(&zrange, 3, "LIMIT").unwrap(),
+            Some(&zrange[5..7])
+        );
         let xrange = s(&["COUNT", "-", "+"]);
-        assert_eq!(option_value(&xrange, 3, "COUNT"), None);
+        assert_eq!(option_value(&xrange, 3, "COUNT").unwrap(), None);
         let hscan = s(&["k", "0", "MATCH", "COUNT", "COUNT", "5"]);
-        assert_eq!(option_value(&hscan, 2, "COUNT"), Some(&hscan[5..6]));
+        assert_eq!(
+            option_value(&hscan, 2, "COUNT").unwrap(),
+            Some(&hscan[5..6])
+        );
+        // 2つ書いたら断る（Redisは後の値を使う。PR #799のレビュー）
+        for (args, from, name) in [
+            (
+                s(&["s", "-", "+", "COUNT", "5", "COUNT", "100000"]),
+                3,
+                "COUNT",
+            ),
+            (
+                s(&[
+                    "z", "0", "9", "BYSCORE", "LIMIT", "0", "5", "LIMIT", "0", "99",
+                ]),
+                3,
+                "LIMIT",
+            ),
+            (s(&["h", "0", "COUNT", "5", "COUNT", "99"]), 2, "COUNT"),
+        ] {
+            assert!(option_value(&args, from, name).is_err(), "{args:?}");
+        }
     }
 
     #[test]
@@ -1246,13 +1313,17 @@ mod tests {
     #[test]
     fn test_keep_within_bytes() {
         let mut items = json!(["aaaa", "bbbb", "cccc", "dddd"]);
-        assert!(keep_within_bytes(&mut items, 16));
+        assert!(keep_within_bytes(&mut items, 16, 1));
         assert!(serde_json::to_string(&items).unwrap().len() <= 16);
+        // 組は分けない（PR #799のレビュー）
+        let mut pairs = json!(["a", "1", "b", "2", "c", "3"]);
+        assert!(keep_within_bytes(&mut pairs, 20, 2));
+        assert_eq!(pairs.as_array().unwrap().len() % 2, 0);
         let mut object = json!({"a": 1, "b": 2, "c": 3});
         assert!(keep_items(&mut object, 2));
         assert_eq!(object.as_object().unwrap().len(), 2);
         let mut small = json!(["a"]);
-        assert!(!keep_within_bytes(&mut small, 16));
+        assert!(!keep_within_bytes(&mut small, 16, 1));
         assert_eq!(small, json!(["a"]));
     }
 

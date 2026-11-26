@@ -146,6 +146,11 @@ async fn redis_read_tools() {
         .await
         .unwrap();
     assert_eq!(user["result"], json!({"name": "a", "age": "3"}));
+    // 文字列でない鍵は、MGETではnull（長さの確かめで止めない）
+    let many = command(&handler, "MGET", json!(["greeting", "user:1", "missing"]))
+        .await
+        .unwrap();
+    assert_eq!(many["result"], json!(["hello", null, null]));
     let tags = command(&handler, "SMEMBERS", json!(["tags"]))
         .await
         .unwrap();
@@ -171,6 +176,10 @@ async fn redis_read_tools() {
         ("LRANGE", json!(["list", 0, -1])),
         ("ZRANGE", json!(["scores", 0, 10, "BYSCORE"])),
         ("XRANGE", json!(["events", "-", "+", "COUNT", 100])),
+        (
+            "XRANGE",
+            json!(["events", "-", "+", "COUNT", 5, "COUNT", 100]),
+        ),
         // 大きな値は、max_result_bytesまで
         ("GET", json!(["big"])),
         // 一覧に無いコマンド
@@ -202,8 +211,27 @@ async fn redis_read_tools() {
         .unwrap();
     assert_eq!(keys["keys"], json!(["user:1"]));
     assert_eq!(keys["done"], true);
-    let some = call(&handler, "scan_keys", json!({})).await.unwrap();
-    assert!(some["keys"].as_array().unwrap().len() <= 5);
+    // カーソルを最後までたどると、全部の鍵が1回ずつ返る（1回のSCANは、
+    // max_rowsより多く返すことがある）
+    let mut all = Vec::new();
+    let mut cursor = "0".to_string();
+    for _ in 0..100 {
+        let page = call(&handler, "scan_keys", json!({"cursor": cursor}))
+            .await
+            .unwrap();
+        all.extend(page["keys"].as_array().unwrap().iter().cloned());
+        cursor = page["cursor"].as_str().unwrap().to_string();
+        if page["done"] == true {
+            break;
+        }
+    }
+    let mut names: Vec<String> = all
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 7, "{all:?}");
 
     let schema = call(&handler, "get_schema", json!({})).await.unwrap();
     assert_eq!(schema["database"], READ_DATABASE);
