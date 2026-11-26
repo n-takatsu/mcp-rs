@@ -229,6 +229,39 @@ async fn mongodb_write_tools() {
     .unwrap();
     assert_eq!(deleted["deleted_count"], 1);
 
+    // 無いコレクションには挿入しない（コレクションを作らない）
+    let err = call(
+        &handler,
+        "insert_documents",
+        json!({"collection": "usres", "documents": [{"name": "typo"}]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, McpError::InvalidParams(_)), "{err}");
+    assert!(err.to_string().contains("does not exist"), "{err}");
+    let schema = call(&handler, "get_schema", json!({})).await.unwrap();
+    let collections: Vec<&str> = schema["collections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(collections, ["notes", "users"]);
+    assert_eq!(schema["truncated"], false);
+    assert_eq!(schema["timed_out"], false);
+
+    // 途中で失敗したら、何件が入ったかをエラーに書く
+    let err = call(
+        &handler,
+        "insert_documents",
+        json!({"collection": "users", "documents": [{"_id": 1}, {"_id": 1}, {"_id": 2}]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("documents[1] failed"), "{err}");
+    assert!(err.contains("1 of 3 documents were inserted"), "{err}");
+
     // 空のフィルター・置き換えの更新・多すぎる挿入は断る
     for (tool, args) in [
         (
@@ -251,8 +284,9 @@ async fn mongodb_write_tools() {
         let err = call(&handler, tool, args.clone()).await.unwrap_err();
         assert!(matches!(err, McpError::InvalidParams(_)), "{args}: {err}");
     }
+    // 初めの8件と、途中まで入った1件（_id = 1）
     let count = call(&handler, "count_documents", json!({"collection": "users"}))
         .await
         .unwrap();
-    assert_eq!(count["count"], 8);
+    assert_eq!(count["count"], 9);
 }

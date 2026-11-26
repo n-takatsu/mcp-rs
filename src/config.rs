@@ -350,6 +350,13 @@ impl DatabaseSettings {
                 self.engine
             ));
         }
+        // SQLite・Redisは、下で専用の検証に入って戻るので、その前に見る
+        if !self.is_mongodb() && self.auth_source.is_some() {
+            return Err(
+                "database.auth_source is used only with engine = \"mongodb\". Remove auth_source"
+                    .to_string(),
+            );
+        }
         if self.is_sqlite() {
             return self.validate_sqlite();
         }
@@ -358,12 +365,6 @@ impl DatabaseSettings {
         }
         if self.is_mongodb() {
             return self.validate_mongodb();
-        }
-        if self.auth_source.is_some() {
-            return Err(
-                "database.auth_source is used only with engine = \"mongodb\". Remove auth_source"
-                    .to_string(),
-            );
         }
         if self.database.trim().is_empty() {
             return Err("database.database is empty".to_string());
@@ -3531,6 +3532,20 @@ start_timeout_seconds = 300
             (
                 DatabaseSettings {
                     engine: "postgresql".to_string(),
+                    ..with_user.clone()
+                },
+                "auth_source is used only with engine = \"mongodb\"",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "redis".to_string(),
+                    ..with_user.clone()
+                },
+                "auth_source is used only with engine = \"mongodb\"",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "sqlite".to_string(),
                     ..with_user.clone()
                 },
                 "auth_source is used only with engine = \"mongodb\"",

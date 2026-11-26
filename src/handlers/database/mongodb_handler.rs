@@ -19,11 +19,20 @@
 //! - 返す量の上限。`find`の件数は`max_rows`まで、`aggregate`には`$limit`を
 //!   足す。ドキュメントは少しずつ受け取り、`max_result_bytes`を超えたら残りを
 //!   読まない（カーソルを閉じる）
-//! - 1つの操作の時間の上限（`query_timeout_seconds`。サーバーの`maxTimeMS`と、
-//!   こちらで待つ時間）
+//! - 1つの操作の時間の上限（`query_timeout_seconds`）。読み取りは、サーバーの
+//!   `maxTimeMS`と、こちらで待つ時間。`find`・`aggregate`・`get_schema`は、初めの
+//!   応答から読み終えるまでの全体で1つの上限。書き込みには`maxTimeMS`を
+//!   送れない（ドライバーに無い）ので、こちらで待つ時間だけ。時間切れの
+//!   書き込みは、当たったかどうか分からない
+//! - ドライバーの操作は別のタスクで動かし、待つのをやめても最後まで動かす
+//!   （ドライバーのfutureを途中で落とすと、内部の状態が壊れることがある）
+//! - 書いたホストにだけつなぐ（`directConnection`）。レプリカセットの他の
+//!   メンバーを探してつなぐと、`ssl_mode`の確認を通っていないホストに、認証の
+//!   情報とデータを送ることになるため
 //! - `update_documents`・`delete_documents`は、空のフィルター（全部のドキュメント）を
 //!   断る。`insert_documents`の数は`max_rows`まで。コレクション・インデックスの
-//!   作成・削除はしない
+//!   作成・削除はしない。`insert_documents`は、あるコレクションにだけ挿入する
+//!   （MongoDBは、無いコレクションへの挿入でコレクションを作るため）
 //! - 監査ログには、ツールの名前とコレクションの名前だけを書く（値は書かない）
 
 use crate::config::DatabaseSettings;
@@ -37,7 +46,6 @@ use futures::TryStreamExt;
 use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::{ClientOptions, Credential, ServerAddress, Tls, TlsOptions};
 use serde_json::{json, Value as JsonValue};
-use std::future::IntoFuture;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -50,6 +58,10 @@ const CLIENT_TIMEOUT_GRACE: Duration = Duration::from_secs(2);
 
 /// `get_schema`で、コレクションごとにフィールドを読むドキュメントの数
 const SCHEMA_SAMPLE: i64 = 20;
+
+/// `get_schema`で、残りの時間がこれより短ければ、次のコレクションを読まない
+/// （`maxTimeMS`は、0だと上限なしになる）
+const SCHEMA_MIN_REMAINING: Duration = Duration::from_millis(10);
 
 /// どのツールでも断る、集約の段・演算子（#530）
 const REFUSED_OPERATORS: &[(&str, &str)] = &[
@@ -111,6 +123,10 @@ fn client_options(settings: &DatabaseSettings) -> ClientOptions {
         host: settings.host().to_string(),
         port: Some(settings.port()),
     }];
+    // 書いたホストにだけつなぐ。既定（探す）だと、レプリカセットが知らせる
+    // 他のメンバーにもつなぐので、`check_settings`が見ていないホストに、TLS
+    // なしで認証の情報とデータを送ることがある
+    options.direct_connection = Some(true);
     options.app_name = Some(format!("mcp-rs {}", env!("CARGO_PKG_VERSION")));
     options.connect_timeout = Some(CONNECT_TIMEOUT);
     options.server_selection_timeout = Some(CONNECT_TIMEOUT);
@@ -168,18 +184,19 @@ impl MongoHandler {
             .map_err(|e| format!("cannot set up {describe}: {e}"))?;
         let database = client.database(settings.database.trim());
         // 認証とサーバーの選択は、最初の操作で行われる。応えるかを確かめる
-        tokio::time::timeout(
-            CONNECT_TIMEOUT + CLIENT_TIMEOUT_GRACE,
-            database.run_command(doc! { "ping": 1 }),
-        )
-        .await
-        .map_err(|_| {
-            format!(
-                "cannot connect to {describe}: no answer within {} seconds",
-                CONNECT_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| format!("cannot connect to {describe}: {e}"))?;
+        let ping = {
+            let database = database.clone();
+            async move { database.run_command(doc! { "ping": 1 }).await }
+        };
+        run_to_completion(CONNECT_TIMEOUT + CLIENT_TIMEOUT_GRACE, ping)
+            .await
+            .map_err(|_| {
+                format!(
+                    "cannot connect to {describe}: no answer within {} seconds",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|e| format!("cannot connect to {describe}: {e}"))?;
         Ok(Self {
             database,
             allow_write: settings.allow_write(),
@@ -200,50 +217,58 @@ impl MongoHandler {
         self
     }
 
-    /// こちらで待つ時間の上限をつけて、操作を待つ
-    async fn wait<T>(
+    /// ドライバーの操作を別のタスクで動かし、こちらで待つ時間の上限をつけて待つ。
+    /// 時間切れ・タスクの失敗は`Err`、ドライバーの結果は`Ok`の中
+    ///
+    /// ドライバーのfutureは、途中で落とすと内部の状態が壊れることがある
+    /// （ドライバーのREADME）。だから、待つのをやめても、タスクは最後まで動かす。
+    /// `write`のときは、時間切れでも書き込みが当たっているかもしれないと伝える
+    async fn run<T: Send + 'static>(
         &self,
         what: &str,
-        future: impl std::future::Future<Output = mongodb::error::Result<T>>,
+        write: bool,
+        future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
+    ) -> Result<mongodb::error::Result<T>, McpError> {
+        let seconds = self.limits.timeout.as_secs();
+        match run_to_completion(self.limits.timeout + CLIENT_TIMEOUT_GRACE, future).await {
+            Ok(result) => Ok(result),
+            Err(Stopped::TimedOut) if write => Err(McpError::ExternalApi(format!(
+                "MongoDB {what} did not answer within {seconds} seconds. The outcome is unknown: the server may still apply the write. Read the collection to check before sending it again"
+            ))),
+            Err(Stopped::TimedOut) => Err(McpError::ExternalApi(format!(
+                "MongoDB {what} did not finish within {seconds} seconds"
+            ))),
+            Err(Stopped::Failed) => Err(McpError::Internal(format!(
+                "MongoDB {what}: the task stopped"
+            ))),
+        }
+    }
+
+    /// 読み取りの操作を待つ
+    async fn wait<T: Send + 'static>(
+        &self,
+        what: &str,
+        future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
     ) -> Result<T, McpError> {
-        tokio::time::timeout(self.limits.timeout + CLIENT_TIMEOUT_GRACE, future)
-            .await
-            .map_err(|_| {
-                McpError::ExternalApi(format!(
-                    "MongoDB {what} did not finish within {} seconds",
-                    self.limits.timeout.as_secs()
-                ))
-            })?
+        self.run(what, false, future)
+            .await?
+            .map_err(|e| McpError::ExternalApi(format!("MongoDB {what}: {e}")))
+    }
+
+    /// 書き込みの操作を待つ。書き込みには`maxTimeMS`を送れない（ドライバーに
+    /// 無い）ので、時間切れのあとも、サーバーは続けることがある
+    async fn wait_write<T: Send + 'static>(
+        &self,
+        what: &str,
+        future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
+    ) -> Result<T, McpError> {
+        self.run(what, true, future)
+            .await?
             .map_err(|e| McpError::ExternalApi(format!("MongoDB {what}: {e}")))
     }
 
     fn collection(&self, args: &JsonValue) -> Result<mongodb::Collection<Document>, McpError> {
         Ok(self.database.collection(&collection_name(args)?))
-    }
-
-    /// カーソルから、件数・バイト数の上限まで読む。上限で止めたら`true`
-    async fn read_cursor(
-        &self,
-        mut cursor: mongodb::Cursor<Document>,
-        max_items: usize,
-    ) -> Result<(Vec<JsonValue>, bool), McpError> {
-        let mut documents = Vec::new();
-        let mut bytes = 0usize;
-        let read = async {
-            while let Some(document) = cursor.try_next().await? {
-                let value = Bson::Document(document).into_relaxed_extjson();
-                bytes += serde_json::to_string(&value).map(|s| s.len()).unwrap_or(0);
-                if documents.len() >= max_items || bytes > self.limits.max_result_bytes {
-                    // 1つ多く読めたら、上限を超えている。残りは読まない
-                    // （カーソルは、落とすと閉じる）
-                    return Ok::<_, mongodb::error::Error>(true);
-                }
-                documents.push(value);
-            }
-            Ok(false)
-        };
-        let truncated = self.wait("read", read).await?;
-        Ok((documents, truncated))
     }
 
     /// `find`
@@ -271,23 +296,30 @@ impl MongoHandler {
                 McpError::InvalidParams("skip must be a number of 0 or more".to_string())
             })?),
         };
-        // 1つ多く読み、超えたかを知る
-        let mut find = collection
-            .find(filter)
-            .limit(i64::try_from(limit + 1).unwrap_or(i64::MAX))
-            .max_time(self.limits.timeout)
-            .batch_size(u32::try_from(limit.min(1000) + 1).unwrap_or(1000));
-        if let Some(projection) = projection {
-            find = find.projection(projection);
-        }
-        if let Some(sort) = sort {
-            find = find.sort(sort);
-        }
-        if let Some(skip) = skip {
-            find = find.skip(skip);
-        }
-        let cursor = self.wait("find", find.into_future()).await?;
-        let (documents, truncated) = self.read_cursor(cursor, limit).await?;
+        let timeout = self.limits.timeout;
+        let max_bytes = self.limits.max_result_bytes;
+        // 初めの応答とカーソルの読み取りを、1つの時間の上限の中で行う
+        let (documents, truncated) = self
+            .wait("find", async move {
+                // 1つ多く読み、超えたかを知る
+                let mut find = collection
+                    .find(filter)
+                    .limit(i64::try_from(limit + 1).unwrap_or(i64::MAX))
+                    .max_time(timeout)
+                    .batch_size(u32::try_from(limit.min(1000) + 1).unwrap_or(1000));
+                if let Some(projection) = projection {
+                    find = find.projection(projection);
+                }
+                if let Some(sort) = sort {
+                    find = find.sort(sort);
+                }
+                if let Some(skip) = skip {
+                    find = find.skip(skip);
+                }
+                let cursor = find.await?;
+                read_documents(cursor, limit, max_bytes).await
+            })
+            .await?;
         Ok(json!({
             "documents": documents,
             "truncated": truncated,
@@ -320,12 +352,19 @@ impl MongoHandler {
         let max = self.limits.max_items;
         // 1つ多く読み、超えたかを知る
         pipeline.push(doc! { "$limit": i64::try_from(max + 1).unwrap_or(i64::MAX) });
-        let aggregate = collection
-            .aggregate(pipeline)
-            .max_time(self.limits.timeout)
-            .batch_size(u32::try_from(max.min(1000) + 1).unwrap_or(1000));
-        let cursor = self.wait("aggregate", aggregate.into_future()).await?;
-        let (documents, truncated) = self.read_cursor(cursor, max).await?;
+        let timeout = self.limits.timeout;
+        let max_bytes = self.limits.max_result_bytes;
+        // 初めの応答とカーソルの読み取りを、1つの時間の上限の中で行う
+        let (documents, truncated) = self
+            .wait("aggregate", async move {
+                let cursor = collection
+                    .aggregate(pipeline)
+                    .max_time(timeout)
+                    .batch_size(u32::try_from(max.min(1000) + 1).unwrap_or(1000))
+                    .await?;
+                read_documents(cursor, max, max_bytes).await
+            })
+            .await?;
         Ok(json!({
             "documents": documents,
             "truncated": truncated,
@@ -338,83 +377,21 @@ impl MongoHandler {
     async fn handle_count(&self, args: &JsonValue) -> Result<JsonValue, McpError> {
         let collection = self.collection(args)?;
         let filter = document_arg(args, "filter")?.unwrap_or_default();
+        let timeout = self.limits.timeout;
         let count = self
-            .wait(
-                "count_documents",
-                collection
-                    .count_documents(filter)
-                    .max_time(self.limits.timeout)
-                    .into_future(),
-            )
+            .wait("count_documents", async move {
+                collection.count_documents(filter).max_time(timeout).await
+            })
             .await?;
         Ok(json!({ "count": count }))
     }
 
-    /// `get_schema`: コレクションの一覧と、そのドキュメントの数・フィールド
+    /// `get_schema`: コレクションの一覧と、そのドキュメントの数・フィールド。
+    /// 全体で1つの時間の上限（`query_timeout_seconds`）を使う
     async fn handle_get_schema(&self) -> Result<JsonValue, McpError> {
-        let mut names = self
-            .wait(
-                "listCollections",
-                self.database.list_collection_names().into_future(),
-            )
-            .await?;
-        names.retain(|name| !name.starts_with("system."));
-        names.sort();
-        let max = self.limits.max_items;
-        let truncated = names.len() > max;
-        names.truncate(max);
-        let mut collections = Vec::new();
-        for name in names {
-            let collection = self.database.collection::<Document>(&name);
-            let count = self
-                .wait(
-                    "estimatedDocumentCount",
-                    collection
-                        .estimated_document_count()
-                        .max_time(self.limits.timeout)
-                        .into_future(),
-                )
-                .await
-                .ok();
-            // 数件のドキュメントから、トップレベルのフィールドの名前と型を集める
-            // （値は返さない）
-            let mut fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
-                std::collections::BTreeMap::new();
-            let sample = collection
-                .find(doc! {})
-                .limit(SCHEMA_SAMPLE)
-                .max_time(self.limits.timeout);
-            if let Ok(cursor) = self.wait("find", sample.into_future()).await {
-                let read = async {
-                    let mut cursor = cursor;
-                    while let Some(document) = cursor.try_next().await? {
-                        for (field, value) in &document {
-                            fields
-                                .entry(field.clone())
-                                .or_default()
-                                .insert(bson_type(value).to_string());
-                        }
-                    }
-                    Ok::<_, mongodb::error::Error>(())
-                };
-                let _ = self.wait("find", read).await;
-            }
-            collections.push(json!({
-                "name": name,
-                "estimated_documents": count,
-                "fields": fields
-                    .into_iter()
-                    .map(|(name, types)| json!({ "name": name, "types": types }))
-                    .collect::<Vec<_>>(),
-            }));
-        }
-        Ok(json!({
-            "engine": "mongodb",
-            "database": self.database.name(),
-            "collections": collections,
-            "truncated": truncated,
-            "note": format!("fields are read from up to {SCHEMA_SAMPLE} documents of each collection, so rare fields may be missing"),
-        }))
+        let database = self.database.clone();
+        let limits = self.limits.clone();
+        self.wait("get_schema", read_schema(database, limits)).await
     }
 
     /// `insert_documents`
@@ -439,12 +416,33 @@ impl MongoHandler {
             .enumerate()
             .map(|(i, d)| to_document(d, &format!("documents[{i}]")))
             .collect::<Result<Vec<_>, _>>()?;
-        let result = self
-            .wait(
-                "insertMany",
-                collection.insert_many(documents).into_future(),
-            )
+        let total = documents.len();
+        let name = collection.name().to_string();
+        let database = self.database.clone();
+        // MongoDBは、無いコレクションへの挿入でコレクションを作る。名前の
+        // 打ち間違いで作らないよう、あるコレクションにだけ挿入する（確かめた
+        // あとに他の誰かが消した場合だけは、作られる）
+        let outcome = self
+            .run("insertMany", true, async move {
+                let found = database
+                    .list_collection_names()
+                    .filter(doc! { "name": collection.name() })
+                    .await?;
+                if found.is_empty() {
+                    return Ok(None);
+                }
+                collection.insert_many(documents).await.map(Some)
+            })
             .await?;
+        let result = match outcome {
+            Ok(Some(result)) => result,
+            Ok(None) => {
+                return Err(McpError::InvalidParams(format!(
+                "collection '{name}' does not exist: insert_documents does not create collections"
+            )))
+            }
+            Err(e) => return Err(McpError::ExternalApi(insert_error(&e, total))),
+        };
         let mut ids: Vec<(usize, Bson)> = result.inserted_ids.into_iter().collect();
         ids.sort_by_key(|(i, _)| *i);
         Ok(json!({
@@ -488,16 +486,14 @@ impl MongoHandler {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let result = if many {
-            self.wait(
-                "updateMany",
-                collection.update_many(filter, update).into_future(),
-            )
+            self.wait_write("updateMany", async move {
+                collection.update_many(filter, update).await
+            })
             .await?
         } else {
-            self.wait(
-                "updateOne",
-                collection.update_one(filter, update).into_future(),
-            )
+            self.wait_write("updateOne", async move {
+                collection.update_one(filter, update).await
+            })
             .await?
         };
         Ok(json!({
@@ -515,11 +511,17 @@ impl MongoHandler {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let result = if many {
-            self.wait("deleteMany", collection.delete_many(filter).into_future())
-                .await?
+            self.wait_write(
+                "deleteMany",
+                async move { collection.delete_many(filter).await },
+            )
+            .await?
         } else {
-            self.wait("deleteOne", collection.delete_one(filter).into_future())
-                .await?
+            self.wait_write(
+                "deleteOne",
+                async move { collection.delete_one(filter).await },
+            )
+            .await?
         };
         Ok(json!({ "deleted_count": result.deleted_count }))
     }
@@ -566,6 +568,193 @@ impl MongoHandler {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
         }
     }
+}
+
+/// `run_to_completion`が、結果を得られなかった理由
+#[derive(Debug, PartialEq)]
+enum Stopped {
+    /// 待つ時間の上限を超えた（タスクは続いている）
+    TimedOut,
+    /// タスクが止まった（パニック等）
+    Failed,
+}
+
+/// ドライバーの操作を別のタスクで最後まで動かし、`limit`まで待つ。
+///
+/// `tokio::time::timeout`でドライバーのfutureを落とすと、ドライバーの内部の
+/// 状態が壊れることがある（ドライバーのREADMEの注意）。待つのはタスクの
+/// ハンドルにして、時間切れのあとも、タスクは最後まで動かす
+async fn run_to_completion<T: Send + 'static>(
+    limit: Duration,
+    future: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, Stopped> {
+    match tokio::time::timeout(limit, tokio::spawn(future)).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => Err(Stopped::Failed),
+        Err(_) => Err(Stopped::TimedOut),
+    }
+}
+
+/// カーソルから、件数・バイト数の上限まで読む。上限で止めたら`true`
+async fn read_documents(
+    mut cursor: mongodb::Cursor<Document>,
+    max_items: usize,
+    max_bytes: usize,
+) -> mongodb::error::Result<(Vec<JsonValue>, bool)> {
+    let mut documents = Vec::new();
+    let mut bytes = 0usize;
+    while let Some(document) = cursor.try_next().await? {
+        let value = Bson::Document(document).into_relaxed_extjson();
+        bytes += serde_json::to_string(&value).map(|s| s.len()).unwrap_or(0);
+        if documents.len() >= max_items || bytes > max_bytes {
+            // 1つ多く読めたら、上限を超えている。残りは読まない
+            // （カーソルは、落とすと閉じる）
+            return Ok((documents, true));
+        }
+        documents.push(value);
+    }
+    Ok((documents, false))
+}
+
+/// `get_schema`の中身。全体で`limits.timeout`まで、`limits.max_result_bytes`まで。
+/// 時間・量が尽きたら、そこまでの結果を返す（`truncated`が`true`）
+async fn read_schema(
+    database: mongodb::Database,
+    limits: Limits,
+) -> mongodb::error::Result<JsonValue> {
+    let deadline = std::time::Instant::now() + limits.timeout;
+    let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
+    let mut names = database.list_collection_names().await?;
+    names.retain(|name| !name.starts_with("system."));
+    names.sort();
+    let mut truncated = names.len() > limits.max_items;
+    names.truncate(limits.max_items);
+    let mut timed_out = false;
+    let mut bytes = 0usize;
+    let mut collections = Vec::new();
+    for name in names {
+        if remaining() < SCHEMA_MIN_REMAINING {
+            timed_out = true;
+            break;
+        }
+        let collection = database.collection::<Document>(&name);
+        let count = collection
+            .estimated_document_count()
+            .max_time(remaining().max(SCHEMA_MIN_REMAINING))
+            .await
+            .ok();
+        // 数件のドキュメントから、トップレベルのフィールドの名前と型を集める
+        // （値は返さない）。読めなければ、フィールドは空のまま
+        let mut fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        if let Ok(mut cursor) = collection
+            .find(doc! {})
+            .limit(SCHEMA_SAMPLE)
+            .max_time(remaining().max(SCHEMA_MIN_REMAINING))
+            .await
+        {
+            while let Ok(Some(document)) = cursor.try_next().await {
+                for (field, value) in &document {
+                    fields
+                        .entry(field.clone())
+                        .or_default()
+                        .insert(bson_type(value).to_string());
+                }
+            }
+        }
+        if remaining().is_zero() {
+            // 時間切れで読み終えていないかもしれないコレクションは、出さない
+            timed_out = true;
+            break;
+        }
+        let (entry, size, complete) = schema_entry(
+            &name,
+            count,
+            fields,
+            limits.max_result_bytes.saturating_sub(bytes),
+        );
+        bytes += size;
+        if let Some(entry) = entry {
+            collections.push(entry);
+        }
+        if !complete {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(json!({
+        "engine": "mongodb",
+        "database": database.name(),
+        "collections": collections,
+        "truncated": truncated || timed_out,
+        "timed_out": timed_out,
+        "note": format!("fields are read from up to {SCHEMA_SAMPLE} documents of each collection, so rare fields may be missing. truncated is true when collections or fields were left out (max_rows, max_result_bytes, or the time limit when timed_out is true)"),
+    }))
+}
+
+/// `get_schema`の1つのコレクションを、残りのバイト数`budget`に収める。
+/// 戻り値は（出すもの、使ったバイト数、全部入ったか）。名前も入らなければ
+/// 何も出さず、フィールドが入りきらなければ、入った分と`fields_truncated`を出す
+fn schema_entry(
+    name: &str,
+    count: Option<u64>,
+    fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    budget: usize,
+) -> (Option<JsonValue>, usize, bool) {
+    let json_len = |value: &JsonValue| serde_json::to_string(value).map_or(0, |s| s.len());
+    let mut entry = json!({ "name": name, "estimated_documents": count, "fields": [] });
+    let mut size = json_len(&entry);
+    if size > budget {
+        return (None, 0, false);
+    }
+    let mut listed = Vec::new();
+    let mut complete = true;
+    for (field, types) in fields {
+        let value = json!({ "name": field, "types": types });
+        // 区切りのコンマの分
+        let len = json_len(&value) + 1;
+        if size + len > budget {
+            complete = false;
+            break;
+        }
+        size += len;
+        listed.push(value);
+    }
+    entry["fields"] = JsonValue::Array(listed);
+    if !complete {
+        entry["fields_truncated"] = JsonValue::Bool(true);
+    }
+    (Some(entry), size, complete)
+}
+
+/// `insert_many`のエラーの文。順に挿入するので、途中で失敗したら、その前の
+/// ドキュメントは挿入されている。何件が入ったかを伝える（同じものを送り直すと
+/// 二重に入るため）
+fn insert_error(error: &mongodb::error::Error, total: usize) -> String {
+    use mongodb::error::{ErrorKind, InsertManyError};
+    if let ErrorKind::InsertMany(InsertManyError {
+        write_errors: Some(errors),
+        ..
+    }) = error.kind.as_ref()
+    {
+        if let Some(first) = errors.iter().min_by_key(|e| e.index) {
+            return partial_insert_message(first.index, total, &first.message);
+        }
+    }
+    format!("MongoDB insertMany: {error}. If the connection was lost, some documents may have been inserted: read the collection to check before sending them again")
+}
+
+/// `failed`番目（0から）のドキュメントで挿入が止まったときの文
+fn partial_insert_message(failed: usize, total: usize, message: &str) -> String {
+    let before = if failed == 0 {
+        "No document was inserted".to_string()
+    } else {
+        format!(
+            "{failed} of {total} documents were inserted (documents[0] to documents[{}]): do not send those again",
+            failed - 1
+        )
+    };
+    format!("MongoDB insertMany: documents[{failed}] failed: {message}. {before}. The documents after documents[{failed}] were not tried")
 }
 
 /// 引数`collection`。空・`system.`で始まる・`$`やNULを含む名前は断る
@@ -756,7 +945,7 @@ impl McpHandler for MongoHandler {
             Tool {
                 name: "get_schema".to_string(),
                 title: Some("Show the MongoDB collections".to_string()),
-                description: format!("List the collections of the configured MongoDB database (at most {max_rows}) with their estimated document counts, and the top-level field names and types read from up to {SCHEMA_SAMPLE} documents of each (no values)."),
+                description: format!("List the collections of the configured MongoDB database (at most {max_rows}, and about {max_bytes} bytes) with their estimated document counts, and the top-level field names and types read from up to {SCHEMA_SAMPLE} documents of each (no values). truncated is true when collections or fields were left out."),
                 input_schema: json!({ "type": "object", "properties": {} }),
                 annotations: read_only(),
                 ..Default::default()
@@ -775,7 +964,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "insert_documents".to_string(),
                 title: Some("Insert MongoDB documents".to_string()),
-                description: format!("Insert documents into a collection (at most {max_rows} at a time). Returns the inserted ids."),
+                description: format!("Insert documents into an existing collection (at most {max_rows} at a time; collections are not created). Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown: read the collection before sending again."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -790,7 +979,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "update_documents".to_string(),
                 title: Some("Update MongoDB documents".to_string()),
-                description: format!("Update the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. update uses update operators ({{\"$set\": {{...}}}}) or a pipeline; a plain document (which would replace the document) is refused. {refused}."),
+                description: format!("Update the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. update uses update operators ({{\"$set\": {{...}}}}) or a pipeline; a plain document (which would replace the document) is refused. After a timeout the outcome is unknown (the server may still apply it). {refused}."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -807,7 +996,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "delete_documents".to_string(),
                 title: Some("Delete MongoDB documents".to_string()),
-                description: "Delete the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. Collections and indexes are not dropped.".to_string(),
+                description: "Delete the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. Collections and indexes are not dropped. After a timeout the outcome is unknown (the server may still apply it).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -981,5 +1170,81 @@ mod tests {
         assert!(check_settings(&user_only)
             .unwrap_err()
             .contains("needs a password"));
+        // 書いたホストにだけつなぐ（他のメンバーを探さない）
+        assert_eq!(
+            client_options(&settings("localhost", None)).direct_connection,
+            Some(true)
+        );
+    }
+
+    /// 時間切れのあとも、タスクは最後まで動く（ドライバーのfutureを落とさない）
+    #[tokio::test]
+    async fn test_run_to_completion_keeps_the_task() {
+        let (done, finished) = tokio::sync::oneshot::channel();
+        let slow = async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = done.send(());
+        };
+        assert_eq!(
+            run_to_completion(Duration::from_millis(10), slow).await,
+            Err(Stopped::TimedOut)
+        );
+        assert!(finished.await.is_ok());
+        assert_eq!(
+            run_to_completion(Duration::from_secs(5), async { 1 }).await,
+            Ok(1)
+        );
+    }
+
+    /// `get_schema`の1つのコレクションは、残りのバイト数に収める
+    #[test]
+    fn test_schema_entry_fits_the_budget() {
+        let fields = || {
+            (0..50)
+                .map(|i| {
+                    (
+                        format!("field_with_a_long_name_{i:02}"),
+                        std::collections::BTreeSet::from(["string".to_string()]),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let (entry, size, complete) = schema_entry("users", Some(3), fields(), 100_000);
+        let entry = entry.unwrap();
+        assert!(complete);
+        assert_eq!(entry["fields"].as_array().unwrap().len(), 50);
+        assert!(entry.get("fields_truncated").is_none());
+        assert!(size >= serde_json::to_string(&entry).unwrap().len());
+
+        let (entry, size, complete) = schema_entry("users", Some(3), fields(), 500);
+        let entry = entry.unwrap();
+        assert!(!complete);
+        assert!(size <= 500);
+        assert!(serde_json::to_string(&entry["fields"]).unwrap().len() <= 500);
+        let listed = entry["fields"].as_array().unwrap().len();
+        assert!(listed > 0 && listed < 50, "{listed}");
+        assert_eq!(entry["fields_truncated"], true);
+
+        // 名前も入らなければ、何も出さない
+        let (entry, size, complete) = schema_entry("users", Some(3), fields(), 10);
+        assert!(entry.is_none());
+        assert_eq!(size, 0);
+        assert!(!complete);
+    }
+
+    #[test]
+    fn test_partial_insert_message() {
+        let first = partial_insert_message(0, 3, "duplicate key");
+        assert!(
+            first.contains("documents[0] failed: duplicate key"),
+            "{first}"
+        );
+        assert!(first.contains("No document was inserted"), "{first}");
+        let second = partial_insert_message(2, 3, "duplicate key");
+        assert!(second.contains("documents[2] failed"), "{second}");
+        assert!(
+            second.contains("2 of 3 documents were inserted (documents[0] to documents[1])"),
+            "{second}"
+        );
     }
 }
