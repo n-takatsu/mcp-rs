@@ -65,7 +65,7 @@ pub(crate) struct SqlitePools {
     /// 書き込みの接続。`OPTION_READ_ONLY`のときは無い
     write: Option<SqlitePool>,
     /// 開いたときの設定（`pools_key`）
-    pub(crate) key: (String, bool),
+    pub(crate) key: PoolsKey,
 }
 
 /// `:memory:`か
@@ -169,9 +169,12 @@ pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePool
     Ok(Arc::new(pools))
 }
 
-/// プールの開き方を決める設定（ファイルと、書き込みを許すか）。エンジンは、
-/// 同じ設定の接続にだけプールを共有する（PR #798のレビュー）
-pub(crate) fn pools_key(config: &DatabaseConfig) -> (String, bool) {
+/// プールの開き方を決める設定（ファイル・書き込みを許すか・接続を待つ時間・
+/// ロックを待つ時間）。エンジンは、同じ設定の接続にだけプールを共有する
+/// （PR #798のレビュー）
+pub(crate) type PoolsKey = (String, bool, u32, u32);
+
+pub(crate) fn pools_key(config: &DatabaseConfig) -> PoolsKey {
     (
         config.connection.host.trim().to_string(),
         config
@@ -179,6 +182,8 @@ pub(crate) fn pools_key(config: &DatabaseConfig) -> (String, bool) {
             .options
             .get(OPTION_READ_ONLY)
             .is_some_and(|v| v == "true"),
+        config.connection.timeout_seconds,
+        config.features.query_timeout,
     )
 }
 
@@ -330,7 +335,12 @@ async fn read_schema(
     only: Option<&str>,
 ) -> Result<(Vec<TableInfo>, Vec<ViewInfo>), sqlx::Error> {
     let mut tx = conn.begin().await?;
-    let filter = if only.is_some() { " AND name = ?" } else { "" };
+    // SQLiteは、名前を大文字と小文字を区別せずに比べる（PR #798のレビュー）
+    let filter = if only.is_some() {
+        " AND name = ? COLLATE NOCASE"
+    } else {
+        ""
+    };
     let list_sql = format!(
         "SELECT name, type, sql FROM sqlite_schema \
          WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'{filter} \
@@ -1060,6 +1070,8 @@ mod tests {
         assert_eq!(pairs.primary_keys, ["a", "b"]);
 
         let view = conn.get_table_schema("cheap").await.unwrap();
+        // 名前は、大文字と小文字を区別しない
+        assert_eq!(conn.get_table_schema("ITEMS").await.unwrap().name, "items");
         assert_eq!(view.columns.len(), 1);
         // 名前は埋め込まないので、SQLとして読まれない
         let err = conn
@@ -1134,6 +1146,14 @@ mod tests {
         let a = engine.connect(&config).await.unwrap();
         let b = engine.connect(&config).await.unwrap();
         a.close().await.unwrap();
+        b.query("SELECT 1", &[]).await.unwrap();
+
+        // 待つ時間が違えば、その接続だけのプールを開く。閉じても、共有の
+        // プールは閉じない
+        let mut slower = config.clone();
+        slower.connection.timeout_seconds = 1;
+        let d = engine.connect(&slower).await.unwrap();
+        d.close().await.unwrap();
         b.query("SELECT 1", &[]).await.unwrap();
 
         let writable = config_for(&other, &[]);
