@@ -35,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     エラーに書く（送り直すと二重に入るため）
   - 返す量の上限: `find`は`max_rows`件まで、`aggregate`には`$limit`を足す。
     少しずつ受け取り、`max_result_bytes`に達したら残りを読まずにカーソルを閉じる。
-    `get_schema`の結果も、全体で`max_result_bytes`に収める
+    `get_schema`も、結果が`max_result_bytes`に収まるように、コレクションと
+    フィールドを省く。ドキュメントを読み切れなかったコレクションには
+    `fields_unread`を付ける
   - 読み取りの時間の上限は`maxTimeMS`で送り、こちらも2秒後に待つのをやめる。
     初めの応答から読み終えるまでの全体で、1つの上限。`get_schema`は全部の
     コレクションで1つの上限で、時間が尽きたらそこまでを返す（名前の一覧も
@@ -43,7 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 書き込みには`maxTimeMS`を送れない（ドライバーに無い）。時間が過ぎたら
     待つのをやめるだけで、サーバーは続けることがある。結果は分からないと
     エラーに書く。あとから当たることもあるので、読んで確かめるだけでは
-    足りない（二重に当たっても困らない書き込みだけ、送り直せる）
+    足りない。二重に当たっても結果が同じだと言い切れるときだけ、送り直せる
+    （削除・`$set`・`_id`のある挿入でも、言い切れるとは限らない）
   - 待つのをやめても、ドライバーの操作は別のタスクで最後まで動かす（途中で
     落とすと、ドライバーの内部の状態が壊れることがある）
   - 書いたホストにだけつなぐ（`directConnection`）。レプリカセットの他の

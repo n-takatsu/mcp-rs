@@ -233,7 +233,7 @@ impl MongoHandler {
         match run_to_completion(self.limits.timeout + CLIENT_TIMEOUT_GRACE, future).await {
             Ok(result) => Ok(result),
             Err(Stopped::TimedOut) if write => Err(McpError::ExternalApi(format!(
-                "MongoDB {what} did not answer within {seconds} seconds. The outcome is unknown: the write may already be applied, or the server may still apply it later, so a read that does not show it does not prove that it failed. Send it again only when applying it twice does no harm (for example $set to fixed values, a delete, or an insert with _id); otherwise check by hand"
+                "MongoDB {what} did not answer within {seconds} seconds. The outcome is unknown: the write may already be applied, or the server may still apply it later, so a read that does not show it does not prove that it failed. Do not send it again unless you are sure that applying it twice leaves the data as you want it"
             ))),
             Err(Stopped::TimedOut) => Err(McpError::ExternalApi(format!(
                 "MongoDB {what} did not finish within {seconds} seconds"
@@ -665,7 +665,8 @@ impl SchemaBuilder {
         builder
     }
 
-    /// 1つのコレクションを足す。フィールドが入りきらなければ、入った分と
+    /// 1つのコレクションを足す。`fields_unread`は、ドキュメントを読み切れなかった
+    /// （権限が無い・途中で失敗した）とき。フィールドが入りきらなければ、入った分と
     /// `fields_truncated`を出す。名前も入らなければ、何も足さない。全部が
     /// 入ったら`true`（`false`なら、もう足せない）
     fn push(
@@ -673,6 +674,7 @@ impl SchemaBuilder {
         name: &str,
         count: Option<u64>,
         fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+        fields_unread: bool,
     ) -> bool {
         // `fields_truncated`がある形で数える（無ければ、その分だけ余る）
         let mut entry = json!({
@@ -681,6 +683,9 @@ impl SchemaBuilder {
             "fields": [],
             "fields_truncated": true,
         });
+        if fields_unread {
+            entry["fields_unread"] = JsonValue::Bool(true);
+        }
         // 7は、`fields`が空でないときの、閉じ括弧の前の改行と字下げ
         let mut size = nested_len(&entry, 4) + 7;
         if size > self.left {
@@ -720,7 +725,7 @@ impl SchemaBuilder {
             "collections": self.collections,
             "truncated": self.truncated || timed_out,
             "timed_out": timed_out,
-            "note": format!("fields are read from up to {SCHEMA_SAMPLE} documents of each collection, so rare fields may be missing. truncated is true when collections or fields were left out (max_rows, max_result_bytes, or the time limit when timed_out is true)"),
+            "note": format!("fields are read from up to {SCHEMA_SAMPLE} documents of each collection, so rare fields may be missing. fields_unread is true when the documents of a collection could not all be read (for example no permission), so its fields may be missing. truncated is true when collections or fields were left out (max_rows, max_result_bytes, or the time limit when timed_out is true)"),
         })
     }
 }
@@ -769,29 +774,41 @@ async fn read_schema(
             return Ok(true);
         }
         // 数件のドキュメントから、トップレベルのフィールドの名前と型を集める
-        // （値は返さない）。読めなければ、フィールドは空のまま
+        // （値は返さない）。読み切れなければ（権限が無い・途中で失敗した）、
+        // 読めた分と`fields_unread`を出す
         let mut fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
             std::collections::BTreeMap::new();
-        if let Ok(mut cursor) = collection
+        let mut fields_unread = false;
+        match collection
             .find(doc! {})
             .limit(SCHEMA_SAMPLE)
             .max_time(remaining().max(SCHEMA_MIN_REMAINING))
             .await
         {
-            while let Ok(Some(document)) = cursor.try_next().await {
-                for (field, value) in &document {
-                    fields
-                        .entry(field.clone())
-                        .or_default()
-                        .insert(bson_type(value).to_string());
+            Ok(mut cursor) => loop {
+                match cursor.try_next().await {
+                    Ok(Some(document)) => {
+                        for (field, value) in &document {
+                            fields
+                                .entry(field.clone())
+                                .or_default()
+                                .insert(bson_type(value).to_string());
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        fields_unread = true;
+                        break;
+                    }
                 }
-            }
+            },
+            Err(_) => fields_unread = true,
         }
         if remaining().is_zero() {
             // 時間切れで読み終えていないかもしれないコレクションは、出さない
             return Ok(true);
         }
-        if !lock_schema(&progress).push(&name, count, fields) {
+        if !lock_schema(&progress).push(&name, count, fields, fields_unread) {
             break;
         }
     }
@@ -842,7 +859,7 @@ fn insert_error(error: &mongodb::error::Error, total: usize) -> String {
             return partial_insert_message(first.index, total, &first.message);
         }
     }
-    format!("MongoDB insertMany: {error}. If the connection was lost, some documents may have been inserted, or may still be inserted: send them again only when inserting twice does no harm (documents with _id); otherwise check by hand")
+    format!("MongoDB insertMany: {error}. If the connection was lost, some documents may have been inserted, or may still be inserted. Do not send them again unless you are sure that the collection refuses a second copy (a unique index on a key of the documents)")
 }
 
 /// `failed`番目（0から）のドキュメントで挿入が止まったときの文
@@ -1065,7 +1082,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "insert_documents".to_string(),
                 title: Some("Insert MongoDB documents".to_string()),
-                description: format!("Insert documents into an existing collection (at most {max_rows} at a time). A collection name that does not exist is refused, so that a typing mistake does not create a collection. Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown (the server may still apply it later): send again only when inserting twice does no harm, such as documents with _id."),
+                description: format!("Insert documents into an existing collection (at most {max_rows} at a time). A collection name that does not exist is refused, so that a typing mistake does not create a collection. Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown (the server may still apply it later): do not send again unless the collection is sure to refuse a second copy."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1080,7 +1097,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "update_documents".to_string(),
                 title: Some("Update MongoDB documents".to_string()),
-                description: format!("Update the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. update uses update operators ({{\"$set\": {{...}}}}) or a pipeline; a plain document (which would replace the document) is refused. After a timeout the outcome is unknown (the server may still apply it later): send again only when applying it twice does no harm. {refused}."),
+                description: format!("Update the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. update uses update operators ({{\"$set\": {{...}}}}) or a pipeline; a plain document (which would replace the document) is refused. After a timeout the outcome is unknown (the server may still apply it later): do not send again unless applying it twice is sure to leave the data as intended. {refused}."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1097,7 +1114,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "delete_documents".to_string(),
                 title: Some("Delete MongoDB documents".to_string()),
-                description: "Delete the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. Collections and indexes are not dropped. After a timeout the outcome is unknown (the server may still apply it later).".to_string(),
+                description: "Delete the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. Collections and indexes are not dropped. After a timeout the outcome is unknown (the server may still apply it later): do not send again unless deleting twice is sure to delete nothing else.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1316,7 +1333,13 @@ mod tests {
         let build = |max_bytes: usize| {
             let mut builder = SchemaBuilder::new("app", max_bytes);
             for i in 0..12 {
-                if !builder.push(&format!("collection_{i:02}"), Some(3), schema_fields(15)) {
+                // 1つおきに、読み切れなかったコレクション
+                if !builder.push(
+                    &format!("collection_{i:02}"),
+                    Some(3),
+                    schema_fields(15),
+                    i % 2 == 1,
+                ) {
                     break;
                 }
             }
@@ -1326,6 +1349,8 @@ mod tests {
         assert_eq!(all["collections"].as_array().unwrap().len(), 12);
         assert_eq!(all["truncated"], false);
         assert!(all["collections"][0].get("fields_truncated").is_none());
+        assert!(all["collections"][0].get("fields_unread").is_none());
+        assert_eq!(all["collections"][1]["fields_unread"], true);
         assert_eq!(
             all["collections"][0]["fields"].as_array().unwrap().len(),
             15
@@ -1373,7 +1398,7 @@ mod tests {
             if list {
                 let mut progress = lock_schema(&progress);
                 progress.listed = true;
-                progress.push("users", Some(8), schema_fields(2));
+                progress.push("users", Some(8), schema_fields(2), false);
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
             Ok(false)
@@ -1416,7 +1441,7 @@ mod tests {
             async move {
                 let mut progress = lock_schema(&progress);
                 progress.listed = true;
-                progress.push("users", Some(8), schema_fields(2));
+                progress.push("users", Some(8), schema_fields(2), false);
                 Ok(false)
             }
         };
