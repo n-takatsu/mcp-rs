@@ -49,7 +49,13 @@ async fn prepare(host: &str, port: u16, database: &str) {
         .unwrap();
 }
 
-fn settings(host: &str, port: u16, database: &str, allow_write: bool) -> DatabaseSettings {
+fn settings(
+    host: &str,
+    port: u16,
+    database: &str,
+    allow_write: bool,
+    max_result_bytes: u64,
+) -> DatabaseSettings {
     DatabaseSettings {
         engine: "mongodb".to_string(),
         host: Some(host.to_string()),
@@ -57,16 +63,25 @@ fn settings(host: &str, port: u16, database: &str, allow_write: bool) -> Databas
         database: database.to_string(),
         allow_write: Some(allow_write),
         max_rows: Some(5),
-        max_result_bytes: Some(1000),
+        max_result_bytes: Some(max_result_bytes),
         ..Default::default()
     }
 }
 
-async fn handler(host: &str, port: u16, database: &str, allow_write: bool) -> Arc<dyn McpHandler> {
+async fn handler(
+    host: &str,
+    port: u16,
+    database: &str,
+    allow_write: bool,
+    max_result_bytes: u64,
+) -> Arc<dyn McpHandler> {
     let audit = Arc::new(mcp_rs::security::AuditLogger::with_defaults());
-    handler_from_settings(&settings(host, port, database, allow_write), audit)
-        .await
-        .unwrap()
+    handler_from_settings(
+        &settings(host, port, database, allow_write, max_result_bytes),
+        audit,
+    )
+    .await
+    .unwrap()
 }
 
 async fn call(handler: &Arc<dyn McpHandler>, tool: &str, args: Value) -> Result<Value, McpError> {
@@ -86,7 +101,8 @@ async fn mongodb_read_tools() {
     };
     let database = "mcp_rs_tools_read";
     prepare(&host, port, database).await;
-    let handler = handler(&host, port, database, false).await;
+    // 返す量の上限（1000バイト）が小さいハンドラー
+    let handler = handler(&host, port, database, false, 1000).await;
 
     let tools = handler.list_tools().await.unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -176,7 +192,15 @@ async fn mongodb_read_tools() {
     .await
     .is_err());
 
-    let schema = call(&handler, "get_schema", json!({})).await.unwrap();
+    // get_schemaも、バイト数の上限（1000）に収める（フィールドを省く）
+    let small = call(&handler, "get_schema", json!({})).await.unwrap();
+    assert_eq!(small["truncated"], true);
+    assert_eq!(small["timed_out"], false);
+    assert!(serde_json::to_string_pretty(&small).unwrap().len() <= 1000);
+
+    let wide = crate::handler(&host, port, database, false, 100_000).await;
+    let schema = call(&wide, "get_schema", json!({})).await.unwrap();
+    assert_eq!(schema["truncated"], false);
     let collections: Vec<&str> = schema["collections"]
         .as_array()
         .unwrap()
@@ -202,7 +226,7 @@ async fn mongodb_write_tools() {
     };
     let database = "mcp_rs_tools_write";
     prepare(&host, port, database).await;
-    let handler = handler(&host, port, database, true).await;
+    let handler = handler(&host, port, database, true, 100_000).await;
 
     let inserted = call(
         &handler,
