@@ -90,6 +90,7 @@ Ask the client about your data. It will call:
 
 - `get_schema` to see the tables and columns
 - `execute_query` to run a `SELECT`, with values passed as `$1`, `$2`, … parameters
+- `explain_query` to see the plan of a `SELECT` without running it, for example to find out why it is slow (v0.31.0 and later)
 
 Results are limited to 1,000 rows (`max_rows`) and about 10 MB (`max_result_bytes`) by default, and each statement to 30 seconds (`query_timeout_seconds`). For large tables, ask for `LIMIT` or aggregates.
 

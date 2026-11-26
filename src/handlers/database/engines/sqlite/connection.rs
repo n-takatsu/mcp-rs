@@ -325,6 +325,30 @@ async fn read_rows(
     Ok((columns, rows))
 }
 
+/// `EXPLAIN QUERY PLAN`の行（`id`・`parent`・`notused`・`detail`）を、JSONに
+/// する（#646）。`notused`は出さない
+fn plan_from_rows(rows: Vec<Vec<Value>>) -> serde_json::Value {
+    let number = |value: Option<&Value>| match value {
+        Some(Value::Int(n)) => serde_json::json!(n),
+        _ => serde_json::Value::Null,
+    };
+    let steps: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let detail = match row.get(3) {
+                Some(Value::String(text)) => serde_json::json!(text),
+                _ => serde_json::Value::Null,
+            };
+            serde_json::json!({
+                "id": number(row.first()),
+                "parent": number(row.get(1)),
+                "detail": detail,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(steps)
+}
+
 /// 名前で絞った、表・ビューの一覧（名前・種類・定義のSQL）
 type SchemaObject = (String, String, Option<String>);
 
@@ -647,6 +671,24 @@ impl DatabaseConnection for SqliteConnection {
                 .then(|| Value::Int(done.last_insert_rowid())),
             execution_time_ms: started.elapsed().as_millis() as u64,
         })
+    }
+
+    /// `EXPLAIN QUERY PLAN`の結果（#646）。SQLは実行されない。`query`と同じ、
+    /// 読み取り専用の接続で聞く。計画は、行数・バイト数の上限で止めずに
+    /// 全部読む（途中までの計画を返さない。PR #801のレビュー）。計画の行は、
+    /// SQLの大きさに応じた数しか無い。大きさは、ハンドラーが確かめる
+    async fn explain(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<serde_json::Value, DatabaseError> {
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let (mut conn, fired) = self.read_conn().await?;
+        let result = read_rows(&mut conn, &explain, params, None, None).await;
+        let (_, rows) = self
+            .finish(conn, fired, result, DatabaseError::QueryFailed)
+            .await?;
+        Ok(plan_from_rows(rows))
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError> {

@@ -113,6 +113,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     1つ持ち、接続の間で共有する（以前は接続ごとにプールを作っていた）。
     `SqliteConnection::query`は、読み取り専用の接続で読む。`:memory:`は、
     1つの接続を共有する
+- データベースのツールに、SELECTの実行計画を返す`explain_query`を足した
+  （#646。PostgreSQL・MySQL・MariaDB・SQLite）。遅いSQLの原因や、インデックスが
+  使われるかを調べられる。PostgreSQLは`EXPLAIN (FORMAT JSON)`、MySQL・MariaDBは
+  `EXPLAIN FORMAT=JSON`、SQLiteは`EXPLAIN QUERY PLAN`の結果を返す
+  - SQLは実行しない（`EXPLAIN ANALYZE`は送らない。データベースが、計画を
+    作るために行を少し読むことはある）。SQLは`EXPLAIN`を付けずに
+    渡す。`execute_query`と同じ検査（1つのSELECTだけ等）を通し、読み取り専用の
+    トランザクションの中で聞いて、ロールバックする
+  - 読み取りだけのツールの印（`readOnlyHint`）を付け、`allow_write`に関わらず
+    出す。呼び出しは、`execute_query`と同じく監査ログに記録する
+  - 計画は切らない（`max_rows`は当てはめない）。`max_result_bytes`を超える
+    なら、エラーにする
 
 ### Fixed
 

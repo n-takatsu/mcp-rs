@@ -105,6 +105,7 @@ mcp-rs connects once at startup. If the settings are invalid, an environment var
 | Tool | Offered | Annotations |
 |------|---------|-------------|
 | `execute_query` | always | `readOnlyHint` |
+| `explain_query` | always (v0.31.0 and later) | `readOnlyHint` |
 | `get_schema` | always | `readOnlyHint` |
 | `execute_command` | only with `allow_write = true` | `destructiveHint` |
 
@@ -144,6 +145,31 @@ The result is JSON text:
 - When the first row alone is larger than `max_result_bytes`, its large values are cut: a string keeps its beginning and ends with `… [cut: N bytes in total; …]`, and `bytea` and `json` values are replaced by a note with their size. Select a part of such a value, for example `substring(column from 1 for 1000)`. mcp-rs still receives that one row whole, so a row can use as much memory as PostgreSQL allows for one row (up to about 1 GB per value)
 - A result without rows still has its `columns`
 - Values are returned by type: integers, floats, and booleans as JSON values (`NaN`, `Infinity`, and `-Infinity`, which JSON numbers cannot hold, as those strings; up to v0.23.0, as `0`); `numeric` as a string (no digits are lost); `uuid`, `date`, `time`, and `timestamp` as strings; `timestamptz` as RFC 3339; `json`/`jsonb` as JSON; `bytea` as base64; `text[]`, `varchar[]`, `int4[]`, and `int8[]` as JSON arrays. Other types are replaced by a note: cast such columns to text, for example `column::text`
+
+### `explain_query`
+
+From v0.31.0. Shows how the database would run one `SELECT` statement, without running it. Use it to see why a query is slow, and whether it uses an index.
+
+```json
+{
+  "sql": "SELECT id, name FROM customers WHERE country = $1",
+  "params": ["JP"]
+}
+```
+
+Write the statement as for `execute_query`, without `EXPLAIN` in front: mcp-rs adds it. The result is `{"plan": …}`:
+
+| Engine | What mcp-rs sends | `plan` |
+|--------|-------------------|--------|
+| PostgreSQL | `EXPLAIN (FORMAT JSON)` | The JSON that PostgreSQL returns: a list with one object that has `Plan` |
+| MySQL, MariaDB | `EXPLAIN FORMAT=JSON` | The JSON that the server returns (`query_block`, …). MySQL and MariaDB name some fields differently. To explain a statement that reads a view, the user also needs the `SHOW VIEW` privilege on it |
+| SQLite | `EXPLAIN QUERY PLAN` | A list of steps, each with `id`, `parent` (the `id` of the step it belongs to, `0` for the top) and `detail` |
+
+- mcp-rs never sends `EXPLAIN ANALYZE`, so the statement is not run. The database may still read some rows to make the plan (MySQL, for example, reads the row when a primary key is compared with a constant), so a call is not always free of reads. Costs and row counts in the plan are the estimates of the database
+- The statement passes the same checks as for `execute_query` (a single `SELECT`, no writes inside `WITH`, no row locks, none of the refused functions), and the plan is read in a read-only transaction that is rolled back
+- The plan is not cut: when it is larger than `max_result_bytes`, the call fails. `max_rows` does not apply
+- The call is recorded in the audit log like `execute_query`
+- Redis and MongoDB do not have this tool
 
 ### `get_schema`
 

@@ -61,7 +61,7 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 ## **Database Integration (PostgreSQL, MySQL, MariaDB, SQLite, Redis, MongoDB)**
 
 - **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, or `"mysql"` or `"mariadb"` (v0.25.0 and later), host, database, user, and `password = "${VAR}"`; for SQLite (v0.31.0 and later), `engine = "sqlite"` and the path of the database file; for Redis and MongoDB (v0.31.0 and later), `engine = "redis"` or `"mongodb"`, each with its own read-only tools)
-- **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back) and `get_schema`
+- **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back), `explain_query` (the plan of a SELECT, without running it; v0.31.0 and later), and `get_schema`
 - **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) is offered only with `allow_write = true`
 - **Bound Parameters**: `$1`, `$2`, … (PostgreSQL) or `?` (MySQL, MariaDB, SQLite) are bound, never inserted into the SQL text, and strings are converted to the column's type
 - **Limits**: Rows per result (1,000), time per statement (30 s), and connections (5) by default

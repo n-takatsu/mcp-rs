@@ -61,7 +61,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 ## **データベース連携（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）**
 
 - **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、または`"mysql"`・`"mariadb"`（v0.25.0以降）、ホスト・データベース・ユーザー、`password = "${VAR}"`。SQLite（v0.31.0以降）は、`engine = "sqlite"`とデータベースのファイルのパス。Redis・MongoDB（v0.31.0以降）は`engine = "redis"`・`"mongodb"`で、それぞれ専用の読み取りのツールを出す）
-- **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）と`get_schema`
+- **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）、`explain_query`（SELECTの実行計画。SQLは実行しない。v0.31.0以降）、`get_schema`
 - **書き込みは許したときだけ**: `allow_write = true`のときだけ`execute_command`（1つのINSERT・UPDATE・DELETE）を出す
 - **バインドするパラメーター**: `$1`・`$2`…（PostgreSQL）や`?`（MySQL・MariaDB・SQLite）はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
 - **上限**: 既定で、結果は1000行、1つのSQLは30秒、接続は5つまで

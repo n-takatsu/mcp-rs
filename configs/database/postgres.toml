@@ -1,7 +1,7 @@
 # mcp-rs: connect to a PostgreSQL database (#453)
 #
 # Copy this section into your mcp-rs configuration file. MCP clients then get
-# the tools execute_query and get_schema (read-only). See
+# the tools execute_query, explain_query and get_schema (read-only). See
 # https://n-takatsu.github.io/mcp-rs/docs/database/
 #
 # Connect with a role that can only read what the AI client should see:

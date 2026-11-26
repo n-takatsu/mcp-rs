@@ -77,6 +77,7 @@ See [WordPress Integration](docs/wordpress/) for the full list of tools.
 ## 🗄️ Database MCP Tools (PostgreSQL)
 
 - **`execute_query`**: One `SELECT`, run in a read-only transaction that is rolled back
+- **`explain_query`**: The plan of a `SELECT`, without running it (v0.31.0 and later)
 - **`get_schema`**: Tables, columns, keys, and indexes
 - **`execute_command`**: One `INSERT`, `UPDATE`, or `DELETE`, only with `allow_write = true`
 - Values are bound as parameters; results are limited in rows and time
