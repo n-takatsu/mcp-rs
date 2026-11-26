@@ -8,10 +8,10 @@ permalink: /docs/database/
 
 **[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
 
-mcp-rs can connect to one PostgreSQL, MySQL, MariaDB, SQLite, or Redis database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
+mcp-rs can connect to one PostgreSQL, MySQL, MariaDB, SQLite, Redis, or MongoDB database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
-- **Engines**: PostgreSQL, MySQL and MariaDB from v0.25.0, and SQLite and Redis from v0.31.0 (see [MySQL](#mysql), [MariaDB](#mariadb), [SQLite](#sqlite), and [Redis](#redis)). Redis is not SQL, so it has its own tools. MongoDB exists as library code but cannot be configured yet. It is planned for v0.31.0
-- **Build**: all five are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
+- **Engines**: PostgreSQL, MySQL and MariaDB from v0.25.0, and SQLite, Redis and MongoDB from v0.31.0 (see [MySQL](#mysql), [MariaDB](#mariadb), [SQLite](#sqlite), [Redis](#redis), and [MongoDB](#mongodb)). Redis and MongoDB are not SQL, so they have their own tools
+- **Build**: all six are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
 - **Step-by-step setup**: [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 
 ## Configuration
@@ -40,11 +40,12 @@ ssl_mode = "prefer"               # disable, allow, prefer, require, verify-full
 
 | Key | Required | Default | Notes |
 |-----|----------|---------|-------|
-| `engine` | yes | | `"postgresql"`, `"mysql"`, `"mariadb"`, `"sqlite"`, or `"redis"` (the last two v0.31.0 and later). For SQLite, see [SQLite](#sqlite): only `database` and the keys from `allow_write` on are used. For Redis, see [Redis](#redis) |
+| `engine` | yes | | `"postgresql"`, `"mysql"`, `"mariadb"`, `"sqlite"`, `"redis"`, or `"mongodb"` (the last three v0.31.0 and later). For SQLite, see [SQLite](#sqlite): only `database` and the keys from `allow_write` on are used. For Redis and MongoDB, see [Redis](#redis) and [MongoDB](#mongodb) |
 | `host` | | `localhost` | `${VAR}` allowed |
-| `port` | | `5432` (MySQL, MariaDB: `3306`; Redis: `6379`) | |
+| `port` | | `5432` (MySQL, MariaDB: `3306`; Redis: `6379`; MongoDB: `27017`) | |
 | `database` | yes (not for Redis) | | `${VAR}` allowed. SQLite: the path of the database file. Redis: the database number, as a string (`"0"` when left out) |
-| `username` | yes (not for SQLite; optional for Redis) | | `${VAR}` allowed |
+| `username` | yes (not for SQLite; optional for Redis and MongoDB) | | `${VAR}` allowed |
+| `auth_source` | | `admin` | MongoDB only: the database where `username` was created |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
 | `keyring` | | none | Name of the entry in the OS credential store that holds the password, instead of `password` (v0.29.0 and later). `mcp-rs init` or `mcp-rs database-keyring set <name>` stores it (see [Keeping the password in the OS credential store](#keyring)). The entry is tied to `host`, `port` and `username`: with other values in `[database]`, mcp-rs does not use it, so a config file someone else wrote cannot send the password to another server. Cannot be combined with `password` |
 | `ssl_mode` | when `host` is not local | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow`. From v0.30.0, it can be left out only when `host` is `localhost`, `127.0.0.1`, or `::1` (PostgreSQL: also a Unix socket path, or when `PGSSLMODE` is set to a valid mode) |
@@ -313,6 +314,43 @@ ssl_mode = "verify-full"          # disable, require, verify-full
 - **TLS**: `ssl_mode` takes `disable`, `require` (TLS without checking the certificate), and `verify-full` (TLS, checking the certificate and the host name against the public CAs, or only `ssl_root_cert` when it is set). As for the other engines, it must be set when `host` is not local. `ssl_root_cert` is used only with `verify-full`
 - **Audit log**: each call is recorded with the command name and the number of arguments, not the keys or values
 - **Not supported**: Redis Cluster, Sentinel, and Unix sockets
+
+## MongoDB
+
+From v0.31.0, `engine = "mongodb"` connects to MongoDB (6 or later; tested with 7). MongoDB is not SQL, so mcp-rs offers these tools instead of the SQL tools:
+
+| Tool | Offered | What it does |
+|------|---------|--------------|
+| `find` | always | Reads documents of a collection with a `filter`, `projection`, `sort`, `limit` (up to `max_rows`) and `skip` |
+| `aggregate` | always | Runs an aggregation `pipeline` on a collection |
+| `count_documents` | always | Counts the documents that match a `filter` |
+| `get_schema` | always | The collections, their estimated document counts, and the top-level field names and types read from up to 20 documents of each (no values) |
+| `insert_documents` | only with `allow_write = true` | Inserts documents into an existing collection (up to `max_rows` at a time) |
+| `update_documents` | only with `allow_write = true` | Updates the first, or every (`many = true`), document that matches a non-empty `filter` |
+| `delete_documents` | only with `allow_write = true` | Deletes the first, or every (`many = true`), document that matches a non-empty `filter` |
+
+```toml
+[database]
+engine = "mongodb"
+host = "db.example.com"
+# port = 27017                    # default for MongoDB
+database = "app"                  # the database name
+username = "mcp_reader"           # leave out to connect without signing in
+password = "${MCP_MONGODB_PASSWORD}"
+# auth_source = "admin"           # where the user was created (default admin)
+ssl_mode = "verify-full"          # disable, require, verify-full
+```
+
+- **Refused**: the aggregation stages that write (`$out`, `$merge`) and the operators that run JavaScript on the server (`$where`, `$function`, `$accumulator`) are refused in every tool, also inside filters, projections, sort orders and updates. `system.` collections are not available. mcp-rs has no tool that creates or drops collections or indexes
+- **Writes**: `update_documents` and `delete_documents` refuse an empty `filter` (every document). `update_documents` takes update operators (`{"$set": {...}}`) or a pipeline: a plain document, which would replace the whole document, is refused. `insert_documents` inserts only into a collection that exists: MongoDB creates a missing collection on insert, so mcp-rs checks first and refuses a name that does not exist (for example a typing mistake). If someone else drops the collection between that check and the insert, MongoDB still creates it, when the user has the permission. Documents are inserted in order: when one fails (for example a duplicate key), the ones before it are already inserted, and the error says how many, so that they are not sent again
+- **Size limits**: `find` returns at most `max_rows` documents (`limit` cannot be larger), and `aggregate` gets a `$limit` stage added. Documents are read in batches: when the result reaches `max_result_bytes`, mcp-rs stops reading and closes the cursor, and `truncated` is true. A single document larger than `max_result_bytes` is not returned. `get_schema` lists at most `max_rows` collections, and leaves out collections and fields so that its result stays within `max_result_bytes` (`truncated` is true, and a collection whose fields did not all fit has `fields_truncated`). The fixed part of a result (about 500 bytes for `get_schema`) is always returned, also when `max_result_bytes` is smaller than that. A collection whose documents could not all be read (for example no permission to read it) has `fields_unread`: its fields may be missing
+- **Time limit (reads)**: for `find`, `aggregate` and `count_documents`, `query_timeout_seconds` is sent as `maxTimeMS`, so the server stops the operation, and mcp-rs also stops waiting 2 seconds later. The limit covers the whole call, from the first answer to the last document read. `get_schema` uses one limit for all collections: when the time runs out after the collection names are listed, it returns the collections read so far, with `truncated` and `timed_out` true. When the names are not listed in time, it returns an error
+- **Time limit (writes)**: `insert_documents`, `update_documents` and `delete_documents` have no `maxTimeMS` (the driver cannot send it for writes). After `query_timeout_seconds` plus 2 seconds, mcp-rs only stops waiting: the write keeps running, and the server may apply it then or later, so the outcome is unknown and the error says so. A read that does not show the write does not prove that it failed: it may be applied after the read. mcp-rs cannot tell when the write has ended, or that it will not be applied any more: the write may still be waiting for a connection inside mcp-rs, where `db.currentOp()` on the server does not show it. Do not send the write again unless applying it twice is sure to leave the data as intended. The kind of write alone does not tell: a second delete without `many` deletes another matching document, a second `$set` can change another document when the first one made its document stop matching the filter, and a second insert is refused only when the collection has a unique index on a key of the documents (`_id` is not unique in a time series collection). When you cannot be sure, compare the data by hand later instead of sending the write again
+- **Values**: documents are returned as relaxed Extended JSON (`{"$oid": "…"}`, `{"$date": "…"}`, numbers as JSON numbers). Filters and documents take Extended JSON too, so an `_id` returned by `find` can be passed back as it is
+- **Users**: connect with a user that can only read the collections the AI client should see, for example a user with the `read` role on the database. A user with privileges on some collections only also works: `get_schema` then lists those collections (`authorizedCollections`). With `username`, a password (`password` or `keyring`) is needed. `auth_source` is the database where the user was created (default `admin`)
+- **TLS**: `ssl_mode` takes `disable`, `require` (TLS without checking the certificate), and `verify-full` (TLS, checking the certificate and the host name against the public CAs, or only `ssl_root_cert` when it is set). It must be set when `host` is not local. Unlike PostgreSQL and MySQL, there is no `prefer`: without `ssl_mode` (local hosts only), TLS is not used, so a local server that requires TLS needs `require` or `verify-full`
+- **Audit log**: each call is recorded with the tool and the collection name, not the filters or documents
+- **Not supported**: `mongodb+srv://` addresses (DNS seed lists), replica sets given as several hosts, and sharded clusters through more than one `mongos`. mcp-rs talks only to the configured host (`directConnection`): it does not look for the other members of a replica set, because they would not have passed the `ssl_mode` check. For writes to a replica set, `host` must be the primary
 
 ## Library API
 

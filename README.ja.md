@@ -1,6 +1,6 @@
 # <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
-AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB・SQLite・Redis）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
+AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 
 Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、メディアのアップロード、コメントの承認ができます。ScoopかHomebrewで入れて、`mcp-rs init`の質問に答えれば、Claude Desktop・Claude Code・GitHub Copilotに登録されます。
 
@@ -16,7 +16,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 `mcp-rs`はRustで書かれたMCPのサーバーです。Claude Desktop・Claude Code等のMCPのクライアントはSTDIOで、それ以外のクライアントはHTTPでつなぎます。次の機能があります。
 
 - WordPress REST APIを使う41のツール（投稿・固定ページ・カスタム投稿タイプ・メディア・カテゴリ・タグ等のタクソノミー・コメント・サイト設定）
-- 1つのPostgreSQL・MySQL・MariaDB・SQLite・Redisのデータベースを読むツール（書き込みは許したときだけ）
+- 1つのPostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDBのデータベースを読むツール（書き込みは許したときだけ）
 - プラグインとして起動した外部のMCPサーバーのツール（子プロセス・Dockerのコンテナ・KubernetesのJob）
 - HTTPモード向け: APIキー・OAuth 2.1の認証、呼び出し元ごとのツールの制限、TLS・mTLS、レート制限、監査ログ
 
@@ -58,9 +58,9 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 - **レート制限**（ツールの呼び出し）
 - **監査ログ**: 誰がどのツールを呼び、結果がどうだったか
 
-## **データベース連携（PostgreSQL・MySQL・MariaDB・SQLite・Redis）**
+## **データベース連携（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）**
 
-- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、または`"mysql"`・`"mariadb"`（v0.25.0以降）、ホスト・データベース・ユーザー、`password = "${VAR}"`。SQLite（v0.31.0以降）は、`engine = "sqlite"`とデータベースのファイルのパス。Redis（v0.31.0以降）は`engine = "redis"`で、Redis専用の読み取りのコマンドのツールを出す）
+- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、または`"mysql"`・`"mariadb"`（v0.25.0以降）、ホスト・データベース・ユーザー、`password = "${VAR}"`。SQLite（v0.31.0以降）は、`engine = "sqlite"`とデータベースのファイルのパス。Redis・MongoDB（v0.31.0以降）は`engine = "redis"`・`"mongodb"`で、それぞれ専用の読み取りのツールを出す）
 - **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）と`get_schema`
 - **書き込みは許したときだけ**: `allow_write = true`のときだけ`execute_command`（1つのINSERT・UPDATE・DELETE）を出す
 - **バインドするパラメーター**: `$1`・`$2`…（PostgreSQL）や`?`（MySQL・MariaDB・SQLite）はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
@@ -122,7 +122,7 @@ mcp-rs init
 
 - [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/)（入れ方、クライアントごとの設定、ログファイル）
 - [WordPress](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
-- [データベース（PostgreSQL・MySQL・MariaDB・SQLite・Redis）](https://n-takatsu.github.io/mcp-rs/docs/database/)
+- [データベース（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）](https://n-takatsu.github.io/mcp-rs/docs/database/)
 - [プラグイン](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
 - [セキュリティ](https://n-takatsu.github.io/mcp-rs/docs/security/)（HTTPの認証・ツールの制限・TLS・監査ログ）
 - [APIリファレンス](https://n-takatsu.github.io/mcp-rs/docs/api/)（`mcp_rs_status`とMCPのメソッド）

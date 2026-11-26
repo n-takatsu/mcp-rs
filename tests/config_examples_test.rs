@@ -40,6 +40,10 @@ const SNIPPETS: &[(&str, &str)] = &[
         "[server]\n[transport]\n[handlers]\n",
     ),
     (
+        "configs/database/mongodb.toml",
+        "[server]\n[transport]\n[handlers]\n",
+    ),
+    (
         "configs/database/redis.toml",
         "[server]
 [transport]

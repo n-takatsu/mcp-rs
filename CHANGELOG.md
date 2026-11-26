@@ -17,6 +17,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
   v0.30.0は、マージの後に手で実行して登録した。README・導入ガイドに、
   公式のMCP Registryに載っていることを書いた
+- `[database]`で、MongoDBを使えるようにした（`engine = "mongodb"`、#530）。MongoDBは
+  SQLではないので、操作ごとのツールを出す: `find`・`aggregate`・`count_documents`・
+  `get_schema`（コレクションの一覧・おおよその数・数件から読んだフィールドの
+  名前と型）。`allow_write = true`のときだけ`insert_documents`・`update_documents`・
+  `delete_documents`
+  - 書き込みの段（`$out`・`$merge`）と、JavaScriptを動かす演算子（`$where`・
+    `$function`・`$accumulator`）は、どのツールでも断る（フィルター等の中も見る）。
+    `system.`のコレクションは使えない。コレクション・インデックスを作る・消す
+    ツールは無い
+  - `update_documents`・`delete_documents`は、空のフィルターを断る。置き換えの更新
+    （演算子の無いドキュメント）も断る。`insert_documents`は`max_rows`件まで
+  - `insert_documents`は、あるコレクションにだけ挿入する。MongoDBは、無い
+    コレクションへの挿入でコレクションを作るので、先に確かめて、無い名前
+    （打ち間違い等）は断る。確かめたあとに他の誰かが消した場合は、ユーザーに
+    権限があれば作られる。順に挿入し、途中で失敗したら、何件が入ったかを
+    エラーに書く（送り直すと二重に入るため）
+  - 返す量の上限: `find`は`max_rows`件まで、`aggregate`には`$limit`を足す。
+    少しずつ受け取り、`max_result_bytes`に達したら残りを読まずにカーソルを閉じる。
+    `get_schema`も、結果が`max_result_bytes`に収まるように、コレクションと
+    フィールドを省く。ドキュメントを読み切れなかったコレクションには
+    `fields_unread`を付ける
+  - 読み取りの時間の上限は`maxTimeMS`で送り、こちらも2秒後に待つのをやめる。
+    初めの応答から読み終えるまでの全体で、1つの上限。`get_schema`は全部の
+    コレクションで1つの上限で、時間が尽きたらそこまでを返す（名前の一覧も
+    読めていなければ、エラー）
+  - 書き込みには`maxTimeMS`を送れない（ドライバーに無い）。時間が過ぎたら
+    待つのをやめるだけで、サーバーは続けることがある。結果は分からないと
+    エラーに書く。あとから当たることもあるので、読んで確かめるだけでは
+    足りない。二重に当たっても結果が同じだと言い切れるときだけ、送り直せる
+    （削除・`$set`・`_id`のある挿入でも、言い切れるとは限らない）
+  - 待つのをやめても、ドライバーの操作は別のタスクで最後まで動かす（途中で
+    落とすと、ドライバーの内部の状態が壊れることがある）
+  - 書いたホストにだけつなぐ（`directConnection`）。レプリカセットの他の
+    メンバーは探さない（`ssl_mode`の確認を通っていないホストに、認証の情報を
+    送らないため）。書き込むなら、`host`はプライマリー
+  - 値はExtended JSON（relaxed）で返し、フィルターでもExtended JSONを受け付ける
+  - `database`はデータベースの名前、`username`は省略できる（認証しない。書いたら
+    パスワードが要る）、`auth_source`（新しい項目。既定は`admin`）。
+    `ssl_mode`は`disable`・`require`・`verify-full`（ループバック以外では必須。
+    省略したら、TLSを使わない）。`auth_source`は、MongoDB以外では断る
+  - 監査ログには、ツールとコレクションの名前だけを書く
+  - 既定のビルドに含めた。`mongodb`クレートは、`mongodb+srv://`のためのDNSを
+    読む機能を外した（1つのホストにつなぐ）
+  - 設定の例: `configs/database/mongodb.toml`。CIに、MongoDBのサービスと、実際の
+    MongoDBでツールを確かめるテスト（`tests/database_mongodb_tools_test.rs`）を足した
 - `[database]`で、Redisを使えるようにした（`engine = "redis"`、#529）。RedisはSQLでは
   ないので、Redis専用のツールを出す: `redis_command`（読み取りのコマンドを1つ）・
   `scan_keys`（`SCAN`で鍵を一覧）・`get_schema`（版・鍵の数・`INFO keyspace`）。
