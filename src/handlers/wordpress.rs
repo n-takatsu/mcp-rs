@@ -3410,7 +3410,8 @@ impl WordPressHandler {
     /// 固定ページ等、その分類の無い投稿タイプに送ると、WordPressは黙って
     /// 無視し、成功と返してしまうため。空の配列は、無視されても結果が同じ
     /// なので断らない（クライアントが空の配列を送ることがある）。投稿
-    /// （`post`）はいつも両方を持つので、タクソノミーの一覧は読まない。
+    /// （`post`）はいつも両方を持つので、IDを確かめないときは、タクソノミーの
+    /// 一覧は読まない。
     ///
     /// `check_ids`なら、`terms`・`categories`・`tags`の項目IDが、サイトに
     /// あるかも確かめる（#774、#779）。WordPressは無いIDを黙って飛ばし、
@@ -3434,14 +3435,15 @@ impl WordPressHandler {
         // ほかの投稿タイプでは、一覧で名前空間を確かめてから調べる（PR #781の
         // レビュー）
         if post_type == "post" {
-            if terms.is_some() {
-                self.check_taxonomies_of_type(post_type, terms, &[], check_ids)
+            // IDを確かめるときは、投稿でもタクソノミーの一覧を読み、同じ
+            // `rest_base`のタクソノミー（プラグインが足したもの）が無いかを
+            // 確かめる（PR #797のレビュー）
+            if check_ids && (terms.is_some() || !builtin.is_empty()) {
+                self.check_taxonomies_of_type(post_type, terms, &builtin, true)
                     .await?;
-            }
-            if check_ids {
-                for (name, ids) in builtin {
-                    self.check_term_ids(name, "wp/v2", name, ids).await?;
-                }
+            } else if terms.is_some() {
+                self.check_taxonomies_of_type(post_type, terms, &[], false)
+                    .await?;
             }
         } else if terms.is_some() || !builtin.is_empty() {
             self.check_taxonomies_of_type(post_type, terms, &builtin, check_ids)
@@ -12789,12 +12791,19 @@ X-WP-TotalPages: 1",
         );
     }
 
+    /// 投稿（`post`）のタクソノミーの一覧（`/wp/v2/taxonomies?type=post`）
+    const POST_TAXONOMIES_JSON: &str = r#"{"category":{"rest_base":"categories","rest_namespace":"wp/v2"},"post_tag":{"rest_base":"tags","rest_namespace":"wp/v2"}}"#;
+
     /// `categories`・`tags`の項目IDも、無ければ送らずに断る（#779）。投稿
     /// （`post`）でも確かめる。空の配列（全部外す）は調べない
     #[tokio::test]
     async fn test_categories_and_tags_with_unknown_ids_are_refused() {
         let routes = || {
             vec![
+                (
+                    "/wp-json/wp/v2/taxonomies?type=post",
+                    POST_TAXONOMIES_JSON.to_string(),
+                ),
                 (
                     "/wp-json/wp/v2/categories?include=",
                     r#"[{"id":3}]"#.to_string(),
@@ -12842,11 +12851,12 @@ X-WP-TotalPages: 1",
                     == "GET /wp-json/wp/v2/tags?include=5,99&per_page=100&_fields=id"),
                 "{requests:?}"
             );
-            // 投稿（`post`）では、タクソノミーの一覧は読まない
+            // 投稿（`post`）でも、同じ`rest_base`のタクソノミーが無いかを、
+            // タクソノミーの一覧で確かめる（PR #797のレビュー）
             assert!(
-                !requests
+                requests
                     .iter()
-                    .any(|(request, _)| request.contains("/taxonomies")),
+                    .any(|(request, _)| request == "GET /wp-json/wp/v2/taxonomies?type=post"),
                 "{requests:?}"
             );
         }
@@ -13038,6 +13048,33 @@ X-WP-TotalPages: 1",
             .await,
         );
         assert!(text.contains("share the REST base 'categories'"), "{text}");
+        assert!(!captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request.starts_with("PUT ")),);
+
+        // 投稿（`post`）でも、プラグインが同じ`rest_base`のタクソノミーを足して
+        // いれば断る
+        let (base_url, captured) = spawn_routing_capturing_server(vec![
+            (
+                "/wp-json/wp/v2/taxonomies?type=post",
+                r#"{"category":{"rest_base":"categories","rest_namespace":"wp/v2"},"post_tag":{"rest_base":"tags","rest_namespace":"wp/v2"},"genre":{"rest_base":"tags","rest_namespace":"shop/v1"}}"#.to_string(),
+            ),
+            ("/wp-json/wp/v2/tags?include=", r#"[{"id":5}]"#.to_string()),
+            ("/wp-json/wp/v2/posts", post_response_json("x")),
+        ])
+        .await;
+        let handler = handler_for_local_server(base_url);
+        let text = refused_text(
+            call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({"post_id": 7, "tags": [5]}),
+            )
+            .await,
+        );
+        assert!(text.contains("share the REST base 'tags'"), "{text}");
         assert!(!captured
             .lock()
             .await
