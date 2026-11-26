@@ -233,7 +233,7 @@ impl MongoHandler {
         match run_to_completion(self.limits.timeout + CLIENT_TIMEOUT_GRACE, future).await {
             Ok(result) => Ok(result),
             Err(Stopped::TimedOut) if write => Err(McpError::ExternalApi(format!(
-                "MongoDB {what} did not answer within {seconds} seconds. The outcome is unknown: the server may still apply the write. Read the collection to check before sending it again"
+                "MongoDB {what} did not answer within {seconds} seconds. The outcome is unknown: the write may already be applied, or the server may still apply it later, so a read that does not show it does not prove that it failed. Send it again only when applying it twice does no harm (for example $set to fixed values, a delete, or an insert with _id); otherwise check by hand"
             ))),
             Err(Stopped::TimedOut) => Err(McpError::ExternalApi(format!(
                 "MongoDB {what} did not finish within {seconds} seconds"
@@ -389,9 +389,18 @@ impl MongoHandler {
     /// `get_schema`: コレクションの一覧と、そのドキュメントの数・フィールド。
     /// 全体で1つの時間の上限（`query_timeout_seconds`）を使う
     async fn handle_get_schema(&self) -> Result<JsonValue, McpError> {
-        let database = self.database.clone();
         let limits = self.limits.clone();
-        self.wait("get_schema", read_schema(database, limits)).await
+        let progress: SchemaProgress = Arc::new(std::sync::Mutex::new(SchemaBuilder::new(
+            self.database.name(),
+            limits.max_result_bytes,
+        )));
+        schema_within(
+            limits.timeout + CLIENT_TIMEOUT_GRACE,
+            limits.timeout.as_secs(),
+            progress.clone(),
+            read_schema(self.database.clone(), limits, progress),
+        )
+        .await
     }
 
     /// `insert_documents`
@@ -421,12 +430,14 @@ impl MongoHandler {
         let database = self.database.clone();
         // MongoDBは、無いコレクションへの挿入でコレクションを作る。名前の
         // 打ち間違いで作らないよう、あるコレクションにだけ挿入する（確かめた
-        // あとに他の誰かが消した場合だけは、作られる）
+        // あとに他の誰かが消した場合だけは、作られる）。`authorizedCollections`:
+        // コレクションごとの権限だけのユーザーでも、確かめられる
         let outcome = self
             .run("insertMany", true, async move {
                 let found = database
                     .list_collection_names()
                     .filter(doc! { "name": collection.name() })
+                    .authorized_collections(true)
                     .await?;
                 if found.is_empty() {
                     return Ok(None);
@@ -616,26 +627,137 @@ async fn read_documents(
     Ok((documents, false))
 }
 
-/// `get_schema`の中身。全体で`limits.timeout`まで、`limits.max_result_bytes`まで。
-/// 時間・量が尽きたら、そこまでの結果を返す（`truncated`が`true`）
+/// `get_schema`の結果を、`max_result_bytes`に収めながら作る。
+///
+/// 読むタスクと、待つ側とで分け合う（`Mutex`の中）。待つ側は、時間切れのとき、
+/// そこまでに入ったものを返す。バイト数は、返す形（字下げつきのJSON）で数える
+struct SchemaBuilder {
+    database: String,
+    collections: Vec<JsonValue>,
+    /// 残りのバイト数
+    left: usize,
+    /// コレクションの名前の一覧を読み終えたか
+    listed: bool,
+    truncated: bool,
+}
+
+/// 字下げつきのJSONの中で、`value`が`indent`個の空白の位置の要素として使う
+/// バイト数（前の改行と、後ろのコンマを含む）
+fn nested_len(value: &JsonValue, indent: usize) -> usize {
+    let text = serde_json::to_string_pretty(value).unwrap_or_default();
+    text.len() + text.lines().count() * indent + 2
+}
+
+impl SchemaBuilder {
+    fn new(database: &str, max_bytes: usize) -> Self {
+        let mut builder = Self {
+            database: database.to_string(),
+            collections: Vec::new(),
+            left: 0,
+            listed: false,
+            truncated: false,
+        };
+        // 外側（コレクション以外）の分を、先に引く。3は、`collections`が空で
+        // ないときの、閉じ括弧の前の改行と字下げ
+        let envelope =
+            serde_json::to_string_pretty(&builder.result(false)).map_or(0, |text| text.len() + 3);
+        builder.left = max_bytes.saturating_sub(envelope);
+        builder
+    }
+
+    /// 1つのコレクションを足す。フィールドが入りきらなければ、入った分と
+    /// `fields_truncated`を出す。名前も入らなければ、何も足さない。全部が
+    /// 入ったら`true`（`false`なら、もう足せない）
+    fn push(
+        &mut self,
+        name: &str,
+        count: Option<u64>,
+        fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    ) -> bool {
+        // `fields_truncated`がある形で数える（無ければ、その分だけ余る）
+        let mut entry = json!({
+            "name": name,
+            "estimated_documents": count,
+            "fields": [],
+            "fields_truncated": true,
+        });
+        // 7は、`fields`が空でないときの、閉じ括弧の前の改行と字下げ
+        let mut size = nested_len(&entry, 4) + 7;
+        if size > self.left {
+            self.truncated = true;
+            return false;
+        }
+        let mut listed = Vec::new();
+        let mut complete = true;
+        for (field, types) in fields {
+            let value = json!({ "name": field, "types": types });
+            let len = nested_len(&value, 8);
+            if size + len > self.left {
+                complete = false;
+                break;
+            }
+            size += len;
+            listed.push(value);
+        }
+        entry["fields"] = JsonValue::Array(listed);
+        if complete {
+            if let Some(map) = entry.as_object_mut() {
+                map.remove("fields_truncated");
+            }
+        } else {
+            self.truncated = true;
+        }
+        self.left -= size;
+        self.collections.push(entry);
+        complete
+    }
+
+    /// そこまでの結果。`timed_out`は、時間が尽きて途中でやめたとき
+    fn result(&self, timed_out: bool) -> JsonValue {
+        json!({
+            "engine": "mongodb",
+            "database": self.database,
+            "collections": self.collections,
+            "truncated": self.truncated || timed_out,
+            "timed_out": timed_out,
+            "note": format!("fields are read from up to {SCHEMA_SAMPLE} documents of each collection, so rare fields may be missing. truncated is true when collections or fields were left out (max_rows, max_result_bytes, or the time limit when timed_out is true)"),
+        })
+    }
+}
+
+type SchemaProgress = Arc<std::sync::Mutex<SchemaBuilder>>;
+
+fn lock_schema(progress: &SchemaProgress) -> std::sync::MutexGuard<'_, SchemaBuilder> {
+    progress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `get_schema`のコレクションを読み、`progress`に足していく。全体で
+/// `limits.timeout`まで。時間が尽きてやめたら`true`
 async fn read_schema(
     database: mongodb::Database,
     limits: Limits,
-) -> mongodb::error::Result<JsonValue> {
+    progress: SchemaProgress,
+) -> mongodb::error::Result<bool> {
     let deadline = std::time::Instant::now() + limits.timeout;
     let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
-    let mut names = database.list_collection_names().await?;
+    // `authorizedCollections`: コレクションごとの権限だけのユーザーでも読める
+    let mut names = database
+        .list_collection_names()
+        .authorized_collections(true)
+        .await?;
     names.retain(|name| !name.starts_with("system."));
     names.sort();
-    let mut truncated = names.len() > limits.max_items;
+    {
+        let mut progress = lock_schema(&progress);
+        progress.listed = true;
+        progress.truncated = names.len() > limits.max_items;
+    }
     names.truncate(limits.max_items);
-    let mut timed_out = false;
-    let mut bytes = 0usize;
-    let mut collections = Vec::new();
     for name in names {
         if remaining() < SCHEMA_MIN_REMAINING {
-            timed_out = true;
-            break;
+            return Ok(true);
         }
         let collection = database.collection::<Document>(&name);
         let count = collection
@@ -643,6 +765,9 @@ async fn read_schema(
             .max_time(remaining().max(SCHEMA_MIN_REMAINING))
             .await
             .ok();
+        if remaining() < SCHEMA_MIN_REMAINING {
+            return Ok(true);
+        }
         // 数件のドキュメントから、トップレベルのフィールドの名前と型を集める
         // （値は返さない）。読めなければ、フィールドは空のまま
         let mut fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
@@ -664,67 +789,43 @@ async fn read_schema(
         }
         if remaining().is_zero() {
             // 時間切れで読み終えていないかもしれないコレクションは、出さない
-            timed_out = true;
-            break;
+            return Ok(true);
         }
-        let (entry, size, complete) = schema_entry(
-            &name,
-            count,
-            fields,
-            limits.max_result_bytes.saturating_sub(bytes),
-        );
-        bytes += size;
-        if let Some(entry) = entry {
-            collections.push(entry);
-        }
-        if !complete {
-            truncated = true;
+        if !lock_schema(&progress).push(&name, count, fields) {
             break;
         }
     }
-    Ok(json!({
-        "engine": "mongodb",
-        "database": database.name(),
-        "collections": collections,
-        "truncated": truncated || timed_out,
-        "timed_out": timed_out,
-        "note": format!("fields are read from up to {SCHEMA_SAMPLE} documents of each collection, so rare fields may be missing. truncated is true when collections or fields were left out (max_rows, max_result_bytes, or the time limit when timed_out is true)"),
-    }))
+    Ok(false)
 }
 
-/// `get_schema`の1つのコレクションを、残りのバイト数`budget`に収める。
-/// 戻り値は（出すもの、使ったバイト数、全部入ったか）。名前も入らなければ
-/// 何も出さず、フィールドが入りきらなければ、入った分と`fields_truncated`を出す
-fn schema_entry(
-    name: &str,
-    count: Option<u64>,
-    fields: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    budget: usize,
-) -> (Option<JsonValue>, usize, bool) {
-    let json_len = |value: &JsonValue| serde_json::to_string(value).map_or(0, |s| s.len());
-    let mut entry = json!({ "name": name, "estimated_documents": count, "fields": [] });
-    let mut size = json_len(&entry);
-    if size > budget {
-        return (None, 0, false);
-    }
-    let mut listed = Vec::new();
-    let mut complete = true;
-    for (field, types) in fields {
-        let value = json!({ "name": field, "types": types });
-        // 区切りのコンマの分
-        let len = json_len(&value) + 1;
-        if size + len > budget {
-            complete = false;
-            break;
+/// `task`（`read_schema`）を`limit`まで待ち、`progress`の結果を返す。
+///
+/// こちらで待つ時間が尽きたら（サーバーが応えない等）、そこまでに入った
+/// ものを`timed_out`で返す。名前の一覧も読めていなければ、返すものが無いので
+/// エラー。タスクは、待つのをやめても最後まで動く
+async fn schema_within(
+    limit: Duration,
+    seconds: u64,
+    progress: SchemaProgress,
+    task: impl std::future::Future<Output = mongodb::error::Result<bool>> + Send + 'static,
+) -> Result<JsonValue, McpError> {
+    match run_to_completion(limit, task).await {
+        Ok(Ok(timed_out)) => Ok(lock_schema(&progress).result(timed_out)),
+        Ok(Err(e)) => Err(McpError::ExternalApi(format!("MongoDB get_schema: {e}"))),
+        Err(Stopped::TimedOut) => {
+            let progress = lock_schema(&progress);
+            if progress.listed {
+                Ok(progress.result(true))
+            } else {
+                Err(McpError::ExternalApi(format!(
+                    "MongoDB get_schema did not list the collections within {seconds} seconds"
+                )))
+            }
         }
-        size += len;
-        listed.push(value);
+        Err(Stopped::Failed) => Err(McpError::Internal(
+            "MongoDB get_schema: the task stopped".to_string(),
+        )),
     }
-    entry["fields"] = JsonValue::Array(listed);
-    if !complete {
-        entry["fields_truncated"] = JsonValue::Bool(true);
-    }
-    (Some(entry), size, complete)
 }
 
 /// `insert_many`のエラーの文。順に挿入するので、途中で失敗したら、その前の
@@ -741,7 +842,7 @@ fn insert_error(error: &mongodb::error::Error, total: usize) -> String {
             return partial_insert_message(first.index, total, &first.message);
         }
     }
-    format!("MongoDB insertMany: {error}. If the connection was lost, some documents may have been inserted: read the collection to check before sending them again")
+    format!("MongoDB insertMany: {error}. If the connection was lost, some documents may have been inserted, or may still be inserted: send them again only when inserting twice does no harm (documents with _id); otherwise check by hand")
 }
 
 /// `failed`番目（0から）のドキュメントで挿入が止まったときの文
@@ -964,7 +1065,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "insert_documents".to_string(),
                 title: Some("Insert MongoDB documents".to_string()),
-                description: format!("Insert documents into an existing collection (at most {max_rows} at a time; collections are not created). Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown: read the collection before sending again."),
+                description: format!("Insert documents into an existing collection (at most {max_rows} at a time; collections are not created). Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown (the server may still apply it later): send again only when inserting twice does no harm, such as documents with _id."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -979,7 +1080,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "update_documents".to_string(),
                 title: Some("Update MongoDB documents".to_string()),
-                description: format!("Update the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. update uses update operators ({{\"$set\": {{...}}}}) or a pipeline; a plain document (which would replace the document) is refused. After a timeout the outcome is unknown (the server may still apply it). {refused}."),
+                description: format!("Update the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. update uses update operators ({{\"$set\": {{...}}}}) or a pipeline; a plain document (which would replace the document) is refused. After a timeout the outcome is unknown (the server may still apply it later): send again only when applying it twice does no harm. {refused}."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -996,7 +1097,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "delete_documents".to_string(),
                 title: Some("Delete MongoDB documents".to_string()),
-                description: "Delete the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. Collections and indexes are not dropped. After a timeout the outcome is unknown (the server may still apply it).".to_string(),
+                description: "Delete the documents of a collection that match a filter: the first one, or all of them with many = true. The filter must not be empty. Collections and indexes are not dropped. After a timeout the outcome is unknown (the server may still apply it later).".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1196,40 +1297,134 @@ mod tests {
         );
     }
 
-    /// `get_schema`の1つのコレクションは、残りのバイト数に収める
+    fn schema_fields(
+        count: usize,
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+        (0..count)
+            .map(|i| {
+                (
+                    format!("field_with_a_long_name_{i:02}"),
+                    std::collections::BTreeSet::from(["null".to_string(), "string".to_string()]),
+                )
+            })
+            .collect()
+    }
+
+    /// `get_schema`の結果は、返す形（字下げつきのJSON）で`max_result_bytes`に収まる
     #[test]
-    fn test_schema_entry_fits_the_budget() {
-        let fields = || {
-            (0..50)
-                .map(|i| {
-                    (
-                        format!("field_with_a_long_name_{i:02}"),
-                        std::collections::BTreeSet::from(["string".to_string()]),
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
+    fn test_schema_fits_max_result_bytes() {
+        let build = |max_bytes: usize| {
+            let mut builder = SchemaBuilder::new("app", max_bytes);
+            for i in 0..12 {
+                if !builder.push(&format!("collection_{i:02}"), Some(3), schema_fields(15)) {
+                    break;
+                }
+            }
+            builder.result(false)
         };
-        let (entry, size, complete) = schema_entry("users", Some(3), fields(), 100_000);
-        let entry = entry.unwrap();
-        assert!(complete);
-        assert_eq!(entry["fields"].as_array().unwrap().len(), 50);
-        assert!(entry.get("fields_truncated").is_none());
-        assert!(size >= serde_json::to_string(&entry).unwrap().len());
+        let all = build(1_000_000);
+        assert_eq!(all["collections"].as_array().unwrap().len(), 12);
+        assert_eq!(all["truncated"], false);
+        assert!(all["collections"][0].get("fields_truncated").is_none());
+        assert_eq!(
+            all["collections"][0]["fields"].as_array().unwrap().len(),
+            15
+        );
+        let full = serde_json::to_string_pretty(&all).unwrap().len();
 
-        let (entry, size, complete) = schema_entry("users", Some(3), fields(), 500);
-        let entry = entry.unwrap();
-        assert!(!complete);
-        assert!(size <= 500);
-        assert!(serde_json::to_string(&entry["fields"]).unwrap().len() <= 500);
-        let listed = entry["fields"].as_array().unwrap().len();
-        assert!(listed > 0 && listed < 50, "{listed}");
-        assert_eq!(entry["fields_truncated"], true);
+        // 外側（コレクションが空のとき）より大きい上限なら、いつも収まる
+        let envelope = serde_json::to_string_pretty(&build(0)).unwrap().len();
+        let mut cut_fields = 0;
+        // 数え方は安全側（fields_truncatedの分などを多めに数える）なので、
+        // ちょうどの上限では、少し早く切ることがある
+        let slack = 12 * 48;
+        for max_bytes in (envelope + 3..full + slack + 200).step_by(37) {
+            let schema = build(max_bytes);
+            let len = serde_json::to_string_pretty(&schema).unwrap().len();
+            assert!(len <= max_bytes, "{len} > {max_bytes}");
+            let collections = schema["collections"].as_array().unwrap();
+            if max_bytes >= full + slack {
+                assert_eq!(collections.len(), 12);
+                assert_eq!(schema["truncated"], false);
+            }
+            if collections.len() < 12 {
+                assert_eq!(schema["truncated"], true, "{max_bytes}");
+            }
+            if let Some(last) = collections.last() {
+                if last.get("fields_truncated").is_some() {
+                    cut_fields += 1;
+                    assert_eq!(schema["truncated"], true);
+                    assert!(last["fields"].as_array().unwrap().len() < 15);
+                }
+            }
+        }
+        assert!(cut_fields > 0);
+        // 上限が外側より小さくても、コレクションは足さない
+        let none = build(10);
+        assert_eq!(none["collections"], json!([]));
+        assert_eq!(none["truncated"], true);
+    }
 
-        // 名前も入らなければ、何も出さない
-        let (entry, size, complete) = schema_entry("users", Some(3), fields(), 10);
-        assert!(entry.is_none());
-        assert_eq!(size, 0);
-        assert!(!complete);
+    /// こちらで待つ時間が尽きたら、そこまでに入ったコレクションを返す。名前の
+    /// 一覧も読めていなければ、エラー
+    #[tokio::test]
+    async fn test_schema_returns_what_was_read_on_timeout() {
+        let stalled = |progress: SchemaProgress, list: bool| async move {
+            if list {
+                let mut progress = lock_schema(&progress);
+                progress.listed = true;
+                progress.push("users", Some(8), schema_fields(2));
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(false)
+        };
+        let progress: SchemaProgress =
+            Arc::new(std::sync::Mutex::new(SchemaBuilder::new("app", 100_000)));
+        let schema = schema_within(
+            Duration::from_millis(50),
+            30,
+            progress.clone(),
+            stalled(progress.clone(), true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(schema["timed_out"], true);
+        assert_eq!(schema["truncated"], true);
+        assert_eq!(schema["collections"].as_array().unwrap().len(), 1);
+        assert_eq!(schema["collections"][0]["name"], "users");
+
+        let progress: SchemaProgress =
+            Arc::new(std::sync::Mutex::new(SchemaBuilder::new("app", 100_000)));
+        let err = schema_within(
+            Duration::from_millis(50),
+            30,
+            progress.clone(),
+            stalled(progress.clone(), false),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("did not list the collections"),
+            "{err}"
+        );
+
+        // 時間の中で終われば、そのままの結果
+        let progress: SchemaProgress =
+            Arc::new(std::sync::Mutex::new(SchemaBuilder::new("app", 100_000)));
+        let done = {
+            let progress = progress.clone();
+            async move {
+                let mut progress = lock_schema(&progress);
+                progress.listed = true;
+                progress.push("users", Some(8), schema_fields(2));
+                Ok(false)
+            }
+        };
+        let schema = schema_within(Duration::from_secs(5), 30, progress, done)
+            .await
+            .unwrap();
+        assert_eq!(schema["timed_out"], false);
+        assert_eq!(schema["truncated"], false);
     }
 
     #[test]
