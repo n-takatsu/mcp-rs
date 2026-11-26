@@ -4,7 +4,7 @@
 //! 実際のRedisが要る。`TEST_REDIS_URL`（例: `redis://localhost:6380/0`）が無ければ、
 //! 何もせずに通る。CIでは、Run Integration Testsのジョブのredisのサービスを使う。
 //! ほかのテストと鍵がぶつからないよう、テストごとに別のデータベースの番号
-//! （9・10）を使い、初めに空にする（並べて動かしても、互いの鍵を数えない）
+//! （9・10・11）を使い、初めに空にする（並べて動かしても、互いの鍵を数えない）
 #![cfg(feature = "redis-backend")]
 
 use mcp_rs::config::DatabaseSettings;
@@ -288,4 +288,77 @@ async fn redis_write_tool() {
     }
     let schema = call(&handler, "get_schema", json!({})).await.unwrap();
     assert_eq!(schema["keys"], 7);
+}
+
+/// `max_rows = 1`・`COUNT 1`でも、`HSCAN`・`SSCAN`・`ZSCAN`の結果は切らない。
+/// カーソルを最後までたどると、全部の項目が返る（切ると、切った項目は次の
+/// カーソルで返らない）。ほかのテストと鍵の数がぶつからないよう、番号11を使う
+#[tokio::test]
+async fn redis_scans_are_not_cut() {
+    let Some((host, port)) = test_server() else {
+        return;
+    };
+    const DATABASE: u16 = 11;
+    let client = redis::Client::open(format!("redis://{host}:{port}/{DATABASE}")).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let _: () = redis::pipe()
+        .cmd("FLUSHDB")
+        .cmd("HSET")
+        .arg("h")
+        .arg("a")
+        .arg(1)
+        .arg("b")
+        .arg(2)
+        .arg("c")
+        .arg(3)
+        .cmd("SADD")
+        .arg("s")
+        .arg("a")
+        .arg("b")
+        .arg("c")
+        .cmd("ZADD")
+        .arg("z")
+        .arg(1)
+        .arg("a")
+        .arg(2)
+        .arg("b")
+        .arg(3)
+        .arg("c")
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    let audit = Arc::new(mcp_rs::security::AuditLogger::with_defaults());
+    let handler = handler_from_settings(
+        &DatabaseSettings {
+            max_rows: Some(1),
+            ..settings(&host, port, DATABASE, false)
+        },
+        audit,
+    )
+    .await
+    .unwrap();
+    for (name, key, per) in [("HSCAN", "h", 2), ("SSCAN", "s", 1), ("ZSCAN", "z", 2)] {
+        let mut members = Vec::new();
+        let mut largest = 0;
+        let mut cursor = "0".to_string();
+        for _ in 0..100 {
+            let page = command(&handler, name, json!([key, cursor, "COUNT", 1]))
+                .await
+                .unwrap();
+            assert_eq!(page["truncated"], false, "{name}");
+            let parts = page["result"].as_array().unwrap();
+            cursor = parts[0].as_str().unwrap().to_string();
+            let items = parts[1].as_array().unwrap();
+            largest = largest.max(items.len() / per);
+            members.extend(items.iter().step_by(per).cloned());
+            if cursor == "0" {
+                break;
+            }
+        }
+        members.sort_by_key(|m| m.as_str().unwrap().to_string());
+        members.dedup();
+        assert_eq!(members, [json!("a"), json!("b"), json!("c")], "{name}");
+        // 小さい集合は一度に全部返るので、max_rows（1）を超えるページがある
+        assert!(largest > 1, "{name}: {largest}");
+    }
 }
