@@ -355,6 +355,7 @@ async fn redis_scans_are_not_cut() {
                 break;
             }
         }
+        assert_eq!(cursor, "0", "{name}: the cursor did not reach 0");
         members.sort_by_key(|m| m.as_str().unwrap().to_string());
         members.dedup();
         assert_eq!(members, [json!("a"), json!("b"), json!("c")], "{name}");
