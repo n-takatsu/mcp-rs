@@ -40,6 +40,13 @@ const SNIPPETS: &[(&str, &str)] = &[
         "[server]\n[transport]\n[handlers]\n",
     ),
     (
+        "configs/database/redis.toml",
+        "[server]
+[transport]
+[handlers]
+",
+    ),
+    (
         "configs/database/sqlite.toml",
         "[server]\n[transport]\n[handlers]\n",
     ),

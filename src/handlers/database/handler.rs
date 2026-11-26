@@ -278,6 +278,14 @@ impl DatabaseHandler {
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
         settings.validate()?;
+        // Redis（#529）は、SQLのツールでは使わない（`handler_from_settings`が
+        // Redisのハンドラーを作る）
+        if settings.is_redis() {
+            return Err(
+                "engine = \"redis\" is served by the Redis handler (handlers::database::handler_from_settings), not by the SQL tools"
+                    .to_string(),
+            );
+        }
         // MySQL・MariaDB（#527）。`mysql-backend`無しでビルドしたmcp-rsでは
         // 使えない
         let database_type = if settings.is_mysql() {

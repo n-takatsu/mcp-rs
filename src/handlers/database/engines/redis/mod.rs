@@ -2,10 +2,10 @@
 //! Provides high-performance in-memory data operations with Sorted Set support
 //! and command restriction features for enterprise security.
 //!
-//! **mcp-rsのデータベースのハンドラー（`[database]`）では使えない**（`engine`で
-//! 選べるのは`postgresql`・`mysql`・`mariadb`だけ）。ライブラリのコードとして
-//! あるだけで、v0.31.0で使えるようにする予定（#529）。それまでは、既知の不具合
-//! （#529に書いた）が残っている
+//! ライブラリのコード。`[database]`の`engine = "redis"`（#529）は、これではなく
+//! `handlers::database::redis_handler`（コマンドの一覧・量の上限のあるツール）が
+//! 使う。このモジュールの既知の不具合（#529に書いた）は、ライブラリとして
+//! 使うときだけ当たる
 
 pub mod command_restrict;
 pub mod connection;
@@ -30,8 +30,7 @@ use chrono::Utc;
 
 /// Redis engine for in-memory data operations
 ///
-/// データベースのハンドラー（`[database]`）では使えない。v0.31.0で使えるように
-/// する予定（#529）
+/// `[database]`の`engine = "redis"`は、これではなく`redis_handler`を使う（#529）
 pub struct RedisEngine {
     connection: RedisConnection,
     command_restrictor: CommandRestrictor,

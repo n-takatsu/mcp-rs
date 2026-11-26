@@ -649,7 +649,7 @@ async fn check_database(config: &McpConfig, offline: bool, report: &mut Report) 
 fn database_settings_warning(
     settings: &crate::config::DatabaseSettings,
 ) -> Result<Option<String>, String> {
-    crate::handlers::database::handler::DatabaseHandler::check_settings(settings)
+    crate::handlers::database::check_settings(settings)
 }
 
 #[cfg(not(feature = "database"))]
@@ -666,7 +666,8 @@ fn database_settings_warning(
 /// 起動と同じ関数で、データベースにつなぎ、ログインできるかを確かめる
 #[cfg(feature = "database")]
 async fn connect_database(settings: &crate::config::DatabaseSettings) -> Result<(), String> {
-    crate::handlers::database::handler::DatabaseHandler::from_settings(settings)
+    let audit = std::sync::Arc::new(crate::security::AuditLogger::with_defaults());
+    crate::handlers::database::handler_from_settings(settings, audit)
         .await
         .map(drop)
 }

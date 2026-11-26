@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
   v0.30.0は、マージの後に手で実行して登録した。README・導入ガイドに、
   公式のMCP Registryに載っていることを書いた
+- `[database]`で、Redisを使えるようにした（`engine = "redis"`、#529）。RedisはSQLでは
+  ないので、Redis専用のツールを出す: `redis_command`（読み取りのコマンドを1つ）・
+  `scan_keys`（`SCAN`で鍵を一覧）・`get_schema`（版・鍵の数・`INFO keyspace`）。
+  `allow_write = true`のときだけ`redis_write_command`（`SET`・`DEL`・`HSET`等）
+  - 使えるのは、mcp-rsが決めた一覧のコマンドだけ。`KEYS`・`FLUSHALL`・`FLUSHDB`・
+    `CONFIG`・`EVAL`・`SCRIPT`・`SELECT`・`CLIENT`・`ACL`・`MULTI`・`RENAME`等は、
+    `allow_write`でも使えない。一覧は設定で変えられない
+  - 返す量の上限: まるごと返すコマンド（`HGETALL`・`SMEMBERS`等）と範囲
+    （`LRANGE`・`ZRANGE`）は、送る前に数を確かめ、`max_rows`を超えるなら断る。
+    `XRANGE`には`COUNT`を足す。大きな値（`GET`等）は、長さを確かめ、
+    `max_result_bytes`を超えるなら断る
+  - `database`はデータベースの番号（省略時は0）、`username`はACLのユーザー
+    （省略時は既定のユーザー）。`ssl_mode`は`disable`・`require`・`verify-full`
+    （ループバック以外では必須）。`ssl_root_cert`は`verify-full`のときだけ
+  - 監査ログには、一覧にあるコマンドの名前と引数の数、失敗の種類だけを書く
+    （鍵・値・Redisのエラーの文は書かない）
+  - `username`を書いたら、パスワード（`password`か`keyring`）が要る（無いと、
+    既定のユーザーとしてつながるため）
+  - 既定のビルド（リリースの実行ファイル・Dockerイメージ）に含めた。`redis`
+    クレートを0.26から1.8に上げた（TLSはrustls）
+  - 設定の例: `configs/database/redis.toml`。CIで、実際のRedisでツールを確かめる
+    （`tests/database_redis_tools_test.rs`）
 - `[database]`で、SQLiteを使えるようにした（`engine = "sqlite"`、#528）。
   `database`にデータベースのファイルのパスを書く（相対パスは設定ファイルの
   フォルダが基準）。`host`・`port`・`username`・`password`・`keyring`・
