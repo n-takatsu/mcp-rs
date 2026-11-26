@@ -3133,13 +3133,7 @@ start_timeout_seconds = 300
     #[test]
     fn test_sqlite_database_settings() {
         let config: McpConfig = toml::from_str(
-            "[transport]
-[server]
-[handlers]
-[database]
-engine = \"sqlite\"
-database = \"data/app.db\"
-",
+            "[transport]\n[server]\n[handlers]\n[database]\nengine = \"sqlite\"\ndatabase = \"data/app.db\"\n",
         )
         .unwrap();
         let mut db = config.database.unwrap();
@@ -3159,10 +3153,7 @@ database = \"data/app.db\"
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/sqlite.toml");
         if let Ok(example) = std::fs::read_to_string(&path) {
             let config: McpConfig =
-                toml::from_str(&format!("[transport]
-[server]
-[handlers]
-{example}")).unwrap();
+                toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
             let example = config.database.unwrap();
             assert!(example.is_sqlite());
             assert!(example.validate().is_ok());
