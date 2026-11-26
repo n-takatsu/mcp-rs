@@ -3508,32 +3508,39 @@ impl WordPressHandler {
         // 項目のIDが、そのタクソノミーにあるかを確かめる（#774）。WordPressは
         // 無いIDを黙って飛ばし、ほかの項目を外して成功と返すため。空の配列
         // （全部外す）は調べない。`/wp/v2`の外のタクソノミー（`shop/v1`等）も、
-        // その名前空間の一覧で確かめる（#785）
-        let namespace_of = |rest_base: &str| {
-            taxonomies
+        // その名前空間の一覧で確かめる（#785）。同じ`rest_base`のタクソノミーが
+        // 2つ以上あると、WordPressはどれにも同じIDを付けるが、確かめられるのは
+        // 1つの一覧だけなので断る（PR #797のレビュー）
+        let namespace_of = |field: &str, rest_base: &str| {
+            let namespaces: Vec<&str> = taxonomies
                 .values()
-                .find(|info| info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base))
+                .filter(|info| info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base))
                 .map(|info| {
                     info.get("rest_namespace")
                         .and_then(|n| n.as_str())
                         .unwrap_or("wp/v2")
                 })
-                .unwrap_or("wp/v2")
+                .collect();
+            match namespaces.as_slice() {
+                [namespace] => Ok(*namespace),
+                [] => Ok("wp/v2"),
+                _ => Err(McpError::InvalidParams(format!(
+                    "{field}: {} taxonomies of post type '{post_type}' share the REST base '{rest_base}', so mcp-rs cannot check the IDs for each of them and does not send them. Pass [] to remove all of them",
+                    namespaces.len()
+                ))),
+            }
         };
         for (rest_base, ids) in terms.into_iter().flatten() {
             if !ids.is_empty() {
-                self.check_term_ids(
-                    &format!("terms.{rest_base}"),
-                    namespace_of(rest_base),
-                    rest_base,
-                    ids,
-                )
-                .await?;
+                let field = format!("terms.{rest_base}");
+                let namespace = namespace_of(&field, rest_base)?;
+                self.check_term_ids(&field, namespace, rest_base, ids)
+                    .await?;
             }
         }
         for (name, ids) in builtin {
-            self.check_term_ids(name, namespace_of(name), name, ids)
-                .await?;
+            let namespace = namespace_of(name, name)?;
+            self.check_term_ids(name, namespace, name, ids).await?;
         }
         Ok(())
     }
@@ -13005,6 +13012,53 @@ X-WP-TotalPages: 1",
                 .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),
             "{requests:?}"
         );
+    }
+
+    /// 同じ`rest_base`のタクソノミーが2つあれば、空でない配列は送らずに断る。
+    /// 空の配列（全部外す）は送る（PR #797のレビュー）
+    #[tokio::test]
+    async fn test_ids_for_a_shared_rest_base_are_refused() {
+        let routes = || {
+            let mut routes = outside_wp_v2_routes(Some(r#"[{"id":99}]"#));
+            let taxonomies = routes
+                .iter_mut()
+                .find(|(path, _)| path.starts_with("/wp-json/wp/v2/taxonomies"))
+                .unwrap();
+            taxonomies.1 = r#"{"genre":{"rest_base":"categories","rest_namespace":"shop/v1"},"style":{"rest_base":"categories","rest_namespace":"wp/v2"}}"#.to_string();
+            routes
+        };
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let text = refused_text(
+            call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({"post_id": 21, "post_type": "product", "categories": [99]}),
+            )
+            .await,
+        );
+        assert!(text.contains("share the REST base 'categories'"), "{text}");
+        assert!(!captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request.starts_with("PUT ")),);
+
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 21, "post_type": "product", "categories": []}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result["isError"], true, "{}", tool_text(&result));
+        assert!(captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),);
     }
 
     /// WordPressが返した名前空間が、URLに入れてよい形かを確かめる（#785）
