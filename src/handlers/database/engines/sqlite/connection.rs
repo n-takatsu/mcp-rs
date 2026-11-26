@@ -375,6 +375,17 @@ async fn read_schema(
         // ない。複合の主キーの列は、`NOT NULL`と書かなければNULLを入れられる
         // （SQLiteの古い動き。PR #798のレビュー）
         let primary_count = rows.iter().filter(|(_, _, _, pk)| *pk > 0).count();
+        // rowidの別名の主キーには、主キーのための索引が無い。
+        // `INTEGER PRIMARY KEY DESC`は別名ではなく、索引がある（PR #798の
+        // レビュー）
+        let primary_index: i64 = if kind == "table" {
+            sqlx::query_scalar("SELECT count(*) FROM pragma_index_list(?) WHERE origin = 'pk'")
+                .bind(&name)
+                .fetch_one(&mut *tx)
+                .await?
+        } else {
+            0
+        };
         let mut primary: BTreeMap<i64, String> = BTreeMap::new();
         let columns = rows
             .into_iter()
@@ -382,8 +393,11 @@ async fn read_schema(
                 if pk > 0 {
                     primary.insert(pk, column.clone());
                 }
-                let rowid_alias =
-                    pk > 0 && primary_count == 1 && data_type.eq_ignore_ascii_case("INTEGER");
+                let rowid_alias = pk > 0
+                    && primary_count == 1
+                    && primary_index == 0
+                    && !without_rowid
+                    && data_type.eq_ignore_ascii_case("INTEGER");
                 ColumnInfo {
                     nullable: not_null == 0 && !(pk > 0 && (rowid_alias || without_rowid)),
                     name: column,
@@ -602,21 +616,33 @@ impl DatabaseConnection for SqliteConnection {
         let (mut conn, fired) = acquire_with_deadline(pool, self.timeout).await?;
         let result = async {
             let mut tx = conn.begin().await?;
+            // 「最後に挿入したrowid」は、`WITHOUT ROWID`の表への挿入や、
+            // `ON CONFLICT DO UPDATE`で既にある行を変えたときは変わらない。
+            // 前と後で比べ、変わったときだけ、この文の挿入とみなす（PR #798の
+            // レビュー）
+            let before: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+                .fetch_one(&mut *tx)
+                .await?;
             let done = bind_params(sqlx::query(sql), params)
                 .execute(&mut *tx)
                 .await?;
+            let after: i64 = sqlx::query_scalar("SELECT last_insert_rowid()")
+                .fetch_one(&mut *tx)
+                .await?;
             tx.commit().await?;
-            Ok::<_, sqlx::Error>(done)
+            Ok::<_, sqlx::Error>((done, after != before))
         }
         .await;
-        let done = self
+        let (done, inserted_rowid) = self
             .finish(conn, fired, result, DatabaseError::OperationFailed)
             .await?;
-        // 挿入の文で、行を足したときだけ返す。接続の「最後に挿入したrowid」は、
-        // UPDATE・DELETEでは前の挿入のまま（PR #798のレビュー）
+        // 挿入の文で、rowidのある行を足したときだけ返す。接続の「最後に挿入した
+        // rowid」は、UPDATE・DELETEでは前の挿入のまま（PR #798のレビュー）。
+        // 前と同じrowidの行を挿入したとき（消した行のrowidを使い直したとき）も
+        // 返さない（違うIDを返すよりよい）
         Ok(ExecuteResult {
             rows_affected: done.rows_affected(),
-            last_insert_id: (done.rows_affected() > 0 && is_insert(sql))
+            last_insert_id: (done.rows_affected() > 0 && inserted_rowid && is_insert(sql))
                 .then(|| Value::Int(done.last_insert_rowid())),
             execution_time_ms: started.elapsed().as_millis() as u64,
         })
@@ -767,6 +793,7 @@ mod tests {
             "CREATE UNIQUE INDEX items_name ON items (name)",
             "CREATE INDEX items_lower ON items (lower(name))",
             "CREATE VIEW cheap AS SELECT name FROM items WHERE price < 2",
+            "CREATE TABLE descending (a INTEGER PRIMARY KEY DESC)",
             "CREATE TABLE pairs (a INTEGER, b TEXT, total INTEGER GENERATED ALWAYS AS (a * 2) VIRTUAL, \
              PRIMARY KEY (a, b))",
             "INSERT INTO owners (name) VALUES ('o')",
@@ -1037,8 +1064,10 @@ mod tests {
             .unwrap();
         let schema = conn.get_schema().await.unwrap();
         let names: Vec<&str> = schema.tables.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["items", "owners", "pairs"]);
-        let items = &schema.tables[0];
+        assert_eq!(names, ["descending", "items", "owners", "pairs"]);
+        // `INTEGER PRIMARY KEY DESC`は、rowidの別名ではないので、NULLを入れられる
+        assert!(schema.tables[0].columns[0].nullable);
+        let items = &schema.tables[1];
         assert_eq!(items.primary_keys, ["id"]);
         let id = &items.columns[0];
         assert_eq!(
@@ -1060,7 +1089,7 @@ mod tests {
 
         // 生成列も返す。複合の主キーの`INTEGER`の列は、NULLを入れられる
         // （PR #798のレビュー）
-        let pairs = &schema.tables[2];
+        let pairs = &schema.tables[3];
         let columns: Vec<(&str, bool)> = pairs
             .columns
             .iter()
@@ -1100,6 +1129,31 @@ mod tests {
             .unwrap();
         assert_eq!(updated.rows_affected, 1);
         assert!(updated.last_insert_id.is_none());
+
+        // `WITHOUT ROWID`の表への挿入と、既にある行を変えた`ON CONFLICT`も
+        // 返さない（PR #798のレビュー）
+        conn.execute(
+            "CREATE TABLE tags (name TEXT PRIMARY KEY, n INTEGER) WITHOUT ROWID",
+            &[],
+        )
+        .await
+        .unwrap();
+        let no_rowid = conn
+            .execute("INSERT INTO tags (name, n) VALUES ('x', 1)", &[])
+            .await
+            .unwrap();
+        assert_eq!(no_rowid.rows_affected, 1);
+        assert!(no_rowid.last_insert_id.is_none());
+        let upsert = conn
+            .execute(
+                "INSERT INTO items (id, name) VALUES (1, 'z') \
+                 ON CONFLICT (id) DO UPDATE SET price = 5",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(upsert.rows_affected, 1);
+        assert!(upsert.last_insert_id.is_none());
     }
 
     /// SQLiteのファイルでなければ、開くときに断る（PR #798のレビュー）
