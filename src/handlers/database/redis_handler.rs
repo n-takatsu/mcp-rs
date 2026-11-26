@@ -754,17 +754,18 @@ fn option_value<'a>(
     from: usize,
     name: &str,
 ) -> Result<Option<&'a [String]>, McpError> {
-    // Redisは、オプションの名前をNULの手前までで比べる（`BYSCORE\0`は`BYSCORE`）。
-    // mcp-rsが見落とすオプションをRedisが使わないよう、オプションの位置の
-    // NULを断る（PR #799のレビュー）
-    if args.iter().skip(from).any(|a| a.contains('\0')) {
-        return Err(McpError::InvalidParams(
-            "the options of this command must not contain a NUL character".to_string(),
-        ));
-    }
     let mut found = None;
     let mut i = from;
     while i < args.len() {
+        // Redisは、オプションの名前をNULの手前までで比べる（`BYSCORE\0`は
+        // `BYSCORE`）。mcp-rsが見落とすオプションをRedisが使わないよう、名前の
+        // NULを断る。`MATCH`の値（型）のNULは、Redisが長さで比べるので通す
+        // （PR #799のレビュー）
+        if args[i].contains('\0') {
+            return Err(McpError::InvalidParams(
+                "the option names of this command must not contain a NUL character".to_string(),
+            ));
+        }
         let option = args[i].to_ascii_uppercase();
         let width = match option.as_str() {
             "LIMIT" => 2,
@@ -1256,6 +1257,12 @@ mod tests {
         // オプションの位置のNULは断る（PR #799のレビュー）
         let hidden = s(&["z", "0", "0", "BYSCORE\0"]);
         assert!(option_value(&hidden, 3, "LIMIT").is_err());
+        // `MATCH`の値のNULは、そのまま
+        let pattern = s(&["h", "0", "MATCH", "a\0*", "COUNT", "1"]);
+        assert_eq!(
+            option_value(&pattern, 2, "COUNT").unwrap(),
+            Some(&pattern[5..6])
+        );
         // 鍵（位置の引数）のNULは、そのまま
         let key = s(&["a\0b", "0", "1"]);
         assert_eq!(option_value(&key, 3, "LIMIT").unwrap(), None);
