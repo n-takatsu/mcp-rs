@@ -252,6 +252,10 @@ impl DatabaseSettings {
             return;
         };
         let resolve = |value: &mut String| {
+            // 空白だけの値は、書いていないのと同じ（PR #799のレビュー）
+            if value.trim().is_empty() {
+                return;
+            }
             let path = std::path::Path::new(value.trim());
             if path.is_relative() && !value.trim().starts_with("${") {
                 *value = base.join(path).to_string_lossy().into_owned();
@@ -384,7 +388,7 @@ impl DatabaseSettings {
     fn validate_redis(&self) -> Result<(), String> {
         if self.redis_database().is_none() {
             return Err(format!(
-                "database.database = \"{}\" is not a Redis database number (for engine = \"redis\", write a number such as 0, or leave it out)",
+                "database.database = \"{}\" is not a Redis database number (for engine = \"redis\", write it as a string, such as database = \"0\", or leave it out)",
                 self.database.trim()
             ));
         }

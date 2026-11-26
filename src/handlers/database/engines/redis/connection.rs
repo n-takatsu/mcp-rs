@@ -48,6 +48,17 @@ fn redis_url(config: &RedisConfig) -> String {
 }
 
 /// Redis connection pool manager
+/// 接続の待ち時間（PR #799のレビュー）。redis 1.8は、既定で接続を1秒、応答を
+/// 0.5秒で打ち切る。0.26（以前）と同じく応答は待ち続け、接続は
+/// `timeout_seconds`まで待つ
+fn async_config(config: &RedisConfig) -> redis::AsyncConnectionConfig {
+    let connect = (config.timeout_seconds > 0)
+        .then(|| std::time::Duration::from_secs(u64::from(config.timeout_seconds)));
+    redis::AsyncConnectionConfig::new()
+        .set_connection_timeout(connect)
+        .set_response_timeout(None)
+}
+
 pub struct RedisConnection {
     config: RedisConfig,
     client: Client,
@@ -89,7 +100,7 @@ impl RedisConnection {
 
         // Get multiplexed connection
         let connection = client
-            .get_multiplexed_async_connection()
+            .get_multiplexed_async_connection_with_config(&async_config(config))
             .await
             .map_err(|e| {
                 DatabaseError::ConnectionFailed(format!("Failed to connect to Redis: {}", e))
@@ -549,7 +560,7 @@ impl DatabaseConnection for RedisConnection {
         // Create a new connection for the transaction
         let conn = self
             .client
-            .get_multiplexed_async_connection()
+            .get_multiplexed_async_connection_with_config(&async_config(&self.config))
             .await
             .map_err(|e| {
                 DatabaseError::TransactionFailed(format!(

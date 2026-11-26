@@ -31,7 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `database`はデータベースの番号（省略時は0）、`username`はACLのユーザー
     （省略時は既定のユーザー）。`ssl_mode`は`disable`・`require`・`verify-full`
     （ループバック以外では必須）。`ssl_root_cert`は`verify-full`のときだけ
-  - 監査ログには、コマンドの名前と引数の数だけを書く（鍵・値は書かない）
+  - 監査ログには、一覧にあるコマンドの名前と引数の数、失敗の種類だけを書く
+    （鍵・値・Redisのエラーの文は書かない）
+  - `username`を書いたら、パスワード（`password`か`keyring`）が要る（無いと、
+    既定のユーザーとしてつながるため）
   - 既定のビルド（リリースの実行ファイル・Dockerイメージ）に含めた。`redis`
     クレートを0.26から1.8に上げた（TLSはrustls）
   - 設定の例: `configs/database/redis.toml`。CIで、実際のRedisでツールを確かめる

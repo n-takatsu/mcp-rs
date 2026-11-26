@@ -176,7 +176,7 @@ jobs:
           cargo test --features database,mysql-backend --test mod database::mysql_integration_tests -- --ignored --test-threads=1
 
       # Redisのツール（#529）を、上のredisのサービスで確かめる（データベースの
-      # 番号9を使う）
+      # 番号9・10を使う）
       - name: Run database tool tests (Redis)
         env:
           TEST_REDIS_URL: redis://localhost:6380/0

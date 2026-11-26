@@ -3,7 +3,8 @@
 //!
 //! 実際のRedisが要る。`TEST_REDIS_URL`（例: `redis://localhost:6380/0`）が無ければ、
 //! 何もせずに通る。CIでは、Run Integration Testsのジョブのredisのサービスを使う。
-//! ほかのテストと鍵がぶつからないよう、データベースの番号9を使い、初めに空にする
+//! ほかのテストと鍵がぶつからないよう、テストごとに別のデータベースの番号
+//! （9・10）を使い、初めに空にする（並べて動かしても、互いの鍵を数えない）
 #![cfg(feature = "redis-backend")]
 
 use mcp_rs::config::DatabaseSettings;
@@ -12,8 +13,11 @@ use mcp_rs::mcp::{McpError, McpHandler, ToolCallParams};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// テストに使うデータベースの番号
-const DATABASE: u16 = 9;
+/// 読み取りのテストに使うデータベースの番号
+const READ_DATABASE: u16 = 9;
+
+/// 書き込みのテストに使うデータベースの番号
+const WRITE_DATABASE: u16 = 10;
 
 /// `TEST_REDIS_URL`の接続先（ホストとポート）。無ければ`None`
 fn test_server() -> Option<(String, u16)> {
@@ -32,9 +36,9 @@ fn test_server() -> Option<(String, u16)> {
     ))
 }
 
-/// データベース9を空にして、テストのデータを入れる
-async fn prepare(host: &str, port: u16) {
-    let client = redis::Client::open(format!("redis://{host}:{port}/{DATABASE}")).unwrap();
+/// データベース`database`を空にして、テストのデータを入れる
+async fn prepare(host: &str, port: u16, database: u16) {
+    let client = redis::Client::open(format!("redis://{host}:{port}/{database}")).unwrap();
     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
     let big = "x".repeat(2000);
     let mut pipe = redis::pipe();
@@ -77,12 +81,12 @@ async fn prepare(host: &str, port: u16) {
     let _: () = pipe.query_async(&mut conn).await.unwrap();
 }
 
-fn settings(host: &str, port: u16, allow_write: bool) -> DatabaseSettings {
+fn settings(host: &str, port: u16, database: u16, allow_write: bool) -> DatabaseSettings {
     DatabaseSettings {
         engine: "redis".to_string(),
         host: Some(host.to_string()),
         port: Some(port),
-        database: DATABASE.to_string(),
+        database: database.to_string(),
         allow_write: Some(allow_write),
         max_rows: Some(5),
         max_result_bytes: Some(1000),
@@ -90,9 +94,9 @@ fn settings(host: &str, port: u16, allow_write: bool) -> DatabaseSettings {
     }
 }
 
-async fn handler(host: &str, port: u16, allow_write: bool) -> Arc<dyn McpHandler> {
+async fn handler(host: &str, port: u16, database: u16, allow_write: bool) -> Arc<dyn McpHandler> {
     let audit = Arc::new(mcp_rs::security::AuditLogger::with_defaults());
-    handler_from_settings(&settings(host, port, allow_write), audit)
+    handler_from_settings(&settings(host, port, database, allow_write), audit)
         .await
         .unwrap()
 }
@@ -125,15 +129,15 @@ async fn redis_read_tools() {
     let Some((host, port)) = test_server() else {
         return;
     };
-    prepare(&host, port).await;
-    let handler = handler(&host, port, false).await;
+    prepare(&host, port, READ_DATABASE).await;
+    let handler = handler(&host, port, READ_DATABASE, false).await;
 
     let tools = handler.list_tools().await.unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["redis_command", "scan_keys", "get_schema"]);
     assert_eq!(
         handler.status().await.unwrap(),
-        format!("redis {host}:{port}/{DATABASE} (read-only)")
+        format!("redis {host}:{port}/{READ_DATABASE} (read-only)")
     );
 
     let got = command(&handler, "get", json!(["greeting"])).await.unwrap();
@@ -202,7 +206,7 @@ async fn redis_read_tools() {
     assert!(some["keys"].as_array().unwrap().len() <= 5);
 
     let schema = call(&handler, "get_schema", json!({})).await.unwrap();
-    assert_eq!(schema["database"], DATABASE);
+    assert_eq!(schema["database"], READ_DATABASE);
     assert_eq!(schema["keys"], 7);
     assert!(schema["version"].is_string(), "{schema}");
 }
@@ -212,8 +216,8 @@ async fn redis_write_tool() {
     let Some((host, port)) = test_server() else {
         return;
     };
-    prepare(&host, port).await;
-    let handler = handler(&host, port, true).await;
+    prepare(&host, port, WRITE_DATABASE).await;
+    let handler = handler(&host, port, WRITE_DATABASE, true).await;
     let write = |name: &str, args: Value| {
         let handler = handler.clone();
         let name = name.to_string();

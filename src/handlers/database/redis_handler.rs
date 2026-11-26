@@ -55,6 +55,10 @@ enum Check {
     StringLength,
     /// ハッシュの値の長さを`HSTRLEN`で確かめる（`HGET`）
     HashValueLength,
+    /// 鍵（`args`）の数と、それぞれの文字列の長さの合計（`MGET`）
+    StringLengths,
+    /// 項目（`args[1..]`）の数と、それぞれの値の長さの合計（`HMGET`）
+    HashValueLengths,
     /// `args[skip..]`の数（鍵・項目の数）が`max_rows`まで
     ArgumentCount(usize),
     /// `LRANGE`: `LLEN`と範囲から、返す数を計算する
@@ -73,7 +77,7 @@ enum Check {
 const READ_COMMANDS: &[(&str, Check)] = &[
     // 文字列
     ("GET", Check::StringLength),
-    ("MGET", Check::ArgumentCount(0)),
+    ("MGET", Check::StringLengths),
     ("STRLEN", Check::None),
     ("GETRANGE", Check::StringLength),
     // 鍵
@@ -83,7 +87,7 @@ const READ_COMMANDS: &[(&str, Check)] = &[
     ("PTTL", Check::None),
     // ハッシュ
     ("HGET", Check::HashValueLength),
-    ("HMGET", Check::ArgumentCount(1)),
+    ("HMGET", Check::HashValueLengths),
     ("HLEN", Check::None),
     ("HEXISTS", Check::None),
     ("HSTRLEN", Check::None),
@@ -93,7 +97,6 @@ const READ_COMMANDS: &[(&str, Check)] = &[
     ("HSCAN", Check::Scan),
     // リスト
     ("LLEN", Check::None),
-    ("LINDEX", Check::None),
     ("LRANGE", Check::ListRange),
     // 集合
     ("SCARD", Check::None),
@@ -166,6 +169,16 @@ pub struct RedisHandler {
 /// 設定なら、その警告を返す
 pub fn check_settings(settings: &DatabaseSettings) -> Result<Option<String>, String> {
     settings.validate()?;
+    // ユーザー名だけでパスワードが無いと、redisクレートは`AUTH`を送らず、既定の
+    // ユーザー（`default`）としてつながる（PR #799のレビュー）
+    if !settings.username.trim().is_empty()
+        && settings.password.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(format!(
+            "database.username = \"{}\" needs a password (password or keyring): without one, Redis would connect as the default user instead",
+            settings.username.trim()
+        ));
+    }
     let host = settings.host();
     match settings.ssl_mode.as_deref() {
         None if !is_loopback_host(host) => Err(ssl_mode_missing(host)),
@@ -381,10 +394,14 @@ impl RedisHandler {
                 }
             }
             Check::SortedSetRange => {
-                let upper: Vec<String> = args.iter().map(|a| a.to_ascii_uppercase()).collect();
-                if let Some(at) = upper.iter().position(|a| a == "LIMIT") {
-                    let count = upper
-                        .get(at + 2)
+                // ZRANGE key start stop [BYSCORE | BYLEX] [REV] [LIMIT offset count] [WITHSCORES]
+                let by = args
+                    .iter()
+                    .skip(3)
+                    .any(|a| a.eq_ignore_ascii_case("BYSCORE") || a.eq_ignore_ascii_case("BYLEX"));
+                if let Some(limit) = option_value(&args, 3, "LIMIT") {
+                    let count = limit
+                        .get(1)
                         .and_then(|c| c.parse::<i64>().ok())
                         .ok_or_else(|| {
                             McpError::InvalidParams(
@@ -396,7 +413,7 @@ impl RedisHandler {
                             "ZRANGE LIMIT count must be from 0 to max_rows ({max})"
                         )));
                     }
-                } else if upper.iter().any(|a| a == "BYSCORE" || a == "BYLEX") {
+                } else if by {
                     return Err(McpError::InvalidParams(format!(
                         "ZRANGE with BYSCORE or BYLEX needs LIMIT offset count (count up to max_rows, {max})"
                     )));
@@ -413,10 +430,10 @@ impl RedisHandler {
                 }
             }
             Check::StreamRange => {
-                let upper: Vec<String> = args.iter().map(|a| a.to_ascii_uppercase()).collect();
-                match upper.iter().position(|a| a == "COUNT") {
-                    Some(at) => {
-                        let count = upper.get(at + 1).and_then(|c| c.parse::<usize>().ok());
+                // XRANGE key start end [COUNT count]
+                match option_value(&args, 3, "COUNT") {
+                    Some(count) => {
+                        let count = count.first().and_then(|c| c.parse::<usize>().ok());
                         if !count.is_some_and(|c| c <= max) {
                             return Err(McpError::InvalidParams(format!(
                                 "{name} COUNT must be from 0 to max_rows ({max})"
@@ -428,14 +445,44 @@ impl RedisHandler {
                 }
             }
             Check::Scan => {
-                let upper: Vec<String> = args.iter().map(|a| a.to_ascii_uppercase()).collect();
-                if let Some(at) = upper.iter().position(|a| a == "COUNT") {
-                    let count = upper.get(at + 1).and_then(|c| c.parse::<usize>().ok());
+                // HSCAN key cursor [MATCH pattern] [COUNT count]
+                if let Some(count) = option_value(&args, 2, "COUNT") {
+                    let count = count.first().and_then(|c| c.parse::<usize>().ok());
                     if !count.is_some_and(|c| c <= max) {
                         return Err(McpError::InvalidParams(format!(
                             "{name} COUNT must be from 0 to max_rows ({max})"
                         )));
                     }
+                }
+            }
+            Check::StringLengths | Check::HashValueLengths => {
+                // 値の長さを、送る前に合計する（PR #799のレビュー）
+                let (len_command, items): (&str, Vec<Vec<String>>) =
+                    if check == Check::StringLengths {
+                        ("STRLEN", args.iter().map(|k| vec![k.clone()]).collect())
+                    } else {
+                        let key = key()?;
+                        (
+                            "HSTRLEN",
+                            args.iter()
+                                .skip(1)
+                                .map(|f| vec![key.clone(), f.clone()])
+                                .collect(),
+                        )
+                    };
+                if items.len() > max {
+                    return Err(too_many(format!("{} values", items.len())));
+                }
+                let mut total = 0usize;
+                for item in &items {
+                    let length = self.count(len_command, item).await?;
+                    total = total.saturating_add(usize::try_from(length).unwrap_or(0));
+                }
+                if total > self.limits.max_result_bytes {
+                    return Err(McpError::InvalidParams(format!(
+                        "{name} would return {total} bytes, more than max_result_bytes ({}) allows. Read fewer values",
+                        self.limits.max_result_bytes
+                    )));
                 }
             }
             Check::PopCount => {
@@ -479,10 +526,25 @@ impl RedisHandler {
             value_to_json(value)
         };
         let mut truncated = false;
-        if check == Check::StreamRange {
-            truncated |= keep_items(&mut result, self.limits.max_items);
+        let max = self.limits.max_items;
+        let max_bytes = self.limits.max_result_bytes;
+        if check == Check::Scan {
+            // `[cursor, items]`の形を保ち、項目だけを切る（PR #799のレビュー）。
+            // `COUNT`は上限ではないので、数も確かめる。切った項目は、次の
+            // カーソルでは返らない
+            if let JsonValue::Array(parts) = &mut result {
+                if let Some(items) = parts.get_mut(1) {
+                    // HSCAN・ZSCANは、項目と値の組
+                    let per = if name == "SSCAN" { 1 } else { 2 };
+                    truncated |= keep_items(items, max.saturating_mul(per));
+                    truncated |= keep_within_bytes(items, max_bytes);
+                }
+            }
+        } else {
+            // 送る前に確かめた後に増えた分も、返さない（PR #799のレビュー）
+            truncated |= keep_items(&mut result, max);
+            truncated |= keep_within_bytes(&mut result, max_bytes);
         }
-        truncated |= keep_within_bytes(&mut result, self.limits.max_result_bytes);
         Ok(json!({
             "command": name,
             "result": result,
@@ -504,15 +566,20 @@ impl RedisHandler {
             ));
         }
         let max = self.limits.max_items;
-        let batch = max.clamp(1, 1000).to_string();
+        let max_bytes = self.limits.max_result_bytes;
         let mut keys: Vec<JsonValue> = Vec::new();
+        let mut bytes = 0usize;
         for _ in 0..MAX_SCAN_ROUNDS {
+            // 返した鍵は切らない（切ると、次のカーソルでは返らない。PR #799の
+            // レビュー）。代わりに、残りの数だけを頼む。1回の`SCAN`は`COUNT`より
+            // 少し多く返すことがあるので、`max_rows`を少し超えることがある
+            let batch = max.saturating_sub(keys.len()).clamp(1, 1000).to_string();
             let mut scan_args = vec![
                 cursor.clone(),
                 "MATCH".to_string(),
                 pattern.clone(),
                 "COUNT".to_string(),
-                batch.clone(),
+                batch,
             ];
             if let Some(kind) = &kind {
                 scan_args.extend(["TYPE".to_string(), kind.clone()]);
@@ -541,20 +608,21 @@ impl RedisHandler {
                 }
             };
             if let Some(JsonValue::Array(found)) = found.map(value_to_json) {
+                bytes += found
+                    .iter()
+                    .map(|k| serde_json::to_string(k).map(|t| t.len() + 1).unwrap_or(0))
+                    .sum::<usize>();
                 keys.extend(found);
             }
-            if cursor == "0" || keys.len() >= max {
+            // 鍵の名前が長いときは、バイト数でも止める（PR #799のレビュー）
+            if cursor == "0" || keys.len() >= max || bytes >= max_bytes {
                 break;
             }
         }
-        // 1回の`SCAN`の結果は、`COUNT`より多いことがある
-        let truncated = keys.len() > max;
-        keys.truncate(max);
         Ok(json!({
             "keys": keys,
             "cursor": cursor,
             "done": cursor == "0",
-            "truncated": truncated,
             "max_rows": max,
         }))
     }
@@ -619,22 +687,61 @@ impl RedisHandler {
         )
         .with_action(self.status_line.clone(), tool_name.to_string())
         .with_result(outcome.to_string());
-        if let Some(command) = args.get("command").and_then(JsonValue::as_str) {
-            let command: String = command.chars().take(32).collect();
-            entry = entry.add_metadata("command".to_string(), command.to_ascii_uppercase());
+        // 名前は、一覧にあるものだけを書く。一覧に無い入力（値を貼り付けたもの
+        // かもしれない）は、そのまま書かない（PR #799のレビュー）
+        let listed = args
+            .get("command")
+            .and_then(JsonValue::as_str)
+            .map(|c| c.trim().to_ascii_uppercase())
+            .filter(|c| {
+                READ_COMMANDS
+                    .iter()
+                    .chain(WRITE_COMMANDS)
+                    .any(|(n, _)| n == c)
+            });
+        if let Some(command) = listed {
+            entry = entry.add_metadata("command".to_string(), command);
+        } else if args.get("command").is_some() {
+            entry = entry.add_metadata("command".to_string(), "(not allowed)".to_string());
         }
         if let Some(count) = args.get("args").and_then(JsonValue::as_array).map(Vec::len) {
             entry = entry.add_metadata("args".to_string(), count.to_string());
         }
+        // エラーの文には、Redisの応答（値を含みうる）が入るので、種類だけを書く
         if let Err(e) = result {
-            let text: String = e.to_string().chars().take(500).collect();
-            entry = entry.add_metadata("error".to_string(), text);
+            let kind = match e {
+                McpError::InvalidParams(_) => "refused by mcp-rs",
+                McpError::ExternalApi(_) => "Redis returned an error",
+                _ => "failed",
+            };
+            entry = entry.add_metadata("error".to_string(), kind.to_string());
         }
         let entry = crate::mcp::audit_tool_call_context(entry, started);
         if let Err(e) = audit_logger.log(entry).await {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
         }
     }
+}
+
+/// `args[from..]`のオプション（`NAME value`の組と、値の無い印）から、`name`の値を
+/// 探す。位置の引数（鍵・範囲）は`from`より前なので、鍵の名前が`LIMIT`等でも
+/// 取り違えない（PR #799のレビュー）。`with_value`は、値を1つとるオプションの名前
+/// （`LIMIT`は2つ）
+fn option_value<'a>(args: &'a [String], from: usize, name: &str) -> Option<&'a [String]> {
+    let mut i = from;
+    while i < args.len() {
+        let option = args[i].to_ascii_uppercase();
+        let width = match option.as_str() {
+            "LIMIT" => 2,
+            "COUNT" | "MATCH" | "TYPE" => 1,
+            _ => 0,
+        };
+        if option == name {
+            return args.get(i + 1..i + 1 + width);
+        }
+        i += 1 + width;
+    }
+    None
 }
 
 /// `command`・`args`を読む。コマンドの名前は大文字にする。引数は、文字列か数
@@ -760,6 +867,13 @@ fn keep_items(value: &mut JsonValue, max: usize) -> bool {
     match value {
         JsonValue::Array(items) if items.len() > max => {
             items.truncate(max);
+            true
+        }
+        JsonValue::Object(object) if object.len() > max => {
+            let drop: Vec<String> = object.keys().skip(max).cloned().collect();
+            for key in drop {
+                object.remove(&key);
+            }
             true
         }
         _ => false,
@@ -1078,6 +1192,20 @@ mod tests {
         }
     }
 
+    /// 鍵の名前が`LIMIT`・`COUNT`でも、オプションと取り違えない（PR #799の
+    /// レビュー）
+    #[test]
+    fn test_option_value_skips_positional_arguments() {
+        let zrange = s(&["LIMIT", "0", "-1"]);
+        assert_eq!(option_value(&zrange, 3, "LIMIT"), None);
+        let zrange = s(&["k", "0", "10", "BYSCORE", "LIMIT", "0", "5", "WITHSCORES"]);
+        assert_eq!(option_value(&zrange, 3, "LIMIT"), Some(&zrange[5..7]));
+        let xrange = s(&["COUNT", "-", "+"]);
+        assert_eq!(option_value(&xrange, 3, "COUNT"), None);
+        let hscan = s(&["k", "0", "MATCH", "COUNT", "COUNT", "5"]);
+        assert_eq!(option_value(&hscan, 2, "COUNT"), Some(&hscan[5..6]));
+    }
+
     #[test]
     fn test_range_size() {
         let r = |len, a: &str, b: &str| {
@@ -1120,6 +1248,9 @@ mod tests {
         let mut items = json!(["aaaa", "bbbb", "cccc", "dddd"]);
         assert!(keep_within_bytes(&mut items, 16));
         assert!(serde_json::to_string(&items).unwrap().len() <= 16);
+        let mut object = json!({"a": 1, "b": 2, "c": 3});
+        assert!(keep_items(&mut object, 2));
+        assert_eq!(object.as_object().unwrap().len(), 2);
         let mut small = json!(["a"]);
         assert!(!keep_within_bytes(&mut small, 16));
         assert_eq!(small, json!(["a"]));
@@ -1162,6 +1293,19 @@ mod tests {
                 .contains("not encrypted")
         );
         assert!(check_settings(&settings("localhost", Some("verify-ca"))).is_err());
+        // ユーザー名だけで、パスワードが無い（PR #799のレビュー）
+        let user_only = DatabaseSettings {
+            username: "reader".to_string(),
+            ..settings("localhost", None)
+        };
+        assert!(check_settings(&user_only)
+            .unwrap_err()
+            .contains("needs a password"));
+        let with_password = DatabaseSettings {
+            password: Some("p".to_string()),
+            ..user_only
+        };
+        assert!(check_settings(&with_password).is_ok());
         let _ = s(&[]);
     }
 }
