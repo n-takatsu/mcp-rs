@@ -11,6 +11,11 @@ pub const OPTION_FETCH_LIMIT: &str = "fetch_limit";
 /// だいたいのバイト数の上限（#539）。PostgreSQL・MySQL（#527）が使う
 pub const OPTION_BYTE_LIMIT: &str = "byte_limit";
 
+/// `DatabaseConfig::connection.options`のキー: `"true"`なら、書き込みの接続を
+/// 作らない（#528）。SQLiteは、ファイルを読み取り専用でだけ開く。`[database]`の
+/// `allow_write = false`（既定）のとき、ハンドラーが付ける
+pub const OPTION_READ_ONLY: &str = "read_only";
+
 /// `DatabaseConfig::connection.options`のキー: サーバーの証明書を確かめる
 /// CAのファイル（#539）。PostgreSQL・MySQL（#527）が使う
 pub const OPTION_SSL_ROOT_CERT: &str = "ssl_root_cert";

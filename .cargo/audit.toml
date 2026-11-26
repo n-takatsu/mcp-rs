@@ -31,12 +31,14 @@ ignore = [
     #           but sqlx-sqlite 0.8.6 and 0.9.0 (latest) both require < 0.38.0
     # - Mitigation: Only a process that opens a database file and its -wal file
     #               written by a less trusted party is exposed (local attack).
-    #               mcp-rs itself does not open SQLite: sqlx's "sqlite" feature
-    #               is always built in (the "database" feature is on by
-    #               default), but [database] refuses engine = "sqlite" (#528),
-    #               so only library code that opens SQLite itself is exposed:
-    #               the public SQLite API (SqliteEngine, SqliteConnection::new,
-    #               ...) or sqlx's SQLite directly (#746)
+    #               From v0.31.0, [database] can open SQLite (engine = "sqlite",
+    #               #528). The file is chosen by the operator in the config file,
+    #               opened read-only by default, and never created. The docs
+    #               (website/docs/database.md#sqlite, configs/database/sqlite.toml)
+    #               say to open only files written by the operator or a trusted
+    #               program, not files received from others. Library code that
+    #               opens SQLite itself (SqliteEngine, SqliteConnection::new, or
+    #               sqlx's SQLite directly, #746) is exposed the same way
     # - Remove this entry when sqlx allows libsqlite3-sys >= 0.39.0 (#449)
     "RUSTSEC-2026-0459",
 

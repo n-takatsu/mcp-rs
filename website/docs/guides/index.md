@@ -143,7 +143,7 @@ cd mcp-rs
 cargo build --release
 ```
 
-The executable is `target/release/mcp-rs` (`mcp-rs.exe` on Windows). The default build includes WordPress, the databases (PostgreSQL, MySQL, MariaDB), the plugins, and the OS credential store. Copy it to a folder of your own as above.
+The executable is `target/release/mcp-rs` (`mcp-rs.exe` on Windows). The default build includes WordPress, the databases (PostgreSQL, MySQL, MariaDB, SQLite), the plugins, and the OS credential store. Copy it to a folder of your own as above.
 
 `mcp-rs --version` prints the version, and `mcp-rs --help` lists the options and commands. mcp-rs does not start when it gets an unknown option or `--config` without a path, so check the `args` of the mcp-rs entry in your MCP client's settings if it stops starting.
 

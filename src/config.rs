@@ -87,7 +87,9 @@ pub struct AuditLogSettings {
     pub max_files: Option<u32>,
 }
 
-/// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）。
+/// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）、
+/// SQLite（#528）。SQLiteは、`database`にファイルのパスを書き、`host`・`port`・
+/// `username`・`password`・`keyring`・`ssl_mode`・`ssl_root_cert`は書かない。
 ///
 /// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
 /// 実行し、書き込みのツール（`execute_command`）は出さない。
@@ -97,13 +99,17 @@ pub struct AuditLogSettings {
 pub struct DatabaseSettings {
     /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
     pub enabled: Option<bool>,
-    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）
+    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）・`"sqlite"`（#528）
     pub engine: String,
     /// 省略時は`localhost`
     pub host: Option<String>,
     /// 省略時は、PostgreSQLは5432、MySQL・MariaDBは3306
     pub port: Option<u16>,
+    /// データベースの名前。SQLiteは、データベースのファイルのパス（#528）。
+    /// 相対パスは設定ファイルのフォルダを基準にする
     pub database: String,
+    /// SQLiteでは書かない（#528）。ほかのエンジンでは必須
+    #[serde(default)]
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
@@ -190,6 +196,11 @@ impl DatabaseSettings {
         self.engine.eq_ignore_ascii_case("mariadb")
     }
 
+    /// `engine = "sqlite"`か（#528）。`database`はファイルのパス
+    pub fn is_sqlite(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("sqlite")
+    }
+
     pub fn allow_write(&self) -> bool {
         self.allow_write.unwrap_or(false)
     }
@@ -207,13 +218,23 @@ impl DatabaseSettings {
     }
 
     /// `ssl_root_cert`の相対パスを、`base`（設定ファイルのフォルダ）を基準に
-    /// する（#539）
+    /// する（#539）。SQLiteの`database`（ファイルのパス）も（#528）。
+    /// `${VAR}`で始まるパスは、環境変数の値をそのまま使う（展開の前なので）
     pub fn resolve_paths(&mut self, base: Option<&std::path::Path>) {
-        if let (Some(cert), Some(base)) = (self.ssl_root_cert.as_mut(), base) {
-            let path = std::path::Path::new(cert.trim());
-            if path.is_relative() {
-                *cert = base.join(path).to_string_lossy().into_owned();
+        let Some(base) = base else {
+            return;
+        };
+        let resolve = |value: &mut String| {
+            let path = std::path::Path::new(value.trim());
+            if path.is_relative() && !value.trim().starts_with("${") {
+                *value = base.join(path).to_string_lossy().into_owned();
             }
+        };
+        if let Some(cert) = self.ssl_root_cert.as_mut() {
+            resolve(cert);
+        }
+        if self.is_sqlite() && !self.database.trim().is_empty() {
+            resolve(&mut self.database);
         }
     }
 
@@ -231,6 +252,14 @@ impl DatabaseSettings {
 
     /// `mcp_rs_status`・ログに出す説明（パスワードは含めない）
     pub fn describe(&self) -> String {
+        let access = if self.allow_write() {
+            "read-write"
+        } else {
+            "read-only"
+        };
+        if self.is_sqlite() {
+            return format!("{} {} ({})", self.engine, self.database, access);
+        }
         format!(
             "{} {}@{}:{}/{} ({})",
             self.engine,
@@ -238,21 +267,21 @@ impl DatabaseSettings {
             self.host(),
             self.port(),
             self.database,
-            if self.allow_write() {
-                "read-write"
-            } else {
-                "read-only"
-            }
+            access
         )
     }
 
     /// 書いた値を確かめる。起動しない理由を返す
     pub fn validate(&self) -> Result<(), String> {
-        if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() {
+        if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() && !self.is_sqlite()
+        {
             return Err(format!(
-                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\")",
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\", \"sqlite\")",
                 self.engine
             ));
+        }
+        if self.is_sqlite() {
+            return self.validate_sqlite();
         }
         if self.database.trim().is_empty() {
             return Err("database.database is empty".to_string());
@@ -294,6 +323,39 @@ impl DatabaseSettings {
                         .to_string(),
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// SQLiteの`[database]`を確かめる（#528）。`database`はファイルのパス。
+    /// サーバーにつなぐための項目は使わないので、書いてあれば断る（黙って
+    /// 無視すると、別のデータベースのつもりで書いた設定に気付けない）
+    fn validate_sqlite(&self) -> Result<(), String> {
+        let path = self.database.trim();
+        if path.is_empty() {
+            return Err(
+                "database.database is empty: for engine = \"sqlite\", write the path of the database file"
+                    .to_string(),
+            );
+        }
+        if path == ":memory:" || path.starts_with("file:") || path.starts_with("sqlite:") {
+            return Err(format!(
+                "database.database = \"{path}\" is not a file path: for engine = \"sqlite\", write the path of an existing database file"
+            ));
+        }
+        let unused = [
+            ("host", self.host.is_some()),
+            ("port", self.port.is_some()),
+            ("username", !self.username.trim().is_empty()),
+            ("password", self.password.is_some()),
+            ("keyring", self.keyring.is_some()),
+            ("ssl_mode", self.ssl_mode.is_some()),
+            ("ssl_root_cert", self.ssl_root_cert.is_some()),
+        ];
+        if let Some((name, _)) = unused.iter().find(|(_, given)| *given) {
+            return Err(format!(
+                "database.{name} is not used with engine = \"sqlite\" (database is the path of the database file). Remove {name}"
+            ));
         }
         Ok(())
     }
@@ -3066,6 +3128,118 @@ start_timeout_seconds = 300
         assert_eq!(db.ssl_root_cert.as_deref(), Some(absolute.as_str()));
     }
 
+    /// SQLiteの`[database]`（#528）。`database`はファイルのパスで、サーバーに
+    /// つなぐための項目は書かない。相対パスは設定ファイルのフォルダを基準にする
+    #[test]
+    fn test_sqlite_database_settings() {
+        let config: McpConfig = toml::from_str(
+            "[transport]
+[server]
+[handlers]
+[database]
+engine = \"sqlite\"
+database = \"data/app.db\"
+",
+        )
+        .unwrap();
+        let mut db = config.database.unwrap();
+        assert!(db.is_sqlite());
+        assert!(db.validate().is_ok());
+        let base = std::path::Path::new("configs");
+        db.resolve_paths(Some(base));
+        assert_eq!(
+            std::path::PathBuf::from(&db.database),
+            base.join("data/app.db")
+        );
+        assert_eq!(db.describe(), format!("sqlite {} (read-only)", db.database));
+
+        // 配っている設定の例（`configs/database/sqlite.toml`）も、そのまま読めて
+        // 検証を通る
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/sqlite.toml");
+        if let Ok(example) = std::fs::read_to_string(&path) {
+            let config: McpConfig =
+                toml::from_str(&format!("[transport]
+[server]
+[handlers]
+{example}")).unwrap();
+            let example = config.database.unwrap();
+            assert!(example.is_sqlite());
+            assert!(example.validate().is_ok());
+            assert!(!example.allow_write());
+        }
+
+        // 環境変数で渡すパスは、展開の後の値をそのまま使う
+        let mut from_env = DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: "${APP_DB}".to_string(),
+            ..Default::default()
+        };
+        from_env.resolve_paths(Some(base));
+        assert_eq!(from_env.database, "${APP_DB}");
+
+        let valid = DatabaseSettings {
+            engine: "SQLite".to_string(),
+            database: "/srv/app.db".to_string(),
+            ..Default::default()
+        };
+        assert!(valid.validate().is_ok());
+        for (invalid, expected) in [
+            (
+                DatabaseSettings {
+                    database: " ".to_string(),
+                    ..valid.clone()
+                },
+                "database.database is empty",
+            ),
+            (
+                DatabaseSettings {
+                    database: ":memory:".to_string(),
+                    ..valid.clone()
+                },
+                "is not a file path",
+            ),
+            (
+                DatabaseSettings {
+                    database: "file:app.db?mode=rwc".to_string(),
+                    ..valid.clone()
+                },
+                "is not a file path",
+            ),
+            (
+                DatabaseSettings {
+                    host: Some("db.example.com".to_string()),
+                    ..valid.clone()
+                },
+                "database.host is not used",
+            ),
+            (
+                DatabaseSettings {
+                    username: "reader".to_string(),
+                    ..valid.clone()
+                },
+                "database.username is not used",
+            ),
+            (
+                DatabaseSettings {
+                    password: Some("x".to_string()),
+                    ..valid.clone()
+                },
+                "database.password is not used",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("require".to_string()),
+                    ..valid.clone()
+                },
+                "database.ssl_mode is not used",
+            ),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
     #[test]
     fn test_database_settings_validate() {
         let valid = DatabaseSettings {
@@ -3078,7 +3252,7 @@ start_timeout_seconds = 300
         for (invalid, expected) in [
             (
                 DatabaseSettings {
-                    engine: "sqlite".to_string(),
+                    engine: "sqlite3".to_string(),
                     ..valid.clone()
                 },
                 "not supported",

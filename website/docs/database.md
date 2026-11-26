@@ -8,10 +8,10 @@ permalink: /docs/database/
 
 **[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
 
-mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
+mcp-rs can connect to one PostgreSQL, MySQL, MariaDB, or SQLite database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
-- **Engines**: PostgreSQL, and MySQL and MariaDB from v0.25.0 (see [MySQL](#mysql) and [MariaDB](#mariadb)). Other engines (SQLite, Redis, MongoDB) exist as library code but cannot be configured yet. Redis and MongoDB are planned for v0.31.0
-- **Build**: all three are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
+- **Engines**: PostgreSQL, MySQL and MariaDB from v0.25.0, and SQLite from v0.31.0 (see [MySQL](#mysql), [MariaDB](#mariadb), and [SQLite](#sqlite)). Other engines (Redis, MongoDB) exist as library code but cannot be configured yet. They are planned for v0.31.0
+- **Build**: all four are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
 - **Step-by-step setup**: [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 
 ## Configuration
@@ -40,11 +40,11 @@ ssl_mode = "prefer"               # disable, allow, prefer, require, verify-full
 
 | Key | Required | Default | Notes |
 |-----|----------|---------|-------|
-| `engine` | yes | | `"postgresql"`, `"mysql"`, or `"mariadb"` |
+| `engine` | yes | | `"postgresql"`, `"mysql"`, `"mariadb"`, or `"sqlite"` (v0.31.0 and later). For SQLite, see [SQLite](#sqlite): only `database` and the keys from `allow_write` on are used |
 | `host` | | `localhost` | `${VAR}` allowed |
 | `port` | | `5432` (MySQL, MariaDB: `3306`) | |
-| `database` | yes | | `${VAR}` allowed |
-| `username` | yes | | `${VAR}` allowed |
+| `database` | yes | | `${VAR}` allowed. SQLite: the path of the database file |
+| `username` | yes (not for SQLite) | | `${VAR}` allowed |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
 | `keyring` | | none | Name of the entry in the OS credential store that holds the password, instead of `password` (v0.29.0 and later). `mcp-rs init` or `mcp-rs database-keyring set <name>` stores it (see [Keeping the password in the OS credential store](#keyring)). The entry is tied to `host`, `port` and `username`: with other values in `[database]`, mcp-rs does not use it, so a config file someone else wrote cannot send the password to another server. Cannot be combined with `password` |
 | `ssl_mode` | when `host` is not local | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow`. From v0.30.0, it can be left out only when `host` is `localhost`, `127.0.0.1`, or `::1` (PostgreSQL: also a Unix socket path, or when `PGSSLMODE` is set to a valid mode) |
@@ -258,6 +258,28 @@ ssl_mode = "verify-full"
 - **Values**: MariaDB's `JSON` type is text (`LONGTEXT`), so `JSON` values are returned as strings, not as JSON
 - **Which server**: mcp-rs reads the server version when it connects, and uses MariaDB's time limit when the server is MariaDB. A configuration that says `engine = "mysql"` but points at MariaDB also works
 - **TLS**: MariaDB 11.4 and later offer TLS with a certificate they generate themselves. Such a certificate is not signed by a CA, so `verify-ca` and `verify-full` need a certificate from your own CA (`ssl_root_cert`)
+
+## SQLite
+
+From v0.31.0, `engine = "sqlite"` reads a SQLite database file. There is no server: `database` is the path of the file, and the settings for connecting to a server are not used.
+
+```toml
+[database]
+engine = "sqlite"
+database = "data/app.db"          # relative to the config file's folder
+# allow_write = false             # true offers execute_command
+```
+
+- **The file**: a relative path is relative to the folder of the configuration file (a path given with `${VAR}` is used as the variable says). mcp-rs does not create the file: when it does not exist, mcp-rs starts without the database tools and `mcp_rs_status` (and `mcp-rs check`) says the file was not found. `:memory:` and `file:` URIs are refused
+- **Settings that are not used**: `host`, `port`, `username`, `password`, `keyring`, `ssl_mode`, and `ssl_root_cert`. mcp-rs refuses to start when one of them is set, so a setting meant for another database is not ignored silently
+- **Read-only**: the file is opened read-only, so SQLite itself refuses any write, and each query runs in a transaction that is rolled back. With `allow_write = true`, mcp-rs also opens the file for writing, for `execute_command` only: `execute_query` still reads through the read-only connection. `ATTACH`, `PRAGMA`, `VACUUM` and the other statements that are not `SELECT`, `INSERT`, `UPDATE`, or `DELETE` are refused, so a query cannot open or write another file. The functions `load_extension()` and `fts3_tokenizer()` are refused too (SQLite does not offer them by default)
+- **Other programs**: other programs can keep using the file. A database in WAL mode can be read while another program writes to it. When another program holds a lock, mcp-rs waits up to `query_timeout_seconds`
+- **Time limit**: SQLite has no server to stop a statement, so mcp-rs checks the time while SQLite runs it, and stops it after `query_timeout_seconds` (the error says it was stopped)
+- **Parameters**: write `?` in the SQL, in the order of `params`. Numbers are bound as `INTEGER` or `REAL`, booleans as 0 or 1, and strings as `TEXT`. To pass a binary value, pass it as hex text and use `unhex(?)`
+- **Values**: SQLite stores a type with each value, so values are returned by that type, not by the column's declared type: integers and floats as JSON numbers, text as strings, `BLOB` as base64, and `NULL` as `null`. Dates are whatever the application stored (usually text). The `type` of a column is its declared type (empty for an expression)
+- **`get_schema`**: lists the tables and views of the file (not SQLite's own `sqlite_` tables) with their columns, primary keys, foreign keys, and indexes. Views are listed under `views` with the SQL that created them. Indexes on expressions are left out
+- **`execute_command`**: also returns `last_insert_id` (the `rowid` of an inserted row)
+- **Trusted files only**: the SQLite that mcp-rs bundles has a known flaw ([RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html)) that a specially made database file (with its `-wal` file) can use. It is fixed in a newer SQLite, which mcp-rs cannot use yet ([#449](https://github.com/n-takatsu/mcp-rs/issues/449)). Open only files that you or a program you trust wrote, not files received from others
 
 ## Library API
 

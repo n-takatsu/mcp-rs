@@ -17,6 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
   v0.30.0は、マージの後に手で実行して登録した。README・導入ガイドに、
   公式のMCP Registryに載っていることを書いた
+- `[database]`で、SQLiteを使えるようにした（`engine = "sqlite"`、#528）。
+  `database`にデータベースのファイルのパスを書く（相対パスは設定ファイルの
+  フォルダが基準）。`host`・`port`・`username`・`password`・`keyring`・
+  `ssl_mode`・`ssl_root_cert`は使わないので、書いてあれば起動しない。
+  PostgreSQL・MySQLと同じ安全性にそろえた
+  - ファイルは作らない。無ければ、データベースのツールを出さずに起動し、
+    `mcp_rs_status`・`mcp-rs check`で知らせる
+  - ファイルは読み取り専用で開き、`execute_query`・`get_schema`は、
+    トランザクションの中で読んでロールバックする。`allow_write = true`の
+    ときだけ、書き込みの接続も開き、`execute_command`を出す
+  - 1つのSQLの時間の上限（`query_timeout_seconds`）。SQLiteの進み具合の
+    コールバックで止める。ほかのプログラムのロックも、同じ時間まで待つ
+  - 行数・結果のバイト数の上限。値は、列で宣言した型ではなく、値の型で返す
+  - `get_schema`は、表・ビューの列・主キー・外部キー・インデックスを返す
+    （表の名前はSQLに埋め込まない）
+  - SQLの関数`load_extension()`・`fts3_tokenizer()`を断る
+  - 同梱のSQLiteの脆弱性（RUSTSEC-2026-0459、#449）は、細工したデータベースの
+    ファイルを開くと当たる。信頼できるファイルだけを開くよう、文書と設定の
+    例（`configs/database/sqlite.toml`）に書き、`.cargo/audit.toml`の無視の
+    理由を書き直した
+  - ライブラリとして使う場合: `SqliteEngine`は、プール（読み取りと書き込み）を
+    1つ持ち、接続の間で共有する（以前は接続ごとにプールを作っていた）。
+    `SqliteConnection::query`は、読み取り専用の接続で読む。`:memory:`は、
+    1つの接続を共有する
 
 ### Fixed
 

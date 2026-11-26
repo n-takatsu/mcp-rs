@@ -1,335 +1,608 @@
-//! SQLite Connection Implementation
+//! SQLiteの接続（`[database]`の`engine = "sqlite"`、#528）
 //!
-//! Provides SQLite-specific database connection with sqlx integration
+//! PostgreSQL（`pg_connection`）・MySQL（`mysql::connection`）と同じ安全性に
+//! そろえる:
+//!
+//! - 読み取り（`query()`・スキーマ）は、ファイルを読み取り専用
+//!   （`SQLITE_OPEN_READONLY`）で開いた接続で行う。さらに、トランザクションの
+//!   中で読み、最後にロールバックする
+//! - 書き込みの接続は、`OPTION_READ_ONLY`が無いとき（`[database]`の
+//!   `allow_write = true`）だけ作る
+//! - ファイルが無ければ作らない（パスの書き間違いで、空のデータベースを
+//!   作って読まない）
+//! - 1つのSQLの時間の上限。SQLiteにはサーバーが無いので、SQLiteの
+//!   進み具合のコールバック（`sqlite3_progress_handler`）で、時間を過ぎたら
+//!   止める。ロックの待ちは`busy_timeout`で止める
+//! - 受け取る行数・結果のだいたいのバイト数の上限。上限に達したら、残りの
+//!   行は読まない
+//! - パラメーターは文字列に埋め込まず、`?`にバインドする
+//!
+//! `:memory:`（ライブラリ・テストで使う）は、接続ごとに別のデータベースに
+//! なるので、1つの接続を読み書きに共有する（読み取り専用では開かない）。
+//! `[database]`からは使えない（`DatabaseSettings::validate`）
+//!
+//! 以前の実装（#528の前）は、接続のたびにプールを作り、全部の行をメモリに
+//! 読み、時間の上限も無く、`PRAGMA table_info`に表の名前をそのまま
+//! 埋め込んでいた。
 
 use crate::handlers::database::{
     engine::{ConnectionInfo, DatabaseConnection, DatabaseTransaction, PreparedStatement},
-    types::{DatabaseConfig, DatabaseError, DatabaseSchema, QueryResult, TableInfo, Value},
+    engines::{OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_READ_ONLY},
+    types::{
+        ColumnInfo, DatabaseConfig, DatabaseError, DatabaseSchema, ExecuteResult, ForeignKeyInfo,
+        IndexInfo, QueryResult, TableInfo, Value, ViewInfo,
+    },
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::{Column, TypeInfo};
+use futures::TryStreamExt;
+use sqlx::sqlite::{
+    SqliteArguments, SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow,
+};
+use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo, ValueRef};
+use std::collections::BTreeMap;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::{SqlitePreparedStatement, SqliteTransaction};
 
-/// SQLite Connection
-///
-/// Manages SQLite database connection using sqlx
-pub struct SqliteConnection {
-    pool: Arc<SqlitePool>,
-    config: DatabaseConfig,
+/// SQLiteの仮想機械の命令をこれだけ進めるたびに、時間を確かめる
+const PROGRESS_STEPS: i32 = 1000;
+
+/// 1つのSQLの時間の上限の既定（秒）
+const DEFAULT_STATEMENT_TIMEOUT_SECS: u64 = 30;
+
+/// 接続を受け取るときの待ち時間の上限の既定（秒）
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// SQLiteの、読み取りと書き込みの接続のプール（#528）。エンジンが1つ持ち、
+/// 接続の間で共有する
+pub(crate) struct SqlitePools {
+    /// 読み取りの接続。ファイルは読み取り専用で開く（`:memory:`は`write`と同じ）
+    read: SqlitePool,
+    /// 書き込みの接続。`OPTION_READ_ONLY`のときは無い
+    write: Option<SqlitePool>,
 }
 
-impl SqliteConnection {
-    /// Create a new SQLite connection
-    pub async fn new(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        let database_url = Self::build_connection_url(&config);
+/// `:memory:`か
+fn is_memory(path: &str) -> bool {
+    path == ":memory:"
+}
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(config.pool.max_connections)
-            .connect(&database_url)
+/// 設定から、SQLiteのプールを開く（#528）。ファイルは作らない
+pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePools>, DatabaseError> {
+    let connection = &config.connection;
+    let path = connection.host.trim();
+    if path.is_empty() {
+        return Err(DatabaseError::ConfigurationError(
+            "Database path is required".to_string(),
+        ));
+    }
+    let read_only = connection
+        .options
+        .get(OPTION_READ_ONLY)
+        .is_some_and(|v| v == "true");
+    let busy = statement_timeout(config);
+    let acquire = Duration::from_secs(if connection.timeout_seconds > 0 {
+        u64::from(connection.timeout_seconds)
+    } else {
+        DEFAULT_CONNECT_TIMEOUT_SECS
+    });
+    let pool_options = |max: u32| {
+        SqlitePoolOptions::new()
+            .max_connections(max.max(1))
+            .min_connections(0)
+            .acquire_timeout(acquire)
+    };
+    let open_error = |e: sqlx::Error| {
+        DatabaseError::ConnectionFailed(format!("cannot open the SQLite database {path}: {e}"))
+    };
+
+    if is_memory(path) {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .map_err(open_error)?
+            .busy_timeout(busy);
+        // 接続ごとに別のデータベースになるので、1つだけにする
+        let pool = pool_options(1)
+            .connect_with(options)
             .await
-            .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-
-        Ok(Self {
-            pool: Arc::new(pool),
-            config,
-        })
+            .map_err(open_error)?;
+        return Ok(Arc::new(SqlitePools {
+            write: (!read_only).then(|| pool.clone()),
+            read: pool,
+        }));
     }
 
-    /// Build SQLite connection URL
-    fn build_connection_url(config: &DatabaseConfig) -> String {
-        // SQLite uses file path in the host field
-        // Special cases: ":memory:" for in-memory database
-        let path = &config.connection.host;
+    if !std::path::Path::new(path).is_file() {
+        return Err(DatabaseError::ConnectionFailed(format!(
+            "the SQLite database file {path} was not found (mcp-rs does not create it)"
+        )));
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .busy_timeout(busy);
+    let max = config.pool.max_connections;
+    let read = pool_options(max)
+        .connect_with(options.clone().read_only(true))
+        .await
+        .map_err(open_error)?;
+    let write = if read_only {
+        None
+    } else {
+        Some(
+            pool_options(max)
+                .connect_with(options)
+                .await
+                .map_err(open_error)?,
+        )
+    };
+    Ok(Arc::new(SqlitePools { read, write }))
+}
 
-        if path == ":memory:" {
-            "sqlite::memory:".to_string()
-        } else {
-            format!("sqlite:{}", path)
+/// 1つのSQLの時間の上限
+fn statement_timeout(config: &DatabaseConfig) -> Duration {
+    Duration::from_secs(if config.features.query_timeout > 0 {
+        u64::from(config.features.query_timeout)
+    } else {
+        DEFAULT_STATEMENT_TIMEOUT_SECS
+    })
+}
+
+/// 接続に時間の上限を付ける。時間を過ぎると、SQLiteが実行を止める
+/// （`SQLITE_INTERRUPT`）。止めたかは、返す印で分かる。前の呼び出しの
+/// コールバックは置き換わる
+async fn arm_deadline(
+    conn: &mut sqlx::SqliteConnection,
+    timeout: Duration,
+) -> Result<Arc<AtomicBool>, sqlx::Error> {
+    let deadline = Instant::now() + timeout;
+    let fired = Arc::new(AtomicBool::new(false));
+    let flag = fired.clone();
+    conn.lock_handle()
+        .await?
+        .set_progress_handler(PROGRESS_STEPS, move || {
+            if Instant::now() >= deadline {
+                flag.store(true, Ordering::SeqCst);
+                false
+            } else {
+                true
+            }
+        });
+    Ok(fired)
+}
+
+/// 時間の上限を外す（プールに戻した接続が、後で止まらないように）
+async fn disarm_deadline(conn: &mut sqlx::SqliteConnection) {
+    if let Ok(mut handle) = conn.lock_handle().await {
+        handle.remove_progress_handler();
+    }
+}
+
+/// sqlxのエラーを、時間の上限で止めたかを見て、mcp-rsのエラーにする
+fn map_error(
+    e: sqlx::Error,
+    fired: &AtomicBool,
+    timeout: Duration,
+    kind: fn(String) -> DatabaseError,
+) -> DatabaseError {
+    if fired.load(Ordering::SeqCst) {
+        return DatabaseError::TimeoutError(format!(
+            "the SQL did not finish within {} seconds and was stopped",
+            timeout.as_secs()
+        ));
+    }
+    kind(e.to_string())
+}
+
+/// 値を、`?`にバインドする
+fn bind_params<'q>(
+    mut query: sqlx::query::Query<'q, sqlx::Sqlite, SqliteArguments<'q>>,
+    params: &'q [Value],
+) -> sqlx::query::Query<'q, sqlx::Sqlite, SqliteArguments<'q>> {
+    for param in params {
+        query = match param {
+            Value::Null => query.bind(None::<i64>),
+            Value::Bool(b) => query.bind(i64::from(*b)),
+            Value::Int(i) => query.bind(*i),
+            Value::Float(f) => query.bind(*f),
+            Value::String(s) => query.bind(s.as_str()),
+            Value::Binary(b) => query.bind(b.as_slice()),
+            Value::DateTime(dt) => query.bind(dt.to_rfc3339()),
+            Value::Json(j) => query.bind(j.to_string()),
+        };
+    }
+    query
+}
+
+/// 列の情報（型は、表で宣言した型。式の列は空）
+fn column_infos(columns: &[sqlx::sqlite::SqliteColumn]) -> Vec<ColumnInfo> {
+    columns
+        .iter()
+        .map(|column| ColumnInfo {
+            name: column.name().to_string(),
+            data_type: column.type_info().name().to_string(),
+            nullable: true,
+            max_length: None,
+        })
+        .collect()
+}
+
+/// 1つの値。SQLiteは値ごとに型を持つので、宣言した型ではなく、値の型で読む
+fn read_value(row: &SqliteRow, index: usize) -> Result<Value, sqlx::Error> {
+    let raw = row.try_get_raw(index)?;
+    if raw.is_null() {
+        return Ok(Value::Null);
+    }
+    let kind = raw.type_info().name().to_string();
+    Ok(match kind.as_str() {
+        "INTEGER" => Value::Int(row.try_get_unchecked::<i64, _>(index)?),
+        "REAL" => Value::Float(row.try_get_unchecked::<f64, _>(index)?),
+        "BLOB" => Value::Binary(row.try_get_unchecked::<Vec<u8>, _>(index)?),
+        _ => Value::String(row.try_get_unchecked::<String, _>(index)?),
+    })
+}
+
+/// 読み取りの結果: 上限まで読み終えたか、上限で止めたか
+type Rows = (Vec<ColumnInfo>, Vec<Vec<Value>>);
+
+/// トランザクションの中で、行数・バイト数の上限まで読み、ロールバックする
+async fn read_rows(
+    conn: &mut sqlx::SqliteConnection,
+    sql: &str,
+    params: &[Value],
+    fetch_limit: Option<usize>,
+    byte_limit: Option<usize>,
+) -> Result<Rows, sqlx::Error> {
+    let mut tx = conn.begin().await?;
+    let columns = column_infos(tx.prepare(sql).await?.columns());
+    let mut rows = Vec::new();
+    {
+        let mut stream = bind_params(sqlx::query(sql), params).fetch(&mut *tx);
+        let mut bytes = 0usize;
+        while let Some(row) = stream.try_next().await? {
+            let values = (0..row.len())
+                .map(|index| read_value(&row, index))
+                .collect::<Result<Vec<_>, _>>()?;
+            bytes += values.iter().map(Value::approx_json_size).sum::<usize>();
+            rows.push(values);
+            let rows_full = fetch_limit.is_some_and(|limit| rows.len() >= limit);
+            let bytes_full = byte_limit.is_some_and(|limit| bytes > limit);
+            if rows_full || bytes_full {
+                break;
+            }
         }
     }
+    tx.rollback().await?;
+    Ok((columns, rows))
+}
 
-    /// Get the underlying connection pool
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+/// 名前で絞った、表・ビューの一覧（名前・種類・定義のSQL）
+type SchemaObject = (String, String, Option<String>);
+
+/// 表・ビューの、列・主キー・外部キー・インデックス。`only`があれば、その
+/// 名前のものだけ。SQLite自身の表（`sqlite_`で始まる）は除く。表の名前は
+/// SQLに埋め込まず、`pragma_table_info(?)`等にバインドする
+async fn read_schema(
+    conn: &mut sqlx::SqliteConnection,
+    only: Option<&str>,
+) -> Result<(Vec<TableInfo>, Vec<ViewInfo>), sqlx::Error> {
+    let mut tx = conn.begin().await?;
+    let filter = if only.is_some() { " AND name = ?" } else { "" };
+    let list_sql = format!(
+        "SELECT name, type, sql FROM sqlite_schema \
+         WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'{filter} \
+         ORDER BY name"
+    );
+    let mut objects = sqlx::query_as::<_, SchemaObject>(&list_sql);
+    if let Some(name) = only {
+        objects = objects.bind(name);
     }
+    let objects = objects.fetch_all(&mut *tx).await?;
 
-    /// Convert sqlx row to QueryResult
-    async fn rows_to_query_result(
-        rows: Vec<sqlx::sqlite::SqliteRow>,
-        execution_time_ms: u64,
-    ) -> Result<QueryResult, DatabaseError> {
-        use sqlx::Row;
+    let mut tables = Vec::new();
+    let mut views = Vec::new();
+    for (name, kind, sql) in objects {
+        // 列（cid・名前・型・NOT NULL・既定値・主キーの順番）
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT name, type, \"notnull\", pk FROM pragma_table_info(?) ORDER BY cid",
+        )
+        .bind(&name)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut primary: BTreeMap<i64, String> = BTreeMap::new();
+        let columns = rows
+            .into_iter()
+            .map(|(column, data_type, not_null, pk)| {
+                if pk > 0 {
+                    primary.insert(pk, column.clone());
+                }
+                ColumnInfo {
+                    // 主キーの列は、`NOT NULL`と書かなくてもNULLを入れられる
+                    // （SQLiteの古い動き）が、INTEGERの主キーは入れられない
+                    nullable: not_null == 0
+                        && !(pk > 0 && data_type.eq_ignore_ascii_case("INTEGER")),
+                    name: column,
+                    data_type,
+                    max_length: None,
+                }
+            })
+            .collect();
+        if kind == "view" {
+            views.push(ViewInfo {
+                name,
+                schema: None,
+                definition: sql.unwrap_or_default(),
+                columns,
+            });
+            continue;
+        }
 
-        if rows.is_empty() {
-            return Ok(QueryResult {
-                columns: vec![],
-                rows: vec![],
-                total_rows: Some(0),
-                execution_time_ms,
+        // 外部キー（id・seq・参照する表・列・参照する列）
+        let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?) ORDER BY id, seq",
+        )
+        .bind(&name)
+        .fetch_all(&mut *tx)
+        .await?;
+        let foreign_keys = rows
+            .into_iter()
+            .map(
+                |(id, referenced_table, column, referenced_column)| ForeignKeyInfo {
+                    name: format!("fk_{name}_{id}"),
+                    column,
+                    referenced_table,
+                    // 参照する列を書かなければ、参照する表の主キー
+                    referenced_column: referenced_column.unwrap_or_default(),
+                },
+            )
+            .collect();
+
+        // インデックス。式を含むインデックス（列の名前が無い）は、全体を除く
+        // （MySQLと同じ。#717）
+        let list: Vec<(String, i64, String)> =
+            sqlx::query_as("SELECT name, \"unique\", origin FROM pragma_index_list(?)")
+                .bind(&name)
+                .fetch_all(&mut *tx)
+                .await?;
+        let mut indexes = Vec::new();
+        for (index, unique, origin) in list {
+            let columns: Vec<(Option<String>,)> =
+                sqlx::query_as("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
+                    .bind(&index)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            let Some(columns) = columns
+                .into_iter()
+                .map(|(column,)| column)
+                .collect::<Option<Vec<String>>>()
+            else {
+                continue;
+            };
+            indexes.push(IndexInfo {
+                name: index,
+                columns,
+                is_unique: unique != 0,
+                is_primary: origin == "pk",
             });
         }
 
-        // Extract column information from the first row
-        let columns = rows[0]
-            .columns()
-            .iter()
-            .map(|col| crate::handlers::database::types::ColumnInfo {
-                name: col.name().to_string(),
-                data_type: format!("{:?}", col.type_info()),
-                nullable: true,
-                max_length: None,
-            })
-            .collect();
-
-        // Convert rows to Value vectors
-        let mut result_rows = Vec::new();
-        for row in rows {
-            let mut values = Vec::new();
-            for (idx, column) in row.columns().iter().enumerate() {
-                let value = Self::extract_value(&row, idx, column.type_info())?;
-                values.push(value);
-            }
-            result_rows.push(values);
-        }
-
-        let total_rows = result_rows.len();
-
-        Ok(QueryResult {
+        tables.push(TableInfo {
+            name,
+            schema: None,
             columns,
-            rows: result_rows,
-            total_rows: Some(total_rows as u64),
-            execution_time_ms,
-        })
+            primary_keys: primary.into_values().collect(),
+            foreign_keys,
+            indexes,
+        });
+    }
+    tx.rollback().await?;
+    Ok((tables, views))
+}
+
+/// プールから受け取った接続
+type PooledSqlite = sqlx::pool::PoolConnection<sqlx::Sqlite>;
+
+/// `pool`から接続を受け取り、時間の上限を付ける
+async fn acquire_with_deadline(
+    pool: &SqlitePool,
+    timeout: Duration,
+) -> Result<(PooledSqlite, Arc<AtomicBool>), DatabaseError> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
+    let fired = arm_deadline(&mut conn, timeout)
+        .await
+        .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
+    Ok((conn, fired))
+}
+
+/// SQLite Connection
+///
+/// エンジンが持つプールを使う（#528。以前は、接続ごとにプールを作っていた）
+pub struct SqliteConnection {
+    pools: Arc<SqlitePools>,
+    config: DatabaseConfig,
+    fetch_limit: Option<usize>,
+    byte_limit: Option<usize>,
+    timeout: Duration,
+}
+
+impl SqliteConnection {
+    /// 新しいプールを開いて、接続を作る。エンジン（`SqliteEngine`）からは、
+    /// エンジンのプールを共有する
+    pub async fn new(config: DatabaseConfig) -> Result<Self, DatabaseError> {
+        let pools = open_pools(&config).await?;
+        Ok(Self::with_pools(pools, config))
     }
 
-    /// Extract value from SQLite row
-    fn extract_value(
-        row: &sqlx::sqlite::SqliteRow,
-        idx: usize,
-        type_info: &sqlx::sqlite::SqliteTypeInfo,
-    ) -> Result<Value, DatabaseError> {
-        use sqlx::Row;
-        use sqlx::ValueRef;
-
-        let value_ref = row.try_get_raw(idx).map_err(|e| {
-            DatabaseError::QueryFailed(format!("Failed to get value at index {}: {}", idx, e))
-        })?;
-
-        if value_ref.is_null() {
-            return Ok(Value::Null);
+    /// 開いたプールで、接続を作る
+    pub(crate) fn with_pools(pools: Arc<SqlitePools>, config: DatabaseConfig) -> Self {
+        let limit = |key: &str| {
+            config
+                .connection
+                .options
+                .get(key)
+                .and_then(|v| v.parse::<usize>().ok())
+        };
+        Self {
+            fetch_limit: limit(OPTION_FETCH_LIMIT),
+            byte_limit: limit(OPTION_BYTE_LIMIT),
+            timeout: statement_timeout(&config),
+            pools,
+            config,
         }
+    }
 
-        // SQLite uses dynamic typing, so we check the actual type
-        let type_name = type_info.name();
+    /// 書き込みのプール（トランザクション・準備済みの文）。読み取り専用なら、
+    /// 読み取りのプール（書き込もうとすると、SQLiteが断る）
+    fn write_or_read_pool(&self) -> &SqlitePool {
+        self.pools.write.as_ref().unwrap_or(&self.pools.read)
+    }
 
-        match type_name {
-            "INTEGER" => {
-                let val: i64 = row.try_get(idx).map_err(|e| {
-                    DatabaseError::QueryFailed(format!("Failed to get INTEGER: {}", e))
-                })?;
-                Ok(Value::Int(val))
-            }
-            "REAL" => {
-                let val: f64 = row.try_get(idx).map_err(|e| {
-                    DatabaseError::QueryFailed(format!("Failed to get REAL: {}", e))
-                })?;
-                Ok(Value::Float(val))
-            }
-            "TEXT" => {
-                let val: String = row.try_get(idx).map_err(|e| {
-                    DatabaseError::QueryFailed(format!("Failed to get TEXT: {}", e))
-                })?;
-                Ok(Value::String(val))
-            }
-            "BLOB" => {
-                let val: Vec<u8> = row.try_get(idx).map_err(|e| {
-                    DatabaseError::QueryFailed(format!("Failed to get BLOB: {}", e))
-                })?;
-                Ok(Value::Binary(val))
-            }
-            _ => {
-                // Try as string first, then fallback to Null
-                if let Ok(val) = row.try_get::<String, _>(idx) {
-                    Ok(Value::String(val))
-                } else if let Ok(val) = row.try_get::<i64, _>(idx) {
-                    Ok(Value::Int(val))
-                } else {
-                    Ok(Value::Null)
-                }
-            }
-        }
+    /// 読み取りのプールから接続を受け取り、時間の上限を付ける
+    async fn read_conn(&self) -> Result<(PooledSqlite, Arc<AtomicBool>), DatabaseError> {
+        acquire_with_deadline(&self.pools.read, self.timeout).await
+    }
+
+    /// 受け取った接続の時間の上限を外し、結果のエラーをmcp-rsのエラーにする
+    async fn finish<T>(
+        &self,
+        mut conn: PooledSqlite,
+        fired: Arc<AtomicBool>,
+        result: Result<T, sqlx::Error>,
+        kind: fn(String) -> DatabaseError,
+    ) -> Result<T, DatabaseError> {
+        disarm_deadline(&mut conn).await;
+        result.map_err(|e| map_error(e, &fired, self.timeout, kind))
     }
 }
 
 #[async_trait]
 impl DatabaseConnection for SqliteConnection {
+    /// 読み取り専用の接続で、トランザクションの中で読み、ロールバックする。
+    /// 行数・バイト数・時間の上限で止める
     async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult, DatabaseError> {
-        let start = std::time::Instant::now();
-
-        let mut query = sqlx::query(sql);
-        for param in params {
-            query = match param {
-                Value::Null => query.bind(None::<i64>),
-                Value::Bool(b) => query.bind(*b as i64),
-                // Removed duplicate pattern
-                Value::Int(i) => query.bind(*i),
-                Value::Float(f) => query.bind(*f),
-                Value::String(s) => query.bind(s),
-                Value::Binary(b) => query.bind(b),
-                Value::DateTime(dt) => query.bind(dt.to_rfc3339()),
-                Value::Json(j) => query.bind(j.to_string()),
-                // Uuid not supported
-            };
-        }
-
-        let rows = query
-            .fetch_all(&*self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let elapsed = start.elapsed();
-        Self::rows_to_query_result(rows, elapsed.as_millis() as u64).await
+        let started = Instant::now();
+        let (fetch_limit, byte_limit) = (self.fetch_limit, self.byte_limit);
+        let (mut conn, fired) = self.read_conn().await?;
+        let result = read_rows(&mut conn, sql, params, fetch_limit, byte_limit).await;
+        let (columns, rows) = self
+            .finish(conn, fired, result, DatabaseError::QueryFailed)
+            .await?;
+        Ok(QueryResult {
+            columns,
+            total_rows: Some(rows.len() as u64),
+            rows,
+            execution_time_ms: started.elapsed().as_millis() as u64,
+        })
     }
 
-    async fn execute(
-        &self,
-        sql: &str,
-        params: &[Value],
-    ) -> Result<crate::handlers::database::types::ExecuteResult, DatabaseError> {
-        let start = std::time::Instant::now();
-
-        let mut query = sqlx::query(sql);
-        for param in params {
-            query = match param {
-                Value::Null => query.bind(None::<i64>),
-                Value::Bool(b) => query.bind(*b as i64),
-                // Removed duplicate pattern
-                Value::Int(i) => query.bind(*i),
-                Value::Float(f) => query.bind(*f),
-                Value::String(s) => query.bind(s),
-                Value::Binary(b) => query.bind(b),
-                Value::DateTime(dt) => query.bind(dt.to_rfc3339()),
-                Value::Json(j) => query.bind(j.to_string()),
-                // Uuid not supported
-            };
+    /// 1つの文を、トランザクションの中で実行してコミットする。読み取り専用で
+    /// 開いた（`allow_write = false`）なら断る
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError> {
+        let started = Instant::now();
+        let pool = self.pools.write.as_ref().ok_or_else(|| {
+            DatabaseError::UnsupportedOperation(
+                "the SQLite database was opened read-only (allow_write is not set)".to_string(),
+            )
+        })?;
+        let (mut conn, fired) = acquire_with_deadline(pool, self.timeout).await?;
+        let result = async {
+            let mut tx = conn.begin().await?;
+            let done = bind_params(sqlx::query(sql), params)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(done)
         }
-
-        let result = query
-            .execute(&*self.pool)
-            .await
-            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-
-        let elapsed = start.elapsed();
-
-        Ok(crate::handlers::database::types::ExecuteResult {
-            rows_affected: result.rows_affected(),
-            last_insert_id: Some(Value::Int(result.last_insert_rowid())),
-            execution_time_ms: elapsed.as_millis() as u64,
+        .await;
+        let done = self
+            .finish(conn, fired, result, DatabaseError::OperationFailed)
+            .await?;
+        Ok(ExecuteResult {
+            rows_affected: done.rows_affected(),
+            last_insert_id: (done.rows_affected() > 0 && done.last_insert_rowid() > 0)
+                .then(|| Value::Int(done.last_insert_rowid())),
+            execution_time_ms: started.elapsed().as_millis() as u64,
         })
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError> {
-        let transaction = SqliteTransaction::new(self.pool.clone()).await?;
+        let transaction =
+            SqliteTransaction::new(Arc::new(self.write_or_read_pool().clone())).await?;
         Ok(Box::new(transaction))
     }
 
+    /// 読み取り専用の接続で、トランザクションの中で読む
     async fn get_schema(&self) -> Result<DatabaseSchema, DatabaseError> {
-        let query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name";
-        let result = self.query(query, &[]).await?;
-
-        let mut tables = Vec::new();
-        for row in &result.rows {
-            if let Some(Value::String(name)) = row.first() {
-                if let Ok(table_info) = self.get_table_schema(name).await {
-                    tables.push(table_info);
-                }
-            }
-        }
-
+        let (mut conn, fired) = self.read_conn().await?;
+        let result = read_schema(&mut conn, None).await;
+        let (tables, views) = self
+            .finish(conn, fired, result, DatabaseError::QueryFailed)
+            .await?;
         Ok(DatabaseSchema {
             database_name: self.config.connection.database.clone(),
             tables,
-            views: Vec::new(),
+            views,
             procedures: Vec::new(),
         })
     }
 
     async fn get_table_schema(&self, table_name: &str) -> Result<TableInfo, DatabaseError> {
-        let query = format!("PRAGMA table_info({})", table_name);
-        let result = self.query(&query, &[]).await?;
-
-        let columns = result
-            .rows
-            .iter()
-            .filter_map(|row| {
-                // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
-                // Indices: 0=cid(INT), 1=name(TEXT), 2=type(TEXT), 3=notnull(INT), 4=dflt_value, 5=pk(INT)
-                if row.len() >= 6 {
-                    // Try different indices and types since PRAGMA results can vary
-                    let name = match &row[1] {
-                        Value::String(s) => Some(s.clone()),
-                        Value::Int(i) => Some(i.to_string()),
-                        _ => None,
-                    };
-
-                    let data_type = match &row[2] {
-                        Value::String(s) => Some(s.clone()),
-                        Value::Int(i) => Some(i.to_string()),
-                        _ => Some("UNKNOWN".to_string()),
-                    };
-
-                    if let (Some(n), Some(dt)) = (name, data_type) {
-                        Some(crate::handlers::database::types::ColumnInfo {
-                            name: n,
-                            data_type: dt,
-                            nullable: true,
-                            max_length: None,
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+        let (mut conn, fired) = self.read_conn().await?;
+        let result = read_schema(&mut conn, Some(table_name)).await;
+        let (tables, views) = self
+            .finish(conn, fired, result, DatabaseError::QueryFailed)
+            .await?;
+        // ビューも、列を返す（MySQLと同じ。キー・インデックスは無い）
+        tables
+            .into_iter()
+            .next()
+            .or_else(|| {
+                views.into_iter().next().map(|view| TableInfo {
+                    name: view.name,
+                    schema: None,
+                    columns: view.columns,
+                    primary_keys: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    indexes: Vec::new(),
+                })
             })
-            .collect();
-
-        Ok(TableInfo {
-            schema: None,
-            name: table_name.to_string(),
-            columns,
-            indexes: Vec::new(),
-            foreign_keys: Vec::new(),
-            primary_keys: Vec::new(),
-        })
+            .ok_or_else(|| DatabaseError::QueryFailed(format!("table not found: {table_name}")))
     }
 
     async fn prepare(&self, sql: &str) -> Result<Box<dyn PreparedStatement>, DatabaseError> {
-        let prepared = SqlitePreparedStatement::new(self.pool.clone(), sql.to_string()).await?;
+        let prepared = SqlitePreparedStatement::new(
+            Arc::new(self.write_or_read_pool().clone()),
+            sql.to_string(),
+        )
+        .await?;
         Ok(Box::new(prepared))
     }
 
     async fn ping(&self) -> Result<(), DatabaseError> {
-        sqlx::query("SELECT 1")
-            .fetch_one(&*self.pool)
+        let (mut conn, fired) = self.read_conn().await?;
+        let result = conn.ping().await;
+        self.finish(conn, fired, result, DatabaseError::ConnectionFailed)
             .await
-            .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        Ok(())
     }
 
     async fn close(&self) -> Result<(), DatabaseError> {
-        self.pool.close().await;
+        self.pools.read.close().await;
+        if let Some(write) = &self.pools.write {
+            write.close().await;
+        }
         Ok(())
     }
 
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
             connection_id: "sqlite".to_string(),
-            database_name: self.config.connection.database.clone(),
+            database_name: self.config.connection.host.clone(),
             user_name: String::new(),
             server_version: "SQLite".to_string(),
             connected_at: Utc::now(),
@@ -346,24 +619,64 @@ mod tests {
     };
     use std::collections::HashMap;
 
-    fn create_test_config() -> DatabaseConfig {
+    fn config_for(path: &str, options: &[(&str, &str)]) -> DatabaseConfig {
         DatabaseConfig {
             database_type: DatabaseType::SQLite,
             connection: ConnectionConfig {
-                host: ":memory:".to_string(),
+                host: path.to_string(),
                 port: 0,
-                database: "test".to_string(),
+                database: path.to_string(),
                 username: String::new(),
                 password: String::new(),
                 ssl_mode: None,
                 timeout_seconds: 30,
-                retry_attempts: 3,
-                options: HashMap::new(),
+                retry_attempts: 0,
+                options: options
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<HashMap<_, _>>(),
             },
             pool: PoolConfig::default(),
             security: SecurityConfig::default(),
             features: FeatureConfig::default(),
         }
+    }
+
+    fn create_test_config() -> DatabaseConfig {
+        config_for(":memory:", &[])
+    }
+
+    /// `Value`は`PartialEq`を持たないので、`Debug`の形で比べる
+    fn debug(value: &impl std::fmt::Debug) -> String {
+        format!("{value:?}")
+    }
+
+    /// 表`items`（3行）のあるデータベースのファイルを作る
+    async fn database_file() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.db");
+        let path = path.to_string_lossy().into_owned();
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let mut conn = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE owners (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, owner_id INTEGER REFERENCES owners(id), \
+             name TEXT NOT NULL, price REAL, data BLOB)",
+            "CREATE UNIQUE INDEX items_name ON items (name)",
+            "CREATE INDEX items_lower ON items (lower(name))",
+            "CREATE VIEW cheap AS SELECT name FROM items WHERE price < 2",
+            "INSERT INTO owners (name) VALUES ('o')",
+            "INSERT INTO items (owner_id, name, price, data) VALUES \
+             (1, 'a', 1.5, x'00ff'), (1, 'b', 2.5, NULL), (NULL, 'c', NULL, NULL)",
+        ] {
+            sqlx::query(sql).execute(&mut conn).await.unwrap();
+        }
+        conn.close().await.unwrap();
+        (dir, path)
     }
 
     #[tokio::test]
@@ -438,5 +751,221 @@ mod tests {
         let table_info = conn.get_table_schema("test_table").await.unwrap();
         assert_eq!(table_info.name, "test_table");
         assert_eq!(table_info.columns.len(), 2);
+    }
+
+    /// 無いファイルは作らない（#528）
+    #[tokio::test]
+    async fn test_missing_file_is_not_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.db");
+        let path = path.to_string_lossy().into_owned();
+        let err = SqliteConnection::new(config_for(&path, &[]))
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("was not found"), "{err}");
+        assert!(!std::path::Path::new(&path).exists());
+    }
+
+    /// WALモードのデータベースも、読み取り専用で読める（#528）。ほかの
+    /// 接続が書いている間（`-wal`・`-shm`がある）も、閉じた後も
+    #[tokio::test]
+    async fn test_wal_database_can_be_read() {
+        let (_dir, path) = database_file().await;
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        let mut writer = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO items (name) VALUES ('w')")
+            .execute(&mut writer)
+            .await
+            .unwrap();
+        let conn = SqliteConnection::new(config_for(&path, &[(OPTION_READ_ONLY, "true")]))
+            .await
+            .unwrap();
+        let count = conn.query("SELECT count(*) FROM items", &[]).await.unwrap();
+        assert_eq!(debug(&count.rows), debug(&[vec![Value::Int(4)]]));
+        conn.close().await.unwrap();
+        writer.close().await.unwrap();
+
+        let conn = SqliteConnection::new(config_for(&path, &[(OPTION_READ_ONLY, "true")]))
+            .await
+            .unwrap();
+        let count = conn.query("SELECT count(*) FROM items", &[]).await.unwrap();
+        assert_eq!(debug(&count.rows), debug(&[vec![Value::Int(4)]]));
+    }
+
+    /// 値は、値の型で読む。パラメーターは`?`にバインドする（#528）
+    #[tokio::test]
+    async fn test_query_reads_each_value_by_its_type() {
+        let (_dir, path) = database_file().await;
+        let conn = SqliteConnection::new(config_for(&path, &[(OPTION_READ_ONLY, "true")]))
+            .await
+            .unwrap();
+        let result = conn
+            .query(
+                "SELECT id, name, price, data FROM items WHERE id = ?",
+                &[Value::Int(1)],
+            )
+            .await
+            .unwrap();
+        let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "name", "price", "data"]);
+        assert_eq!(
+            debug(&result.rows),
+            debug(&[vec![
+                Value::Int(1),
+                Value::String("a".to_string()),
+                Value::Float(1.5),
+                Value::Binary(vec![0x00, 0xff]),
+            ]])
+        );
+
+        // 行が無くても、列を返す
+        let empty = conn
+            .query("SELECT name FROM items WHERE id = 99", &[])
+            .await
+            .unwrap();
+        assert!(empty.rows.is_empty());
+        assert_eq!(empty.columns.len(), 1);
+    }
+
+    /// 既定（`allow_write = false`）では、ファイルを読み取り専用で開く。
+    /// 書き込みの接続は無く、`query()`で書こうとしてもSQLiteが断る（#528）
+    #[tokio::test]
+    async fn test_read_only_database_cannot_be_written() {
+        let (_dir, path) = database_file().await;
+        let conn = SqliteConnection::new(config_for(&path, &[(OPTION_READ_ONLY, "true")]))
+            .await
+            .unwrap();
+        let err = conn
+            .execute("DELETE FROM items", &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("read-only"), "{err}");
+        let err = conn
+            .query("DELETE FROM items RETURNING id", &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("readonly"), "{err}");
+        let count = conn.query("SELECT count(*) FROM items", &[]).await.unwrap();
+        assert_eq!(debug(&count.rows), debug(&[vec![Value::Int(3)]]));
+    }
+
+    /// `allow_write`なら書け、コミットする。`query()`は、書き込みを許しても
+    /// 読み取り専用の接続で読む（#528）
+    #[tokio::test]
+    async fn test_writable_database_commits_and_query_stays_read_only() {
+        let (_dir, path) = database_file().await;
+        let conn = SqliteConnection::new(config_for(&path, &[])).await.unwrap();
+        let done = conn
+            .execute(
+                "INSERT INTO items (name, price) VALUES (?, ?)",
+                &[Value::String("d".to_string()), Value::Float(9.0)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(done.rows_affected, 1);
+        assert_eq!(debug(&done.last_insert_id), debug(&Some(Value::Int(4))));
+        let err = conn
+            .query("UPDATE items SET price = 0 RETURNING id", &[])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("readonly"), "{err}");
+        let count = conn.query("SELECT count(*) FROM items", &[]).await.unwrap();
+        assert_eq!(debug(&count.rows), debug(&[vec![Value::Int(4)]]));
+    }
+
+    /// 行数・バイト数の上限で、残りの行は読まない（#528）
+    #[tokio::test]
+    async fn test_query_stops_at_the_row_and_byte_limits() {
+        let (_dir, path) = database_file().await;
+        let conn = SqliteConnection::new(config_for(
+            &path,
+            &[(OPTION_READ_ONLY, "true"), (OPTION_FETCH_LIMIT, "2")],
+        ))
+        .await
+        .unwrap();
+        let rows = conn.query("SELECT name FROM items", &[]).await.unwrap();
+        assert_eq!(rows.rows.len(), 2);
+
+        let conn = SqliteConnection::new(config_for(
+            &path,
+            &[(OPTION_READ_ONLY, "true"), (OPTION_BYTE_LIMIT, "1")],
+        ))
+        .await
+        .unwrap();
+        let rows = conn.query("SELECT name FROM items", &[]).await.unwrap();
+        assert_eq!(rows.rows.len(), 1);
+    }
+
+    /// 時間の上限を過ぎたSQLは、止めて時間切れのエラーにする。接続は、その
+    /// 後も使える（#528）
+    #[tokio::test]
+    async fn test_query_is_stopped_after_the_timeout() {
+        let mut config = create_test_config();
+        config.features.query_timeout = 1;
+        let conn = SqliteConnection::new(config).await.unwrap();
+        let started = Instant::now();
+        let err = conn
+            .query(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) \
+                 SELECT count(*) FROM n",
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DatabaseError::TimeoutError(_)), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let one = conn.query("SELECT 1", &[]).await.unwrap();
+        assert_eq!(debug(&one.rows), debug(&[vec![Value::Int(1)]]));
+    }
+
+    /// スキーマ: 列・主キー・外部キー・インデックス・ビュー。式を含む
+    /// インデックスは除く。表の名前はSQLに埋め込まない（#528）
+    #[tokio::test]
+    async fn test_schema_of_a_database_file() {
+        let (_dir, path) = database_file().await;
+        let conn = SqliteConnection::new(config_for(&path, &[(OPTION_READ_ONLY, "true")]))
+            .await
+            .unwrap();
+        let schema = conn.get_schema().await.unwrap();
+        let names: Vec<&str> = schema.tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["items", "owners"]);
+        let items = &schema.tables[0];
+        assert_eq!(items.primary_keys, ["id"]);
+        let id = &items.columns[0];
+        assert_eq!(
+            (id.name.as_str(), id.data_type.as_str(), id.nullable),
+            ("id", "INTEGER", false)
+        );
+        let name = items.columns.iter().find(|c| c.name == "name").unwrap();
+        assert!(!name.nullable);
+        assert_eq!(items.foreign_keys.len(), 1);
+        assert_eq!(items.foreign_keys[0].column, "owner_id");
+        assert_eq!(items.foreign_keys[0].referenced_table, "owners");
+        assert_eq!(items.foreign_keys[0].referenced_column, "id");
+        let indexes: Vec<&str> = items.indexes.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(indexes, ["items_name"]);
+        assert!(items.indexes[0].is_unique);
+        assert_eq!(schema.views.len(), 1);
+        assert_eq!(schema.views[0].name, "cheap");
+        assert!(schema.views[0].definition.contains("price < 2"));
+
+        let view = conn.get_table_schema("cheap").await.unwrap();
+        assert_eq!(view.columns.len(), 1);
+        // 名前は埋め込まないので、SQLとして読まれない
+        let err = conn
+            .get_table_schema("items); DROP TABLE items; --")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("table not found"), "{err}");
     }
 }

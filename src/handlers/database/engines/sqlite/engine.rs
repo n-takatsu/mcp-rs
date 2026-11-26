@@ -12,20 +12,27 @@ use crate::handlers::database::{
 use async_trait::async_trait;
 use chrono::Utc;
 
+use super::connection::{open_pools, SqlitePools};
 use super::SqliteConnection;
+use std::sync::Arc;
 
 /// SQLite Database Engine
 ///
-/// Main entry point for SQLite database operations
+/// Main entry point for SQLite database operations。プール（読み取りと書き込み）
+/// は、最初の接続で開き、後の接続で共有する（#528。MySQLと同じ）
 #[derive(Clone)]
 pub struct SqliteEngine {
     config: DatabaseConfig,
+    pools: Arc<tokio::sync::OnceCell<Arc<SqlitePools>>>,
 }
 
 impl SqliteEngine {
     /// Create a new SQLite engine
     pub async fn new(config: DatabaseConfig) -> Result<Self, DatabaseError> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            pools: Arc::new(tokio::sync::OnceCell::new()),
+        })
     }
 
     /// Get database config
@@ -44,8 +51,15 @@ impl DatabaseEngine for SqliteEngine {
         &self,
         config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        let connection = SqliteConnection::new(config.clone()).await?;
-        Ok(Box::new(connection))
+        let pools = self
+            .pools
+            .get_or_try_init(|| open_pools(config))
+            .await?
+            .clone();
+        Ok(Box::new(SqliteConnection::with_pools(
+            pools,
+            config.clone(),
+        )))
     }
 
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError> {
