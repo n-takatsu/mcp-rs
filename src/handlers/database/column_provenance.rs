@@ -212,6 +212,12 @@ const SERVER_SIDE_FUNCTIONS: &[&str] = &[
     // 権限が無くても切れる（PR #610のレビュー）
     "pg_terminate_backend",
     "pg_cancel_backend",
+    // SQLite: 共有ライブラリを読み込む（#528）。SQLiteの既定では使えない
+    // （mcp-rsは有効にしない）が、念のため
+    "load_extension",
+    // SQLite: FTS3の分割器の関数の場所を読み書きする（#528。古い版の
+    // 脆弱性の入り口。今の既定では無効）
+    "fts3_tokenizer",
 ];
 
 /// 名前がこれで始まる関数も断る（#597、PR #610のレビュー）
@@ -851,6 +857,33 @@ mod tests {
         ] {
             assert!(validate_single_query_statement(sql, &pg).is_err(), "{sql}");
         }
+        // SQLite（#528）。ATTACH・PRAGMA・VACUUMは、SELECTではないので断る
+        let sqlite = SQLiteDialect {};
+        for sql in [
+            "SELECT load_extension('/tmp/evil.so')",
+            "SELECT fts3_tokenizer('simple')",
+            "ATTACH DATABASE '/tmp/other.db' AS other",
+            "PRAGMA writable_schema = ON",
+            "VACUUM INTO '/tmp/copy.db'",
+        ] {
+            assert!(
+                validate_single_query_statement(sql, &sqlite).is_err(),
+                "{sql}"
+            );
+            assert!(
+                validate_single_write_statement(sql, &sqlite).is_err(),
+                "{sql}"
+            );
+        }
+        // 書き込みの道具でも、関数の名前で断る（文の種類ではなく。PR #798のレビュー）
+        for sql in [
+            "INSERT INTO users (id) VALUES (load_extension('/tmp/evil.so'))",
+            "UPDATE users SET name = fts3_tokenizer('simple')",
+        ] {
+            let err = validate_single_write_statement(sql, &sqlite).unwrap_err();
+            assert!(err.to_string().contains("()"), "{sql}: {err}");
+        }
+        assert!(validate_single_query_statement("SELECT sqlite_version()", &sqlite).is_ok());
         // ふつうの引用符つきの名前・U&の文字列は通す
         assert!(validate_single_query_statement(r#"SELECT "id" FROM users"#, &pg).is_ok());
         assert!(validate_single_query_statement("SELECT 1 & 2", &pg).is_ok());

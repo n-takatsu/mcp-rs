@@ -243,6 +243,7 @@ impl DatabaseHandler {
         let engine_id = match database_type {
             DatabaseType::MySQL => "mysql",
             DatabaseType::MariaDB => "mariadb",
+            DatabaseType::SQLite => "sqlite",
             _ => "postgresql",
         };
         handler
@@ -272,7 +273,7 @@ impl DatabaseHandler {
         settings: &crate::config::DatabaseSettings,
     ) -> Result<(DatabaseType, DatabaseConfig), String> {
         use crate::handlers::database::engines::{
-            OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
+            OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_READ_ONLY, OPTION_SSL_ROOT_CERT,
         };
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
@@ -291,6 +292,16 @@ impl DatabaseHandler {
             } else {
                 DatabaseType::MySQL
             }
+        } else if settings.is_sqlite() {
+            // SQLite（#528）。ファイルは作らないので、無ければ起動の前に知らせる
+            // （`mcp-rs check`でも）
+            let path = settings.database.trim();
+            if !std::path::Path::new(path).is_file() {
+                return Err(format!(
+                    "the SQLite database file {path} was not found (mcp-rs does not create it)"
+                ));
+            }
+            DatabaseType::SQLite
         } else {
             DatabaseType::PostgreSQL
         };
@@ -306,10 +317,20 @@ impl DatabaseHandler {
                 options.insert(OPTION_SSL_ROOT_CERT.to_string(), cert.to_string());
             }
         }
+        // 書き込みを許さなければ、書き込みの接続を作らない（#528。SQLiteは
+        // ファイルを読み取り専用でだけ開く）
+        if !settings.allow_write() {
+            options.insert(OPTION_READ_ONLY.to_string(), "true".to_string());
+        }
         let config = DatabaseConfig {
             database_type: database_type.clone(),
             connection: ConnectionConfig {
-                host: settings.host().to_string(),
+                // SQLiteは、ファイルのパスを`host`に入れる（エンジンの決まり）
+                host: if settings.is_sqlite() {
+                    settings.database.trim().to_string()
+                } else {
+                    settings.host().to_string()
+                },
                 port: settings.port(),
                 database: settings.database.clone(),
                 username: settings.username.clone(),
@@ -349,6 +370,8 @@ impl DatabaseHandler {
                 mysql::check_ssl_root_cert(&config.connection)?;
                 Ok(mysql::weak_tls_warning(&config.connection))
             }
+            // SQLiteは、通信しない（#528）
+            DatabaseType::SQLite => Ok(None),
             _ => {
                 // 環境変数（`PGSSLMODE`等）を反映した後の値で確かめる
                 use crate::handlers::database::engines::postgresql::pg_connection;
@@ -1070,12 +1093,16 @@ impl McpHandler for DatabaseHandler {
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
         let database_type = &self.tool_options.database_type;
         let mysql = matches!(database_type, DatabaseType::MySQL | DatabaseType::MariaDB);
+        let sqlite = *database_type == DatabaseType::SQLite;
         let engine_name = if *database_type == DatabaseType::MariaDB {
             "MariaDB"
         } else {
             "MySQL"
         };
-        let params_description = if mysql {
+        let params_description = if sqlite {
+            // SQLite（#528）は`?`。値は、渡した型（INTEGER・REAL・TEXT）のまま入る
+            "Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). Numbers are bound as INTEGER or REAL, booleans as 0 or 1, and strings as TEXT, so numbers, text and null returned by execute_query can be passed back as they are; infinite REAL values are returned as the strings \"Infinity\" and \"-Infinity\", which are bound as TEXT, so pass 9e999 or -9e999 in the SQL instead. Binary values (BLOB) are returned as base64; to pass one, pass it as hex text and use unhex(?) in the SQL".to_string()
+        } else if mysql {
             // MySQL・MariaDB（#527）は`?`。文字列は、データベースが列の型に
             // 変換する
             format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL as text, JSON as a JSON object or array on MySQL and as text on MariaDB) can be passed back as they are; a JSON object or array is sent as its JSON text. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
@@ -1097,11 +1124,15 @@ impl McpHandler for DatabaseHandler {
         });
         let cast_hint = if mysql {
             "cast such columns to text with CAST(column AS CHAR)"
+        } else if sqlite {
+            "cast such columns to text with CAST(column AS TEXT)"
         } else {
             "cast such columns to text"
         };
         let schema_scope = if mysql {
             "the configured database"
+        } else if sqlite {
+            "the configured database file, with its views"
         } else {
             "schema public"
         };
@@ -1165,7 +1196,13 @@ impl McpHandler for DatabaseHandler {
                 title: Some("Change data with SQL".to_string()),
                 description: format!(
                     "Run one INSERT, UPDATE, or DELETE statement on the configured database and commit it. Returns the number of affected rows{}. Other statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, ...) are refused.",
-                    if mysql { " and the AUTO_INCREMENT id of an inserted row (last_insert_id)" } else { "" }
+                    if mysql {
+                        " and the AUTO_INCREMENT id of an inserted row (last_insert_id)"
+                    } else if sqlite {
+                        " and the rowid of an inserted row (last_insert_id)"
+                    } else {
+                        ""
+                    }
                 ),
                 input_schema: json!({
                     "type": "object",
@@ -1386,6 +1423,140 @@ mod tests {
         assert_eq!(message, r#"invalid input syntax for type integer: "…""#);
         let long = redact_error_for_audit(&"x".repeat(2000));
         assert_eq!(long.chars().count(), 501);
+    }
+
+    /// SQLiteのデータベースのファイル（表`notes`に3行）を作り、その
+    /// `[database]`を返す（#528）
+    async fn sqlite_settings(
+        allow_write: bool,
+    ) -> (tempfile::TempDir, crate::config::DatabaseSettings) {
+        use sqlx::Connection;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.db");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let mut conn = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+            "INSERT INTO notes (body) VALUES ('a'), ('b'), ('c')",
+        ] {
+            sqlx::query(sql).execute(&mut conn).await.unwrap();
+        }
+        conn.close().await.unwrap();
+        let settings = crate::config::DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: path.to_string_lossy().into_owned(),
+            allow_write: Some(allow_write),
+            max_rows: Some(2),
+            ..Default::default()
+        };
+        (dir, settings)
+    }
+
+    async fn call(
+        handler: &DatabaseHandler,
+        name: &str,
+        args: JsonValue,
+    ) -> Result<JsonValue, McpError> {
+        let arguments = serde_json::from_value(args).unwrap();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: name.to_string(),
+                arguments: Some(arguments),
+            })
+            .await?;
+        Ok(serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap())
+    }
+
+    /// `engine = "sqlite"`の`[database]`で、読み取り・スキーマ・行数の上限を
+    /// 使える。書き込みのツールは出さない（#528）
+    #[tokio::test]
+    async fn test_sqlite_database_from_settings() {
+        let (_dir, settings) = sqlite_settings(false).await;
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        assert_eq!(
+            handler.status().await.unwrap(),
+            format!("sqlite {} (read-only)", settings.database)
+        );
+        let tools = handler.list_tools().await.unwrap();
+        assert!(tools.iter().all(|t| t.name != "execute_command"));
+
+        let result = call(
+            &handler,
+            "execute_query",
+            json!({"sql": "SELECT body FROM notes WHERE id >= ? ORDER BY id", "params": [1]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["rows"], json!([["a"], ["b"]]));
+        assert_eq!(result["truncated"], true);
+
+        let schema = call(&handler, "get_schema", json!({})).await.unwrap();
+        assert_eq!(schema["tables"][0]["name"], "notes", "{schema}");
+
+        // SELECTでないものは、ツールが断る
+        assert!(call(
+            &handler,
+            "execute_query",
+            json!({"sql": "DELETE FROM notes"})
+        )
+        .await
+        .is_err());
+        let count = call(
+            &handler,
+            "execute_query",
+            json!({"sql": "SELECT count(*) FROM notes"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count["rows"], json!([[3]]));
+    }
+
+    /// `allow_write = true`なら、`execute_command`で書け、コミットする（#528）
+    #[tokio::test]
+    async fn test_sqlite_database_with_allow_write() {
+        let (_dir, settings) = sqlite_settings(true).await;
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        let done = call(
+            &handler,
+            "execute_command",
+            json!({"sql": "INSERT INTO notes (body) VALUES (?)", "params": ["d"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+        assert_eq!(done["last_insert_id"], 4, "{done}");
+        let count = call(
+            &handler,
+            "execute_query",
+            json!({"sql": "SELECT count(*) FROM notes"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count["rows"], json!([[4]]));
+    }
+
+    /// 無いファイルは作らず、起動の前（`mcp-rs check`でも）に知らせる（#528）
+    #[tokio::test]
+    async fn test_sqlite_missing_file_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.db");
+        let settings = crate::config::DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let err = DatabaseHandler::check_settings(&settings).unwrap_err();
+        assert!(err.contains("was not found"), "{err}");
+        let err = DatabaseHandler::from_settings(&settings)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.contains("was not found"), "{err}");
+        assert!(!path.exists());
     }
 
     /// MySQL・MariaDBでは、`params`にJSONのオブジェクト・配列も渡せる
