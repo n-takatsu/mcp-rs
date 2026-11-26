@@ -1,0 +1,40 @@
+# mcp-rs: read a MongoDB database (#530, v0.31.0 and later)
+#
+# Copy this section into your mcp-rs configuration file. MCP clients then get
+# the tools find, aggregate, count_documents and get_schema (read-only).
+# See https://n-takatsu.github.io/mcp-rs/docs/database/#mongodb
+#
+# Connect with a user that can only read what the AI client should see:
+#   db.createUser({user: "mcp_reader", pwd: "...", roles: [{role: "read", db: "app"}]})
+
+[database]
+engine = "mongodb"
+host = "localhost"
+port = 27017
+# The database name
+database = "app"
+# Leave username out to connect without signing in. With username, a password
+# (password or keyring) is needed
+username = "mcp_reader"
+# Read from the environment when mcp-rs starts. If it is not set, mcp-rs
+# starts without the database tools and shows the reason in mcp_rs_status
+password = "${MCP_MONGODB_PASSWORD}"
+# The database where the user was created (default admin)
+auth_source = "admin"
+# disable, require, verify-full. Required when host is not local: use
+# verify-full (TLS, checking the certificate) for a server on another machine
+ssl_mode = "disable"
+# CA that signed the server certificate, for verify-full with a private CA
+# (relative to this file's folder)
+# ssl_root_cert = "certs/ca.pem"
+
+# true also offers insert_documents, update_documents and delete_documents
+allow_write = false
+# Documents (and collections in get_schema) returned at most
+max_rows = 1000
+# Size of a result at most (bytes, about 10 MB)
+max_result_bytes = 10485760
+# Time limit of one operation (maxTimeMS)
+query_timeout_seconds = 30
+# Connections in the pool at most
+max_connections = 5

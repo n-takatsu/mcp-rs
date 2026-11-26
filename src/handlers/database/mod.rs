@@ -5,6 +5,8 @@
 pub mod column_provenance;
 pub mod engine;
 pub mod handler;
+#[cfg(feature = "mongodb-backend")]
+pub mod mongodb_handler;
 pub mod pool;
 #[cfg(feature = "redis-backend")]
 pub mod redis_handler;
@@ -26,12 +28,26 @@ pub mod engines;
 // pub mod tests; // → tests/database/handler_tests.rs
 // 残りのテストファイルも整理予定
 
-/// `[database]`から、MCPのハンドラーを作る（#529）。Redis（`engine = "redis"`）は
+/// `[database]`から、MCPのハンドラーを作る（#529・#530）。MongoDB（`engine = "mongodb"`）も、それぞれのツールのハンドラー。Redis（`engine = "redis"`）は
 /// Redisのツールのハンドラー、ほかはSQLのツールのハンドラー
 pub async fn handler_from_settings(
     settings: &crate::config::DatabaseSettings,
     audit_logger: std::sync::Arc<crate::security::AuditLogger>,
 ) -> Result<std::sync::Arc<dyn crate::mcp::McpHandler>, String> {
+    if settings.is_mongodb() {
+        #[cfg(feature = "mongodb-backend")]
+        {
+            let handler = mongodb_handler::MongoHandler::from_settings(settings)
+                .await?
+                .with_audit_logger(audit_logger);
+            return Ok(std::sync::Arc::new(handler));
+        }
+        #[cfg(not(feature = "mongodb-backend"))]
+        {
+            let _ = audit_logger;
+            return Err(MONGODB_NOT_BUILT.to_string());
+        }
+    }
     if settings.is_redis() {
         #[cfg(feature = "redis-backend")]
         {
@@ -57,6 +73,15 @@ pub async fn handler_from_settings(
 pub fn check_settings(
     settings: &crate::config::DatabaseSettings,
 ) -> Result<Option<String>, String> {
+    if settings.is_mongodb() {
+        #[cfg(feature = "mongodb-backend")]
+        return mongodb_handler::check_settings(settings);
+        #[cfg(not(feature = "mongodb-backend"))]
+        {
+            settings.validate()?;
+            return Err(MONGODB_NOT_BUILT.to_string());
+        }
+    }
     if settings.is_redis() {
         #[cfg(feature = "redis-backend")]
         return redis_handler::check_settings(settings);
@@ -68,6 +93,11 @@ pub fn check_settings(
     }
     DatabaseHandler::check_settings(settings)
 }
+
+/// `mongodb-backend`無しでビルドしたmcp-rsで、MongoDBを選んだときの理由
+#[cfg(not(feature = "mongodb-backend"))]
+const MONGODB_NOT_BUILT: &str =
+    "this build of mcp-rs does not include MongoDB support (build it with --features mongodb-backend)";
 
 /// `redis-backend`無しでビルドしたmcp-rsで、Redisを選んだときの理由
 #[cfg(not(feature = "redis-backend"))]

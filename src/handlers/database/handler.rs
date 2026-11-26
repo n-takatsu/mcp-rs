@@ -280,11 +280,11 @@ impl DatabaseHandler {
         settings.validate()?;
         // Redis（#529）は、SQLのツールでは使わない（`handler_from_settings`が
         // Redisのハンドラーを作る）
-        if settings.is_redis() {
-            return Err(
-                "engine = \"redis\" is served by the Redis handler (handlers::database::handler_from_settings), not by the SQL tools"
-                    .to_string(),
-            );
+        if settings.is_redis() || settings.is_mongodb() {
+            return Err(format!(
+                "engine = \"{}\" is served by its own handler (handlers::database::handler_from_settings), not by the SQL tools",
+                settings.engine
+            ));
         }
         // MySQL・MariaDB（#527）。`mysql-backend`無しでビルドしたmcp-rsでは
         // 使えない

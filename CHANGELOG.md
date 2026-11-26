@@ -17,6 +17,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
   v0.30.0は、マージの後に手で実行して登録した。README・導入ガイドに、
   公式のMCP Registryに載っていることを書いた
+- `[database]`で、MongoDBを使えるようにした（`engine = "mongodb"`、#530）。MongoDBは
+  SQLではないので、操作ごとのツールを出す: `find`・`aggregate`・`count_documents`・
+  `get_schema`（コレクションの一覧・おおよその数・数件から読んだフィールドの
+  名前と型）。`allow_write = true`のときだけ`insert_documents`・`update_documents`・
+  `delete_documents`
+  - 書き込みの段（`$out`・`$merge`）と、JavaScriptを動かす演算子（`$where`・
+    `$function`・`$accumulator`）は、どのツールでも断る（フィルター等の中も見る）。
+    `system.`のコレクションは使えない。コレクション・インデックスの作成・削除は
+    しない
+  - `update_documents`・`delete_documents`は、空のフィルターを断る。置き換えの更新
+    （演算子の無いドキュメント）も断る。`insert_documents`は`max_rows`件まで
+  - 返す量の上限: `find`は`max_rows`件まで、`aggregate`には`$limit`を足す。
+    少しずつ受け取り、`max_result_bytes`に達したら残りを読まずにカーソルを閉じる
+  - 時間の上限は`maxTimeMS`で送り、こちらも2秒後に待つのをやめる
+  - 値はExtended JSON（relaxed）で返し、フィルターでもExtended JSONを受け付ける
+  - `database`はデータベースの名前、`username`は省略できる（認証しない。書いたら
+    パスワードが要る）、`auth_source`（新しい項目。既定は`admin`）。
+    `ssl_mode`は`disable`・`require`・`verify-full`（ループバック以外では必須）
+  - 監査ログには、ツールとコレクションの名前だけを書く
+  - 既定のビルドに含めた。`mongodb`クレートは、`mongodb+srv://`のためのDNSを
+    読む機能を外した（1つのホストにつなぐ）
+  - 設定の例: `configs/database/mongodb.toml`。CIに、MongoDBのサービスと、実際の
+    MongoDBでツールを確かめるテスト（`tests/database_mongodb_tools_test.rs`）を足した
 - `[database]`で、Redisを使えるようにした（`engine = "redis"`、#529）。RedisはSQLでは
   ないので、Redis専用のツールを出す: `redis_command`（読み取りのコマンドを1つ）・
   `scan_keys`（`SCAN`で鍵を一覧）・`get_schema`（版・鍵の数・`INFO keyspace`）。
