@@ -479,6 +479,13 @@ impl Setup<'_> {
         }
 
         // 1・2. 資格情報と設定ファイル
+        // 質問の前の設定ファイルの中身（無ければ`None`）。置き換えると答えた
+        // 後も、質問の間にほかで編集・作成されていれば、書かずに止める（#785）
+        let config_before = if use_previous_as_is {
+            None
+        } else {
+            read_config_state(&self.config_path)?
+        };
         let write_config = if use_previous_as_is {
             false
         } else if self.config_path.exists() {
@@ -534,7 +541,8 @@ impl Setup<'_> {
             // すべてこの設定ファイルが指す
             let backup = {
                 let mut unwritten = self.unwritten_entries.lock();
-                let backup = write_config_file(&self.config_path, &content)?;
+                let backup =
+                    write_config_file_if_unchanged(&self.config_path, &content, &config_before)?;
                 unwritten.clear();
                 backup
             };
@@ -3428,6 +3436,32 @@ pub(crate) fn append_to_config_file(path: &Path, section: &str) -> io::Result<Pa
     content.push_str(section);
     write_atomically(path, &content, true)?;
     Ok(backup)
+}
+
+/// 設定ファイルの今の中身。無ければ`None`（#785）。質問の前と書く直前で
+/// 比べ、質問の間の編集・作成を見つけるため
+fn read_config_state(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// `before`（質問の前の`read_config_state`）から変わっていなければ、
+/// `write_config_file`で書く（#785）。質問の間に編集・作成・削除されて
+/// いれば、書かずにエラー（編集を黙って置き換えない）
+fn write_config_file_if_unchanged(
+    path: &Path,
+    content: &str,
+    before: &Option<Vec<u8>>,
+) -> io::Result<Option<PathBuf>> {
+    if read_config_state(path)? != *before {
+        return Err(io::Error::other(
+            "the config file was changed while mcp-rs init was asking, so it was not replaced. Run mcp-rs init again",
+        ));
+    }
+    write_config_file(path, content)
 }
 
 /// `path`に`content`を書く。フォルダが無ければ作る。前のファイルがあれば、
@@ -7495,6 +7529,78 @@ allow_write = true
         });
         assert_eq!(database_entry(&store, "app@db.example.com").unwrap(), None);
         assert!(said[0].contains("Deleted the credentials named 'app@db.example.com'"));
+    }
+
+    /// 設定ファイルを置き換えると答えた後、質問の間にほかで編集・作成・
+    /// 削除されたら、書かずに止める（#785）
+    #[test]
+    fn test_new_config_is_not_written_over_changes_made_while_asking() {
+        let error = |result: io::Result<Option<PathBuf>>| result.unwrap_err().to_string();
+        let (dir, path) = config_in_temp(WORDPRESS_ONLY_CONFIG);
+        let before = read_config_state(&path).unwrap();
+
+        // 変わっていなければ書き、前のファイルを控えに残す
+        let backup = write_config_file_if_unchanged(
+            &path,
+            "[server]
+",
+            &before,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[server]
+"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            WORDPRESS_ONLY_CONFIG
+        );
+
+        // 質問の間に編集された
+        let before = read_config_state(&path).unwrap();
+        std::fs::write(
+            &path,
+            "[server]
+log_level = \"warn\"
+",
+        )
+        .unwrap();
+        let err = error(write_config_file_if_unchanged(&path, "new", &before));
+        assert!(
+            err.contains("changed while mcp-rs init was asking"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[server]
+log_level = \"warn\"
+"
+        );
+
+        // 質問の間に消された
+        let before = read_config_state(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        error(write_config_file_if_unchanged(&path, "new", &before));
+        assert!(!path.exists());
+
+        // 無かったファイルが、質問の間に作られた
+        let created = dir.path().join("created.toml");
+        let before = read_config_state(&created).unwrap();
+        assert_eq!(before, None);
+        std::fs::write(&created, "mine").unwrap();
+        error(write_config_file_if_unchanged(&created, "new", &before));
+        assert_eq!(std::fs::read_to_string(&created).unwrap(), "mine");
+
+        // 無いままなら、新しく書く（控えは無い）
+        let fresh = dir.path().join("fresh.toml");
+        let before = read_config_state(&fresh).unwrap();
+        assert_eq!(
+            write_config_file_if_unchanged(&fresh, "new", &before).unwrap(),
+            None
+        );
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "new");
     }
 
     /// 書けた新しい項目は、消すものから外れる（#779）
