@@ -423,10 +423,9 @@ async fn register_database(
     settings: &mcp_rs::config::DatabaseSettings,
     audit_logger: Arc<mcp_rs::security::AuditLogger>,
 ) -> Result<(), String> {
-    let handler = mcp_rs::handlers::database::handler::DatabaseHandler::from_settings(settings)
-        .await?
-        .with_audit_logger(audit_logger);
-    server.add_handler("database".to_string(), Arc::new(handler));
+    // Redis（#529）は、Redisのツールのハンドラーにする
+    let handler = mcp_rs::handlers::database::handler_from_settings(settings, audit_logger).await?;
+    server.add_handler("database".to_string(), handler);
     Ok(())
 }
 

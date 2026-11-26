@@ -1,0 +1,36 @@
+# mcp-rs: read a Redis database (#529, v0.31.0 and later)
+#
+# Copy this section into your mcp-rs configuration file. MCP clients then get
+# the tools redis_command, scan_keys and get_schema (read-only).
+# See https://n-takatsu.github.io/mcp-rs/docs/database/#redis
+#
+# Connect with an ACL user that can only read what the AI client should see:
+#   ACL SETUSER mcp_reader on >... ~app:* +@read -@dangerous
+
+[database]
+engine = "redis"
+host = "localhost"
+port = 6379
+# The database number (default 0)
+database = "0"
+# The ACL user. Leave it out for the default user. To keep the password in the
+# OS credential store (keyring), write the user name, for example "default"
+username = "mcp_reader"
+# Read from the environment when mcp-rs starts. If it is not set, mcp-rs
+# starts without the database tools and shows the reason in mcp_rs_status
+password = "${MCP_REDIS_PASSWORD}"
+# disable, require, verify-full. Required when host is not local: use
+# verify-full (TLS, checking the certificate) for a server on another machine
+ssl_mode = "disable"
+# CA that signed the server certificate, for verify-full with a private CA
+# (relative to this file's folder). Only this CA is then trusted
+# ssl_root_cert = "certs/ca.pem"
+
+# true also offers redis_write_command (SET, DEL, HSET, EXPIRE, ... one at a time)
+allow_write = false
+# Items (list elements, hash fields, keys, ...) returned at most
+max_rows = 1000
+# Size of a result at most (bytes, about 10 MB)
+max_result_bytes = 10485760
+# Time to wait for the reply to one command
+query_timeout_seconds = 30

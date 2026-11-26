@@ -89,7 +89,7 @@ impl RedisConnection {
 
         // Get multiplexed connection
         let connection = client
-            .get_multiplexed_tokio_connection()
+            .get_multiplexed_async_connection()
             .await
             .map_err(|e| {
                 DatabaseError::ConnectionFailed(format!("Failed to connect to Redis: {}", e))
@@ -549,7 +549,7 @@ impl DatabaseConnection for RedisConnection {
         // Create a new connection for the transaction
         let conn = self
             .client
-            .get_multiplexed_tokio_connection()
+            .get_multiplexed_async_connection()
             .await
             .map_err(|e| {
                 DatabaseError::TransactionFailed(format!(
@@ -691,8 +691,8 @@ mod tests {
         for password in ["plain", "p@ss", "p%40ss", "a/b:c#d?e"] {
             let url = redis_url(&config(Some(password), false));
             let info = redis::IntoConnectionInfo::into_connection_info(url.as_str()).unwrap();
-            assert_eq!(info.redis.password.as_deref(), Some(password), "{url}");
-            assert_eq!(info.redis.db, 2, "{url}");
+            assert_eq!(info.redis_settings().password(), Some(password), "{url}");
+            assert_eq!(info.redis_settings().db(), 2, "{url}");
         }
     }
 

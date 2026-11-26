@@ -88,8 +88,10 @@ pub struct AuditLogSettings {
 }
 
 /// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）、
-/// SQLite（#528）。SQLiteは、`database`にファイルのパスを書き、`host`・`port`・
-/// `username`・`password`・`keyring`・`ssl_mode`・`ssl_root_cert`は書かない。
+/// SQLite（#528）、Redis（#529）。SQLiteは、`database`にファイルのパスを書き、
+/// `host`・`port`・`username`・`password`・`keyring`・`ssl_mode`・`ssl_root_cert`は
+/// 書かない。Redisは、`database`がデータベースの番号（省略時は0）で、
+/// `username`は省略できる（既定のユーザー）。
 ///
 /// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
 /// 実行し、書き込みのツール（`execute_command`）は出さない。
@@ -99,16 +101,20 @@ pub struct AuditLogSettings {
 pub struct DatabaseSettings {
     /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
     pub enabled: Option<bool>,
-    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）・`"sqlite"`（#528）
+    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）・`"sqlite"`（#528）・
+    /// `"redis"`（#529）
     pub engine: String,
     /// 省略時は`localhost`
     pub host: Option<String>,
     /// 省略時は、PostgreSQLは5432、MySQL・MariaDBは3306
     pub port: Option<u16>,
     /// データベースの名前。SQLiteは、データベースのファイルのパス（#528）。
-    /// 相対パスは設定ファイルのフォルダを基準にする
+    /// 相対パスは設定ファイルのフォルダを基準にする。Redisは、データベースの
+    /// 番号（#529。省略時は0）
+    #[serde(default)]
     pub database: String,
-    /// SQLiteでは書かない（#528）。ほかのエンジンでは必須
+    /// SQLiteでは書かない（#528）。Redisでは省略できる（#529。既定の
+    /// ユーザー）。ほかのエンジンでは必須
     #[serde(default)]
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
@@ -181,8 +187,13 @@ impl DatabaseSettings {
     }
 
     pub fn port(&self) -> u16 {
-        self.port
-            .unwrap_or(if self.is_mysql() { 3306 } else { 5432 })
+        self.port.unwrap_or(if self.is_mysql() {
+            3306
+        } else if self.is_redis() {
+            6379
+        } else {
+            5432
+        })
     }
 
     /// `engine = "mysql"`か`"mariadb"`か（#527）。どちらも同じ実装・
@@ -199,6 +210,22 @@ impl DatabaseSettings {
     /// `engine = "sqlite"`か（#528）。`database`はファイルのパス
     pub fn is_sqlite(&self) -> bool {
         self.engine.eq_ignore_ascii_case("sqlite")
+    }
+
+    /// `engine = "redis"`か（#529）。`database`はデータベースの番号
+    pub fn is_redis(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("redis")
+    }
+
+    /// Redisのデータベースの番号（#529）。`database`を省略すれば0。
+    /// 数でなければ`None`
+    pub fn redis_database(&self) -> Option<u16> {
+        let database = self.database.trim();
+        if database.is_empty() {
+            Some(0)
+        } else {
+            database.parse().ok()
+        }
     }
 
     pub fn allow_write(&self) -> bool {
@@ -262,6 +289,22 @@ impl DatabaseSettings {
         if self.is_sqlite() {
             return format!("{} {} ({})", self.engine, self.database, access);
         }
+        if self.is_redis() {
+            let user = if self.username.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{}@", self.username)
+            };
+            return format!(
+                "{} {}{}:{}/{} ({})",
+                self.engine,
+                user,
+                self.host(),
+                self.port(),
+                self.redis_database().unwrap_or(0),
+                access
+            );
+        }
         format!(
             "{} {}@{}:{}/{} ({})",
             self.engine,
@@ -275,15 +318,21 @@ impl DatabaseSettings {
 
     /// 書いた値を確かめる。起動しない理由を返す
     pub fn validate(&self) -> Result<(), String> {
-        if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() && !self.is_sqlite()
+        if !self.engine.eq_ignore_ascii_case("postgresql")
+            && !self.is_mysql()
+            && !self.is_sqlite()
+            && !self.is_redis()
         {
             return Err(format!(
-                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\", \"sqlite\")",
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\", \"sqlite\", \"redis\")",
                 self.engine
             ));
         }
         if self.is_sqlite() {
             return self.validate_sqlite();
+        }
+        if self.is_redis() {
+            return self.validate_redis();
         }
         if self.database.trim().is_empty() {
             return Err("database.database is empty".to_string());
@@ -325,6 +374,38 @@ impl DatabaseSettings {
                         .to_string(),
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Redisの`[database]`を確かめる（#529）。`database`はデータベースの番号、
+    /// `ssl_mode`は`disable`・`require`・`verify-full`。`ssl_root_cert`は
+    /// `verify-full`のときだけ使う
+    fn validate_redis(&self) -> Result<(), String> {
+        if self.redis_database().is_none() {
+            return Err(format!(
+                "database.database = \"{}\" is not a Redis database number (for engine = \"redis\", write a number such as 0, or leave it out)",
+                self.database.trim()
+            ));
+        }
+        const MODES: &[&str] = &["disable", "require", "verify-full"];
+        if let Some(mode) = &self.ssl_mode {
+            if !MODES.contains(&mode.as_str()) {
+                return Err(format!(
+                    "database.ssl_mode = \"{mode}\" is not valid for Redis (use one of: {})",
+                    MODES.join(", ")
+                ));
+            }
+        }
+        let has_root_cert = self
+            .ssl_root_cert
+            .as_deref()
+            .is_some_and(|cert| !cert.trim().is_empty());
+        if has_root_cert && self.ssl_mode.as_deref() != Some("verify-full") {
+            return Err(
+                "database.ssl_root_cert is used only with ssl_mode = \"verify-full\" for Redis"
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -3268,6 +3349,68 @@ start_timeout_seconds = 300
         ] {
             let err = invalid.validate().unwrap_err();
             assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    /// Redisの`[database]`（#529）。`database`はデータベースの番号（省略時は0）、
+    /// `username`は省略できる。`ssl_mode`は`disable`・`require`・`verify-full`
+    #[test]
+    fn test_redis_database_settings() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[database]\nengine = \"redis\"\nhost = \"localhost\"\n",
+        )
+        .unwrap();
+        let db = config.database.unwrap();
+        assert!(db.is_redis());
+        assert!(db.validate().is_ok());
+        assert_eq!(db.port(), 6379);
+        assert_eq!(db.redis_database(), Some(0));
+        assert_eq!(db.describe(), "redis localhost:6379/0 (read-only)");
+        let with_user = DatabaseSettings {
+            engine: "redis".to_string(),
+            database: "3".to_string(),
+            username: "reader".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            with_user.describe(),
+            "redis reader@localhost:6379/3 (read-only)"
+        );
+        for (invalid, expected) in [
+            (
+                DatabaseSettings {
+                    database: "app".to_string(),
+                    ..with_user.clone()
+                },
+                "not a Redis database number",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("prefer".to_string()),
+                    ..with_user.clone()
+                },
+                "not valid for Redis",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("require".to_string()),
+                    ssl_root_cert: Some("ca.pem".to_string()),
+                    ..with_user.clone()
+                },
+                "only with ssl_mode",
+            ),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/redis.toml");
+        if let Ok(example) = std::fs::read_to_string(&path) {
+            let config: McpConfig =
+                toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
+            let example = config.database.unwrap();
+            assert!(example.is_redis());
+            assert!(example.validate().is_ok());
         }
     }
 
