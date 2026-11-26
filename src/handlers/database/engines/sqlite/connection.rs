@@ -170,9 +170,9 @@ pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePool
 }
 
 /// プールの開き方を決める設定（ファイル・書き込みを許すか・接続を待つ時間・
-/// ロックを待つ時間）。エンジンは、同じ設定の接続にだけプールを共有する
+/// ロックを待つ時間・接続の数の上限）。エンジンは、同じ設定の接続にだけプールを共有する
 /// （PR #798のレビュー）
-pub(crate) type PoolsKey = (String, bool, u32, u32);
+pub(crate) type PoolsKey = (String, bool, u32, u32, u32);
 
 pub(crate) fn pools_key(config: &DatabaseConfig) -> PoolsKey {
     (
@@ -184,6 +184,7 @@ pub(crate) fn pools_key(config: &DatabaseConfig) -> PoolsKey {
             .is_some_and(|v| v == "true"),
         config.connection.timeout_seconds,
         config.features.query_timeout,
+        config.pool.max_connections,
     )
 }
 
