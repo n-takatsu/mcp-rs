@@ -831,7 +831,8 @@ impl DatabaseHandler {
     }
 
     /// SELECTの実行計画を返す（#646）。SQLは、`execute_query`と同じ検査を
-    /// 通す。実行はしない（`ANALYZE`を付けない）ので、行は読まない。計画が
+    /// 通す。実行はしない（`ANALYZE`を付けない）。データベースが計画を作る
+    /// ために、行を少し読むことはある。`max_rows`は当てはめない。計画が
     /// `max_result_bytes`を超えるなら、切らずに断る（切るとJSONが壊れる）
     async fn handle_explain_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
         let CheckedRead {
@@ -1275,7 +1276,8 @@ impl McpHandler for DatabaseHandler {
                 title: Some("Show the plan of a SQL query".to_string()),
                 description: format!(
                     "Show how the configured database would run one SELECT statement, without running it \
-                     ({explain_statement}; never EXPLAIN ANALYZE). Use it to see why a query is slow and \
+                     ({explain_statement}; never EXPLAIN ANALYZE; the database may still read a few rows to make the plan). \
+                     Use it to see why a query is slow and \
                      whether it uses an index. The statement passes the same checks as execute_query, and \
                      the plan is read in a read-only transaction that is rolled back. {plan_shape}"
                 ),
@@ -1702,6 +1704,25 @@ mod tests {
             error.contains("explain_query only supports SELECT"),
             "{error}"
         );
+        // 計画は、`max_rows`（2）で切らずに、全部返す（PR #801のレビュー）
+        let result = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT body FROM notes UNION SELECT body FROM notes UNION SELECT body FROM notes"}),
+        )
+        .await
+        .unwrap();
+        let steps = result["plan"].as_array().unwrap();
+        assert!(steps.len() > 3, "{result}");
+        assert!(
+            steps
+                .iter()
+                .filter(|s| s["detail"].as_str().unwrap().contains("SCAN"))
+                .count()
+                >= 3,
+            "{result}"
+        );
+
         // 無い表は、データベースのエラー
         assert!(call(
             &handler,

@@ -165,7 +165,7 @@ Write the statement as for `execute_query`, without `EXPLAIN` in front: mcp-rs a
 | MySQL, MariaDB | `EXPLAIN FORMAT=JSON` | The JSON that the server returns (`query_block`, …). MySQL and MariaDB name some fields differently. To explain a statement that reads a view, the user also needs the `SHOW VIEW` privilege on it |
 | SQLite | `EXPLAIN QUERY PLAN` | A list of steps, each with `id`, `parent` (the `id` of the step it belongs to, `0` for the top) and `detail` |
 
-- mcp-rs never sends `EXPLAIN ANALYZE`, so the statement is not run and no rows are read. Costs and row counts in the plan are the estimates of the database
+- mcp-rs never sends `EXPLAIN ANALYZE`, so the statement is not run. The database may still read some rows to make the plan (MySQL, for example, reads the row when a primary key is compared with a constant), so a call is not always free of reads. Costs and row counts in the plan are the estimates of the database
 - The statement passes the same checks as for `execute_query` (a single `SELECT`, no writes inside `WITH`, no row locks, none of the refused functions), and the plan is read in a read-only transaction that is rolled back
 - The plan is not cut: when it is larger than `max_result_bytes`, the call fails. `max_rows` does not apply
 - The call is recorded in the audit log like `execute_query`

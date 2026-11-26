@@ -117,12 +117,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （#646。PostgreSQL・MySQL・MariaDB・SQLite）。遅いSQLの原因や、インデックスが
   使われるかを調べられる。PostgreSQLは`EXPLAIN (FORMAT JSON)`、MySQL・MariaDBは
   `EXPLAIN FORMAT=JSON`、SQLiteは`EXPLAIN QUERY PLAN`の結果を返す
-  - SQLは実行しない（`EXPLAIN ANALYZE`は送らない）。SQLは`EXPLAIN`を付けずに
+  - SQLは実行しない（`EXPLAIN ANALYZE`は送らない。データベースが、計画を
+    作るために行を少し読むことはある）。SQLは`EXPLAIN`を付けずに
     渡す。`execute_query`と同じ検査（1つのSELECTだけ等）を通し、読み取り専用の
     トランザクションの中で聞いて、ロールバックする
   - 読み取りだけのツールの印（`readOnlyHint`）を付け、`allow_write`に関わらず
     出す。呼び出しは、`execute_query`と同じく監査ログに記録する
-  - 計画は切らない。`max_result_bytes`を超えるなら、エラーにする
+  - 計画は切らない（`max_rows`は当てはめない）。`max_result_bytes`を超える
+    なら、エラーにする
 
 ### Fixed
 

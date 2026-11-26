@@ -674,16 +674,21 @@ impl DatabaseConnection for SqliteConnection {
     }
 
     /// `EXPLAIN QUERY PLAN`の結果（#646）。SQLは実行されない。`query`と同じ、
-    /// 読み取り専用の接続で聞く
+    /// 読み取り専用の接続で聞く。計画は、行数・バイト数の上限で止めずに
+    /// 全部読む（途中までの計画を返さない。PR #801のレビュー）。計画の行は、
+    /// SQLの大きさに応じた数しか無い。大きさは、ハンドラーが確かめる
     async fn explain(
         &self,
         sql: &str,
         params: &[Value],
     ) -> Result<serde_json::Value, DatabaseError> {
-        let result = self
-            .query(&format!("EXPLAIN QUERY PLAN {sql}"), params)
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let (mut conn, fired) = self.read_conn().await?;
+        let result = read_rows(&mut conn, &explain, params, None, None).await;
+        let (_, rows) = self
+            .finish(conn, fired, result, DatabaseError::QueryFailed)
             .await?;
-        Ok(plan_from_rows(result.rows))
+        Ok(plan_from_rows(rows))
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError> {
