@@ -1065,7 +1065,7 @@ impl McpHandler for MongoHandler {
             tools.push(Tool {
                 name: "insert_documents".to_string(),
                 title: Some("Insert MongoDB documents".to_string()),
-                description: format!("Insert documents into an existing collection (at most {max_rows} at a time; collections are not created). Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown (the server may still apply it later): send again only when inserting twice does no harm, such as documents with _id."),
+                description: format!("Insert documents into an existing collection (at most {max_rows} at a time). A collection name that does not exist is refused, so that a typing mistake does not create a collection. Returns the inserted ids. Documents are inserted in order: when one fails, the error says how many before it were inserted, and those must not be sent again. After a timeout the outcome is unknown (the server may still apply it later): send again only when inserting twice does no harm, such as documents with _id."),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
