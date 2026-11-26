@@ -14,8 +14,8 @@
 
 use super::types::DatabaseType;
 use sqlparser::ast::{
-    Expr, ObjectName, ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind,
-    SetExpr, Statement, TableFactor,
+    Expr, FromTable, ObjectName, ObjectNamePart, Query, Select, SelectItem,
+    SelectItemQualifiedWildcardKind, SetExpr, Statement, TableFactor, TableObject, TableWithJoins,
 };
 use sqlparser::dialect::{
     ClickHouseDialect, Dialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
@@ -475,6 +475,163 @@ pub fn resolve_query_tables(
     }
 
     Ok(tables)
+}
+
+/// 書き込みの文（`execute_command`）が触れる表（#609）。
+/// [`resolve_write_tables`]が返す
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteTables {
+    /// 書き込む表に要る許可: `INSERT`・`UPDATE`は`"write"`、`DELETE`は`"delete"`
+    pub action: &'static str,
+    /// 書き込む表（文に書いたとおりの名前。重複は除く）
+    pub written: Vec<String>,
+    /// 読むだけの表（`INSERT … SELECT`の元、副問い合わせ、`UPDATE … FROM`・
+    /// `DELETE … USING`の表）。書き込む表を、副問い合わせ等でも読むなら、
+    /// ここにも入る
+    pub read: Vec<String>,
+}
+
+/// 1つの`INSERT`・`UPDATE`・`DELETE`が触れる表を、書き込む表と読む表に
+/// 分けて返す（#609。[`resolve_query_tables`]の書き込み版）。マイクロ
+/// セグメンテーションが、表ごとに許可を確かめるために使う。
+///
+/// - `INSERT`: 書き込むのは、`INTO`の表
+/// - `UPDATE`: 書き込むのは、`UPDATE`の直後の表と、それに`JOIN`した表
+///   （MySQLは、`JOIN`した表も`SET`で変えられるため。どれを変えるかは
+///   見分けず、すべて書き込む表とする）。`FROM`の表は読むだけ
+/// - `DELETE`: 書き込むのは、`FROM`の表と、それに`JOIN`した表（MySQLの
+///   `DELETE a, b FROM a JOIN b`のため、同じくすべて）。`USING`の表は読むだけ
+///
+/// それ以外の場所に出る表（副問い合わせ・`INSERT … SELECT`の元）は、
+/// `sqlparser`の`visit_relations`で、深さに関わらず拾う。
+///
+/// 書き込む表を`WHERE`で絞ること・`SET`でその列を使うことは、書き込みの
+/// 許可に含める（読む許可は求めない）。名前は、[`resolve_query_tables`]と
+/// 同じく、文に書いたとおり（`public.users`と`users`は別の名前）。
+///
+/// 確かに分けられない形（`WITH`、表の関数や副問い合わせへの`INSERT`等）は
+/// エラーにする。呼ぶ側は、そのとき文を断る。
+pub fn resolve_write_tables(
+    sql: &str,
+    dialect: &dyn Dialect,
+) -> Result<WriteTables, ProvenanceError> {
+    let statements = parse_statements(sql, dialect)?;
+    let [statement] = statements.as_slice() else {
+        return Err(unsupported("expected exactly one SQL statement"));
+    };
+
+    let mut written: Vec<String> = Vec::new();
+    let action = match statement {
+        Statement::Insert(insert) => {
+            let TableObject::TableName(name) = &insert.table else {
+                return Err(unsupported("expected INSERT INTO a table name"));
+            };
+            if !insert.multi_table_into_clauses.is_empty() {
+                return Err(unsupported("multi-table INSERT is not supported"));
+            }
+            if insert.source.as_ref().is_some_and(|q| q.with.is_some()) {
+                return Err(unsupported(
+                    "common table expressions (WITH) are not supported",
+                ));
+            }
+            written.push(object_name_to_qualified_string(name)?);
+            "write"
+        }
+        Statement::Update(update) => {
+            collect_written(std::slice::from_ref(&update.table), &mut written)?;
+            "write"
+        }
+        Statement::Delete(delete) => {
+            let (FromTable::WithFromKeyword(from) | FromTable::WithoutKeyword(from)) = &delete.from;
+            // `DELETE a, b FROM …`の`a`・`b`（表の名前か別名）は、見ない。
+            // `FROM`の表をすべて書き込む表とするので、要らない
+            // （`visit_relations`も、これらは表として渡さない）
+            collect_written(from, &mut written)?;
+            "delete"
+        }
+        _ => {
+            return Err(unsupported(
+                "expected an INSERT, UPDATE, or DELETE statement",
+            ))
+        }
+    };
+
+    // 文の全体に出る表を、出た回数だけ集める
+    let mut seen: Vec<String> = Vec::new();
+    let outcome = sqlparser::ast::visit_relations(statement, |name| {
+        match object_name_to_qualified_string(name) {
+            Ok(table) => {
+                seen.push(table);
+                std::ops::ControlFlow::Continue(())
+            }
+            Err(e) => std::ops::ControlFlow::Break(e),
+        }
+    });
+    if let std::ops::ControlFlow::Break(e) = outcome {
+        return Err(e);
+    }
+    // 書き込む場所の分を1回ずつ除く。残りは読む表。除く分が見つからなければ、
+    // 数え方が合っていないので、断る
+    for name in &written {
+        let Some(index) = seen.iter().position(|table| table == name) else {
+            return Err(unsupported(
+                "cannot tell the written tables from the tables that are read",
+            ));
+        };
+        seen.remove(index);
+    }
+    let mut read: Vec<String> = Vec::new();
+    for table in seen {
+        if !read.contains(&table) {
+            read.push(table);
+        }
+    }
+    // 書き込む表の重複（自分自身との`JOIN`）は、除いた後でまとめる
+    let mut targets: Vec<String> = Vec::new();
+    for table in written {
+        if !targets.contains(&table) {
+            targets.push(table);
+        }
+    }
+    Ok(WriteTables {
+        action,
+        written: targets,
+        read,
+    })
+}
+
+/// `UPDATE`の直後・`DELETE FROM`の表と、それに`JOIN`した表を、書き込む表
+/// として集める。最初の表は、名前で書いた表でなければならない。`JOIN`
+/// した副問い合わせは、書き込めないので、ここでは集めない（中の表は、
+/// 読む表として拾われる）
+fn collect_written(
+    tables: &[TableWithJoins],
+    written: &mut Vec<String>,
+) -> Result<(), ProvenanceError> {
+    if tables.is_empty() {
+        return Err(unsupported("expected a table to write to"));
+    }
+    for table in tables {
+        let TableFactor::Table { name, args, .. } = &table.relation else {
+            return Err(unsupported("expected a table name to write to"));
+        };
+        if args.is_some() {
+            return Err(unsupported("table functions are not supported"));
+        }
+        written.push(object_name_to_qualified_string(name)?);
+        for join in &table.joins {
+            match &join.relation {
+                TableFactor::Table {
+                    name, args: None, ..
+                } => {
+                    written.push(object_name_to_qualified_string(name)?);
+                }
+                TableFactor::Derived { .. } => {}
+                _ => return Err(unsupported("unsupported table form in a write")),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fully schema-qualified table name (all parts joined with `.`), preserving
@@ -1113,6 +1270,130 @@ mod tests {
             tables("SELECT email FROM public.users").unwrap(),
             vec!["public.users".to_string()]
         );
+    }
+
+    fn write_tables(sql: &str) -> Result<WriteTables, ProvenanceError> {
+        resolve_write_tables(sql, &PostgreSqlDialect {})
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// 書き込む表と、読むだけの表を分ける（#609）
+    #[test]
+    fn resolve_write_tables_splits_written_and_read() {
+        for (sql, action, written, read) in [
+            ("INSERT INTO users (email) VALUES ($1)", "write", vec!["users"], vec![]),
+            (
+                "INSERT INTO archive SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)",
+                "write",
+                vec!["archive"],
+                vec!["users", "orders"],
+            ),
+            ("UPDATE public.users SET email = $1 WHERE id = $2", "write", vec!["public.users"], vec![]),
+            (
+                "UPDATE users u SET email = (SELECT email FROM secret s WHERE s.uid = u.id)",
+                "write",
+                vec!["users"],
+                vec!["secret"],
+            ),
+            (
+                "UPDATE users SET email = o.email FROM orders o WHERE o.user_id = users.id",
+                "write",
+                vec!["users"],
+                vec!["orders"],
+            ),
+            ("DELETE FROM users WHERE id = $1", "delete", vec!["users"], vec![]),
+            (
+                "DELETE FROM users USING orders WHERE orders.user_id = users.id",
+                "delete",
+                vec!["users"],
+                vec!["orders"],
+            ),
+            (
+                "DELETE FROM users WHERE id IN (SELECT uid FROM secret)",
+                "delete",
+                vec!["users"],
+                vec!["secret"],
+            ),
+            // 書き込む表を、副問い合わせでも読む
+            (
+                "UPDATE users SET rank = (SELECT count(*) FROM users)",
+                "write",
+                vec!["users"],
+                vec!["users"],
+            ),
+            (
+                "INSERT INTO users (email) SELECT email FROM users",
+                "write",
+                vec!["users"],
+                vec!["users"],
+            ),
+            // RETURNINGの中の副問い合わせ
+            (
+                "DELETE FROM users WHERE id = 1 RETURNING (SELECT ssn FROM secret LIMIT 1)",
+                "delete",
+                vec!["users"],
+                vec!["secret"],
+            ),
+            // ON CONFLICTの中の副問い合わせ
+            (
+                "INSERT INTO users (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET email = (SELECT e FROM secret LIMIT 1)",
+                "write",
+                vec!["users"],
+                vec!["secret"],
+            ),
+        ] {
+            let tables = write_tables(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            assert_eq!(tables.action, action, "{sql}");
+            assert_eq!(tables.written, names(&written), "{sql}");
+            assert_eq!(tables.read, names(&read), "{sql}");
+        }
+    }
+
+    /// MySQLの、複数の表のUPDATE・DELETE（#609）。JOINした表は、すべて
+    /// 書き込む表とする
+    #[test]
+    fn resolve_write_tables_treats_joined_tables_as_written() {
+        let mysql = |sql: &str| resolve_write_tables(sql, &MySqlDialect {});
+        let tables =
+            mysql("UPDATE users u JOIN orders o ON o.user_id = u.id SET o.total = 0").unwrap();
+        assert_eq!(tables.written, names(&["users", "orders"]));
+        assert!(tables.read.is_empty());
+
+        let tables = mysql("DELETE o FROM users u JOIN orders o ON o.user_id = u.id").unwrap();
+        assert_eq!(tables.action, "delete");
+        assert_eq!(tables.written, names(&["users", "orders"]));
+        assert!(tables.read.is_empty(), "{:?}", tables.read);
+
+        // JOINした副問い合わせの中の表は、読むだけ
+        let tables = mysql(
+            "UPDATE users u JOIN (SELECT uid, ssn FROM secret) s ON s.uid = u.id SET u.note = s.ssn",
+        )
+        .unwrap();
+        assert_eq!(tables.written, names(&["users"]));
+        assert_eq!(tables.read, names(&["secret"]));
+
+        // 自分自身とのJOIN
+        let tables =
+            mysql("UPDATE users a JOIN users b ON a.boss = b.id SET a.rank = b.rank").unwrap();
+        assert_eq!(tables.written, names(&["users"]));
+        assert!(tables.read.is_empty());
+    }
+
+    /// 分けられない形は、断る（#609）
+    #[test]
+    fn resolve_write_tables_rejects_what_it_cannot_split() {
+        for sql in [
+            "SELECT 1",
+            "DROP TABLE users",
+            "DELETE FROM users; DELETE FROM orders",
+            "INSERT INTO archive WITH t AS (SELECT * FROM users) SELECT * FROM t",
+            "WITH t AS (SELECT 1) DELETE FROM users",
+        ] {
+            assert!(write_tables(sql).is_err(), "{sql}");
+        }
     }
 
     fn sorted_tables(sql: &str) -> Vec<String> {

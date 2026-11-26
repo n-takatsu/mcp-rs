@@ -128,6 +128,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ライブラリとして使う場合: マイクロセグメンテーション（`with_micro_segmentation`、
+  表ごとの許可）が、`execute_command`にかかっていなかった。許可を確かめるのは
+  `execute_query`だけだったので、許していない表にも書け、`INSERT … SELECT`や
+  副問い合わせで読めた。今は、実行の前に、書き込む表には`write`（`DELETE`は
+  `delete`）、文の中で読む表には`read`の許可を確かめる（#609）。`[database]`の
+  設定からは使えない機能なので、mcp-rsの実行ファイルには影響しない
+  - MySQLの複数の表の`UPDATE`・`DELETE`は、`JOIN`した表をすべて書き込む表と
+    して確かめる。表を分けられない形（`WITH`等）は断る
+  - 検証済みの呼び出し元で書き込む`DatabaseHandler::execute_command_as`を足した
+    （`execute_query_as`の書き込み版）。MCPのツールとして呼ぶと、呼び出し元が
+    分からないので、ロールや信頼度の要る許可は通らない（`execute_query`と同じ）
+  - 断るときのエラーに、足りない許可を書く（`… for table 'notes' (read)`）
 - カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
   タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
   IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。
