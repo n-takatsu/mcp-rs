@@ -547,18 +547,10 @@ impl RedisHandler {
         let max = self.limits.max_items;
         let max_bytes = self.limits.max_result_bytes;
         if check == Check::Scan {
-            // `[cursor, items]`の形を保ち、項目だけを切る（PR #799のレビュー）。
-            // `COUNT`は上限ではないので、数も確かめる。切った項目は、次の
-            // カーソルでは返らない
-            if let JsonValue::Array(parts) = &mut result {
-                if let Some(items) = parts.get_mut(1) {
-                    // HSCAN・ZSCANは、項目と値の組
-                    let per = if name == "SSCAN" { 1 } else { 2 };
-                    truncated |= keep_items(items, max.saturating_mul(per));
-                    // 組を分けずに切る（PR #799のレビュー）
-                    truncated |= keep_within_bytes(items, max_bytes, per);
-                }
-            }
+            // `HSCAN`・`SSCAN`・`ZSCAN`の結果は切らない（PR #799のレビュー）。
+            // 切った項目は、次のカーソルでは返らないため（`scan_keys`と同じ）。
+            // `COUNT`は目安なので、`max_rows`を超えることがある。Redisが一度に
+            // 全部を返すのは、小さい形（listpack・intset）で持つ集合だけ
         } else {
             // 送る前に確かめた後に増えた分も、返さない（PR #799のレビュー）。
             // `ZRANGE … WITHSCORES`は、メンバーとスコアの組で数える
