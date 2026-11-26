@@ -192,6 +192,15 @@ fn redact_error_for_audit(message: &str) -> String {
     out
 }
 
+/// 検査を通った、読み取りのSQL（`execute_query`・`explain_query`）
+struct CheckedRead {
+    sql: String,
+    params: Vec<Value>,
+    engine_id: String,
+    config: DatabaseConfig,
+    dialect: Box<dyn sqlparser::dialect::Dialect + Send>,
+}
+
 /// 監査ログに記録するSQLの長さの上限（文字数）
 const MAX_AUDITED_SQL_CHARS: usize = 2000;
 
@@ -594,11 +603,15 @@ impl DatabaseHandler {
         self.execute_query_core(&args, Some(auth_user)).await
     }
 
-    async fn execute_query_core(
+    /// 読み取りのSQLを検査する（`execute_query`・`explain_query`で同じ。
+    /// #646）: 1つのSELECTだけ。マイクロセグメンテーションがあれば、触れる
+    /// 表ごとに確かめる。`tool`は、エラーの文に書くツールの名前
+    async fn checked_read(
         &self,
         args: &JsonValue,
         auth_user: Option<&AuthUser>,
-    ) -> Result<JsonValue, McpError> {
+        tool: &str,
+    ) -> Result<CheckedRead, McpError> {
         let sql: String = args
             .get("sql")
             .and_then(|v| v.as_str())
@@ -652,7 +665,7 @@ impl DatabaseHandler {
         // 合わせる - Postgres方言で固定すると、MySQL/SQLiteなど他エンジン
         // 向けの正当な構文を誤って拒否しかねない。
         validate_single_query_statement(&sql, dialect.as_ref())
-            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+            .map_err(|e| McpError::InvalidRequest(e.to_string().replace("execute_query", tool)))?;
 
         // マイクロセグメンテーションが設定されている場合、クエリが触れる
         // すべてのテーブルについて事前にアクセスを検証する。列暗号化と同様、
@@ -701,6 +714,28 @@ impl DatabaseHandler {
                 }
             }
         }
+
+        Ok(CheckedRead {
+            sql,
+            params,
+            engine_id,
+            config,
+            dialect,
+        })
+    }
+
+    async fn execute_query_core(
+        &self,
+        args: &JsonValue,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<JsonValue, McpError> {
+        let CheckedRead {
+            sql,
+            params,
+            engine_id,
+            config,
+            dialect,
+        } = self.checked_read(args, auth_user, "execute_query").await?;
 
         // 接続プールから接続を取得。上で解決した`engine_id`をそのまま使う
         // (`get_active_pool()`は使わない) - `get_active_pool()`は
@@ -793,6 +828,42 @@ impl DatabaseHandler {
             "total_rows": result.total_rows,
             "execution_time_ms": result.execution_time_ms
         }))
+    }
+
+    /// SELECTの実行計画を返す（#646）。SQLは、`execute_query`と同じ検査を
+    /// 通す。実行はしない（`ANALYZE`を付けない）ので、行は読まない。計画が
+    /// `max_result_bytes`を超えるなら、切らずに断る（切るとJSONが壊れる）
+    async fn handle_explain_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        let CheckedRead {
+            sql,
+            params,
+            engine_id,
+            config,
+            ..
+        } = self.checked_read(&args, None, "explain_query").await?;
+        let pool = self
+            .pool_manager
+            .get_pool(&engine_id)
+            .await
+            .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {engine_id}")))?;
+        let connection = pool
+            .get_connection(&config)
+            .await
+            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+        let plan = connection
+            .inner()
+            .explain(&sql, &params)
+            .await
+            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+        let result = json!({ "plan": plan });
+        let max_result_bytes = self.tool_options.max_result_bytes;
+        let size = serde_json::to_string_pretty(&result).map_or(usize::MAX, |text| text.len());
+        if size > max_result_bytes {
+            return Err(McpError::InvalidRequest(format!(
+                "the query plan is {size} bytes, more than max_result_bytes ({max_result_bytes}): explain a smaller part of the statement"
+            )));
+        }
+        Ok(result)
     }
 
     /// 事前に解決済みの列由来（`resolution`）を使って、`result`内の
@@ -1150,6 +1221,23 @@ impl McpHandler for DatabaseHandler {
         } else {
             ""
         };
+        // 実行計画（#646）の聞き方と、返す形
+        let (explain_statement, plan_shape) = if mysql {
+            (
+                "EXPLAIN FORMAT=JSON",
+                format!("plan is the JSON that {engine_name} returns."),
+            )
+        } else if sqlite {
+            (
+                "EXPLAIN QUERY PLAN",
+                "plan is a list of steps, each with id, parent (the id of the step it belongs to, 0 for the top) and detail.".to_string(),
+            )
+        } else {
+            (
+                "EXPLAIN (FORMAT JSON)",
+                "plan is the JSON that PostgreSQL returns (costs are estimates).".to_string(),
+            )
+        };
         let max_rows = self.tool_options.max_rows;
         let max_result_bytes = self.tool_options.max_result_bytes;
         let mut tools = vec![
@@ -1170,6 +1258,33 @@ impl McpHandler for DatabaseHandler {
                         "sql": {
                             "type": "string",
                             "description": "One SELECT statement (WITH ... SELECT is allowed; INSERT/UPDATE/DELETE, also inside WITH, are not)"
+                        },
+                        "params": params_schema.clone()
+                    },
+                    "required": ["sql"]
+                }),
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(true),
+                    open_world_hint: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Tool {
+                name: "explain_query".to_string(),
+                title: Some("Show the plan of a SQL query".to_string()),
+                description: format!(
+                    "Show how the configured database would run one SELECT statement, without running it \
+                     ({explain_statement}; never EXPLAIN ANALYZE). Use it to see why a query is slow and \
+                     whether it uses an index. The statement passes the same checks as execute_query, and \
+                     the plan is read in a read-only transaction that is rolled back. {plan_shape}"
+                ),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "One SELECT statement, as for execute_query, without EXPLAIN in front"
                         },
                         "params": params_schema.clone()
                     },
@@ -1254,6 +1369,13 @@ impl McpHandler for DatabaseHandler {
                     object.remove("engine");
                 }
                 self.handle_execute_query(args).await
+            }
+            "explain_query" => {
+                let mut args = args_json.clone();
+                if let Some(object) = args.as_object_mut() {
+                    object.remove("engine");
+                }
+                self.handle_explain_query(args).await
             }
             "execute_command" => self.handle_execute_command(args_json).await,
             "get_schema" => self.handle_get_schema(args_json).await,
@@ -1521,6 +1643,90 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count["rows"], json!([[3]]));
+    }
+
+    /// `explain_query`は、SQLを実行せずに、実行計画を返す（#646）。SQLは
+    /// `execute_query`と同じ検査を通す
+    #[tokio::test]
+    async fn test_sqlite_explain_query() {
+        let (_dir, settings) = sqlite_settings(false).await;
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        let tools = handler.list_tools().await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["execute_query", "explain_query", "get_schema"]);
+        let explain = &tools[1];
+        assert_eq!(
+            explain.annotations.as_ref().unwrap().read_only_hint,
+            Some(true)
+        );
+        assert!(explain.description.contains("EXPLAIN QUERY PLAN"));
+
+        let result = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT body FROM notes WHERE id = ?;", "params": [1]}),
+        )
+        .await
+        .unwrap();
+        let steps = result["plan"].as_array().unwrap();
+        assert_eq!(steps.len(), 1, "{result}");
+        assert_eq!(steps[0]["parent"], 0, "{result}");
+        // 主キーで探す（表を全部読まない）
+        let detail = steps[0]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("SEARCH") && detail.contains("notes"),
+            "{detail}"
+        );
+
+        // SELECTでないもの・EXPLAINを付けたものは、断る
+        for sql in [
+            "DELETE FROM notes",
+            "EXPLAIN SELECT body FROM notes",
+            "SELECT 1; SELECT 2",
+        ] {
+            let error = call(&handler, "explain_query", json!({ "sql": sql }))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("execute_query"), "{error}");
+        }
+        let error = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "DELETE FROM notes"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("explain_query only supports SELECT"),
+            "{error}"
+        );
+        // 無い表は、データベースのエラー
+        assert!(call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT * FROM missing"})
+        )
+        .await
+        .is_err());
+    }
+
+    /// 計画が`max_result_bytes`を超えるなら、切らずに断る（#646）
+    #[tokio::test]
+    async fn test_sqlite_explain_query_refuses_a_plan_that_is_too_large() {
+        let (_dir, mut settings) = sqlite_settings(false).await;
+        settings.max_result_bytes = Some(40);
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        let error = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT body FROM notes"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("more than max_result_bytes (40)"), "{error}");
     }
 
     /// `allow_write = true`なら、`execute_command`で書け、コミットする（#528）

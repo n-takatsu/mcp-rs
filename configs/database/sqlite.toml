@@ -1,7 +1,7 @@
 # mcp-rs: read a SQLite database file (#528, v0.31.0 and later)
 #
 # Copy this section into your mcp-rs configuration file. MCP clients then get
-# the tools execute_query and get_schema (read-only). Write ? for parameters.
+# the tools execute_query, explain_query and get_schema (read-only). Write ? for parameters.
 # See https://n-takatsu.github.io/mcp-rs/docs/database/#sqlite
 #
 # mcp-rs opens the file read-only and does not create it. Open only database

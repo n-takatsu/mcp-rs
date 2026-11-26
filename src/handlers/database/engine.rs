@@ -47,6 +47,20 @@ pub trait DatabaseConnection: Send + Sync {
     /// INSERT/UPDATE/DELETEコマンドを実行
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<ExecuteResult, DatabaseError>;
 
+    /// SELECTの実行計画を、JSONで返す（#646）。SQLは実行しない（`ANALYZE`は
+    /// 付けない）。`query`と同じく、読み取り専用のトランザクションの中で
+    /// 聞き、ロールバックする。対応しないエンジンは、既定のエラーを返す
+    async fn explain(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<serde_json::Value, DatabaseError> {
+        let _ = (sql, params);
+        Err(DatabaseError::UnsupportedOperation(
+            "this database engine cannot show query plans".to_string(),
+        ))
+    }
+
     /// トランザクションを開始
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError>;
 

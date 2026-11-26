@@ -126,8 +126,38 @@ async fn read_only_by_default(kind: Kind) {
         .unwrap();
     assert_eq!(
         tool_names(&handler).await,
-        vec!["execute_query", "get_schema"]
+        vec!["execute_query", "explain_query", "get_schema"]
     );
+
+    // 実行計画（#646）。SQLは実行しない。パラメーターも使える
+    let explained = call(
+        &handler,
+        "explain_query",
+        json!({ "sql": format!("SELECT name FROM {table} WHERE id = ?"), "params": [1] }),
+    )
+    .await
+    .unwrap();
+    assert!(explained["plan"]["query_block"].is_object(), "{explained}");
+    // 実行しないので、時間のかかるSQLでもすぐに返る
+    let started = std::time::Instant::now();
+    call(
+        &handler,
+        "explain_query",
+        json!({ "sql": format!("SELECT SLEEP(30) FROM {table}") }),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    // SELECTでないもの・EXPLAINを付けたものは、断る
+    for sql in [
+        format!("DELETE FROM {table}"),
+        format!("EXPLAIN ANALYZE SELECT * FROM {table}"),
+    ] {
+        let err = call(&handler, "explain_query", json!({ "sql": sql }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("explain_query only supports SELECT"), "{err}");
+    }
     let tools = handler.list_tools().await.unwrap();
     // MySQLの書き方（`?`）を説明する
     assert!(tools[0].input_schema["properties"]["params"]["description"]
@@ -352,7 +382,12 @@ async fn execute_command_when_writes_are_allowed(kind: Kind) {
     let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
     assert_eq!(
         tool_names(&handler).await,
-        vec!["execute_query", "get_schema", "execute_command"]
+        vec![
+            "execute_query",
+            "explain_query",
+            "get_schema",
+            "execute_command"
+        ]
     );
 
     let result = call(
