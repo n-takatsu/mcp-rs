@@ -754,6 +754,14 @@ fn option_value<'a>(
     from: usize,
     name: &str,
 ) -> Result<Option<&'a [String]>, McpError> {
+    // Redisは、オプションの名前をNULの手前までで比べる（`BYSCORE\0`は`BYSCORE`）。
+    // mcp-rsが見落とすオプションをRedisが使わないよう、オプションの位置の
+    // NULを断る（PR #799のレビュー）
+    if args.iter().skip(from).any(|a| a.contains('\0')) {
+        return Err(McpError::InvalidParams(
+            "the options of this command must not contain a NUL character".to_string(),
+        ));
+    }
     let mut found = None;
     let mut i = from;
     while i < args.len() {
@@ -1245,6 +1253,12 @@ mod tests {
             option_value(&hscan, 2, "COUNT").unwrap(),
             Some(&hscan[5..6])
         );
+        // オプションの位置のNULは断る（PR #799のレビュー）
+        let hidden = s(&["z", "0", "0", "BYSCORE\0"]);
+        assert!(option_value(&hidden, 3, "LIMIT").is_err());
+        // 鍵（位置の引数）のNULは、そのまま
+        let key = s(&["a\0b", "0", "1"]);
+        assert_eq!(option_value(&key, 3, "LIMIT").unwrap(), None);
         // 2つ書いたら断る（Redisは後の値を使う。PR #799のレビュー）
         for (args, from, name) in [
             (
