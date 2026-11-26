@@ -146,6 +146,23 @@ async fn redis_read_tools() {
         .await
         .unwrap();
     assert_eq!(user["result"], json!({"name": "a", "age": "3"}));
+    // HSCANは切らずに返す。カーソルを最後までたどると、全部の項目が返る
+    let mut fields = Vec::new();
+    let mut cursor = "0".to_string();
+    for _ in 0..100 {
+        let page = command(&handler, "HSCAN", json!(["user:1", cursor, "COUNT", 1]))
+            .await
+            .unwrap();
+        assert_eq!(page["truncated"], false);
+        let parts = page["result"].as_array().unwrap();
+        cursor = parts[0].as_str().unwrap().to_string();
+        fields.extend(parts[1].as_array().unwrap().iter().step_by(2).cloned());
+        if cursor == "0" {
+            break;
+        }
+    }
+    fields.sort_by_key(|f| f.as_str().unwrap().to_string());
+    assert_eq!(fields, [json!("age"), json!("name")]);
     // 文字列でない鍵は、MGETではnull（長さの確かめで止めない）
     let many = command(&handler, "MGET", json!(["greeting", "user:1", "missing"]))
         .await

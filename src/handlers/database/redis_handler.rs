@@ -549,8 +549,8 @@ impl RedisHandler {
         if check == Check::Scan {
             // `HSCAN`・`SSCAN`・`ZSCAN`の結果は切らない（PR #799のレビュー）。
             // 切った項目は、次のカーソルでは返らないため（`scan_keys`と同じ）。
-            // `COUNT`は目安なので、`max_rows`を超えることがある。Redisが一度に
-            // 全部を返すのは、小さい形（listpack・intset）で持つ集合だけ
+            // `COUNT`は目安なので、`max_rows`を超えることがある（小さい形
+            // （listpack・intset）の集合は、いつも全部を一度に返す）
         } else {
             // 送る前に確かめた後に増えた分も、返さない（PR #799のレビュー）。
             // `ZRANGE … WITHSCORES`は、メンバーとスコアの組で数える
