@@ -12,6 +12,15 @@ use mysql_async::{prelude::*, Conn};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// `last_insert_id`を値にする。i64に入らないIDは、桁を落とさないよう文字列に
+/// する（#768。以前は`as i64`で、負の数になった。`connection.rs`と同じ扱い）
+pub(super) fn last_insert_id_value(id: u64) -> Value {
+    match i64::try_from(id) {
+        Ok(id) => Value::Int(id),
+        Err(_) => Value::String(id.to_string()),
+    }
+}
+
 /// MySQL Transaction
 ///
 /// Represents an active transaction with savepoint support
@@ -152,15 +161,9 @@ impl DatabaseTransaction for MySqlTransaction {
 
         Ok(ExecuteResult {
             rows_affected: affected_rows,
-            last_insert_id: if let Some(id) = last_insert_id {
-                if id > 0 {
-                    Some(Value::Int(id as i64))
-                } else {
-                    None
-                }
-            } else {
-                None
-            },
+            last_insert_id: last_insert_id
+                .filter(|id| *id > 0)
+                .map(last_insert_id_value),
             execution_time_ms: 0,
         })
     }
@@ -291,6 +294,21 @@ impl Drop for MySqlTransaction {
 
 #[cfg(test)]
 mod tests {
+
+    /// i64に入らないIDは、負の数にせず、文字列にする（#768）
+    #[test]
+    fn test_last_insert_id_value() {
+        use super::last_insert_id_value;
+        use crate::handlers::database::types::Value;
+        assert!(matches!(last_insert_id_value(7), Value::Int(7)));
+        assert!(matches!(
+            last_insert_id_value(i64::MAX as u64),
+            Value::Int(i64::MAX)
+        ));
+        assert!(
+            matches!(last_insert_id_value(u64::MAX), Value::String(text) if text == u64::MAX.to_string())
+        );
+    }
 
     #[test]
     fn test_savepoint_naming() {

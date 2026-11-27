@@ -1077,7 +1077,27 @@ impl DatabaseConnection for MySqlConnection {
         use crate::handlers::database::engines::mysql::MySqlTransaction;
 
         let mut conn = self.get_conn().await?;
-        conn.query_drop("START TRANSACTION").await.map_err(|e| {
+        // `START TRANSACTION`にも、時間の上限を付ける（#768。以前は、返事の
+        // 無いサーバーをいつまでも待った）。上限を超えたら、接続は使い
+        // 回さずに閉じる
+        let started = match self.client_timeout() {
+            Some(limit) => {
+                match tokio::time::timeout(limit, conn.query_drop("START TRANSACTION")).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        tokio::spawn(async move {
+                            let _ = conn.disconnect().await;
+                        });
+                        return Err(DatabaseError::TimeoutError(format!(
+                            "the transaction did not start within {} seconds",
+                            limit.as_secs()
+                        )));
+                    }
+                }
+            }
+            None => conn.query_drop("START TRANSACTION").await,
+        };
+        started.map_err(|e| {
             DatabaseError::TransactionFailed(format!("Failed to start transaction: {}", e))
         })?;
         Ok(Box::new(MySqlTransaction::new(conn)))

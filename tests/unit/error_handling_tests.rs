@@ -25,7 +25,7 @@ fn create_test_config() -> DatabaseConfig {
             database: "test_db".to_string(),
             username: "test_user".to_string(),
             password: "test_pass".to_string(),
-            ssl_mode: Some("disabled".to_string()),
+            ssl_mode: Some("disable".to_string()),
             timeout_seconds: 5,
             retry_attempts: 3,
             options: std::collections::HashMap::new(),

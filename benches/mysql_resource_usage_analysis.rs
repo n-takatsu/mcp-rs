@@ -479,7 +479,7 @@ impl ResourceUsageAnalysis {
                     .unwrap_or_else(|_| "resource_user".to_string()),
                 password: std::env::var("MYSQL_PASSWORD")
                     .unwrap_or_else(|_| "resource_pass".to_string()),
-                ssl_mode: Some("disabled".to_string()),
+                ssl_mode: Some("disable".to_string()),
                 timeout_seconds: 30,
                 retry_attempts: 3,
                 options: std::collections::HashMap::new(),
@@ -655,8 +655,9 @@ impl ResourceUsageAnalysis {
                 let params = match query_idx {
                     0 => vec![], // Fibonacci - no params
                     1 => {
-                        let _num = (operation_count % 1000) + 2;
-                        vec![]
+                        // 4 placeholders, all the same number
+                        let num = (operation_count % 1000) + 2;
+                        vec![Value::from_i64(num); 4]
                     }
                     2 => {
                         vec![
@@ -671,11 +672,14 @@ impl ResourceUsageAnalysis {
                         ]
                     }
                     3 => {
+                        // 5 placeholders: POW, SQRT, SIN, COS, LOG
                         let base = (operation_count % 100) + 1;
                         vec![
+                            Value::from_i64(base),
                             Value::from_i64(base * base),
                             Value::Float(base as f64 / 10.0),
                             Value::Float(base as f64 / 5.0),
+                            Value::from_i64(base),
                         ]
                     }
                     _ => vec![],
@@ -763,52 +767,73 @@ impl ResourceUsageAnalysis {
                 let connection = engine_clone.connect(&config_clone).await?;
                 let test_end = Instant::now() + Duration::from_secs(test_duration);
 
+                // `attempt` picks the operation; `operation_count` counts only
+                // the queries that succeeded
+                let mut attempt: i64 = 0;
                 let mut operation_count = 0;
                 while Instant::now() < test_end {
                     // Mix of different operation types
-                    let operation_type = operation_count % 4;
+                    let operation_type = attempt % 4;
 
-                    match operation_type {
+                    let result = match operation_type {
                         0 => {
                             // Simple query
-                            let _ = connection
-                                .query("SELECT ?, ?, NOW() as timestamp", &[])
-                                .await;
+                            connection
+                                .query(
+                                    "SELECT ?, ?, NOW() as timestamp",
+                                    &[
+                                        Value::from_i64(connection_id as i64),
+                                        Value::from_i64(attempt),
+                                    ],
+                                )
+                                .await
                         }
                         1 => {
                             // String processing
-                            let _ = connection
+                            connection
                                 .query(
                                     "SELECT CONCAT(?, ?), LENGTH(?), UPPER(?)",
                                     &[
                                         Value::String(format!("conn_{}", connection_id)),
-                                        Value::String(format!("op_{}", operation_count)),
+                                        Value::String(format!("op_{}", attempt)),
                                         Value::String("resource_test".to_string()),
                                         Value::String("concurrent_operation".to_string()),
                                     ],
                                 )
-                                .await;
+                                .await
                         }
                         2 => {
                             // Mathematical operations
-                            let _ = connection
+                            connection
                                 .query(
                                     "SELECT ?, POW(?, 2), SQRT(?), SIN(?/100)",
-                                    &[Value::from_i64(operation_count * operation_count)],
+                                    &std::array::from_fn::<_, 4, _>(|_| {
+                                        Value::from_i64(attempt * attempt)
+                                    }),
                                 )
-                                .await;
+                                .await
                         }
                         _ => {
                             // Large parameter query
                             let large_param =
-                                "data_".repeat(((operation_count % 100) + 10).try_into().unwrap());
-                            let _ = connection
-                                .query("SELECT LENGTH(?), ?, ?", &[Value::String(large_param)])
-                                .await;
+                                "data_".repeat(((attempt % 100) + 10).try_into().unwrap());
+                            connection
+                                .query(
+                                    "SELECT LENGTH(?), ?, ?",
+                                    &[
+                                        Value::String(large_param),
+                                        Value::from_i64(connection_id as i64),
+                                        Value::from_i64(attempt),
+                                    ],
+                                )
+                                .await
                         }
-                    }
+                    };
 
-                    operation_count += 1;
+                    attempt += 1;
+                    if result.is_ok() {
+                        operation_count += 1;
+                    }
 
                     // Small delay
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -889,9 +914,12 @@ impl ResourceUsageAnalysis {
             let large_data = "M".repeat(allocation_size);
 
             // Store large data in query parameters
+            // 4 placeholders: data_size, operation_id, test_name, allocation_size
             let params = vec![
                 Value::String(large_data.clone()),
                 Value::String(format!("pressure_test_{}", operation_count)),
+                Value::String("memory_pressure".to_string()),
+                Value::from_i64(allocation_size as i64),
             ];
 
             match connection.query(
