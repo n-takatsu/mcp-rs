@@ -5,7 +5,7 @@
 use crate::handlers::database::{
     column_encryption::ColumnEncryptionManager,
     column_provenance::{
-        dialect_for, resolve_column_provenance, resolve_query_tables,
+        dialect_for, resolve_column_provenance, resolve_query_tables, resolve_write_tables,
         validate_single_query_statement, validate_single_write_statement, ColumnProvenance,
         ProjectionResolution,
     },
@@ -603,6 +603,51 @@ impl DatabaseHandler {
         self.execute_query_core(&args, Some(auth_user)).await
     }
 
+    /// マイクロセグメンテーションで、表ごとに`action`（`"read"`・`"write"`・
+    /// `"delete"`）の許可を確かめる。1つでも許されなければ、文の全体を断る
+    /// （表への許可は、分けられないため）
+    fn check_table_access(
+        engine: &MicroSegmentation,
+        engine_id: &str,
+        tables: &[String],
+        action: &str,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<(), McpError> {
+        let user_roles: HashSet<String> = auth_user
+            .map(|u| u.roles.iter().map(role_name).collect())
+            .unwrap_or_default();
+        // device_verifier/network_analyzerが未配線のため、trust_scoreは
+        // 「識別子ありか」だけを表す暫定値。これらのエンジンが実配線
+        // された将来、device/network/behaviorの実測値に置き換えられる
+        // 前提の、正直な簡略化。
+        let trust_score: TrustScore = if auth_user.is_some() { 100 } else { 0 };
+
+        for table in tables {
+            let resource = format!("database:{engine_id}:{table}");
+            let request = AccessRequest::new(
+                auth_user.map(|u| u.id.clone()).unwrap_or_default(),
+                "unknown", // device_id: device_verifier未配線のため不明値
+                None,      // source_ip: トランスポート層のIPをDB層は知らない
+                resource,
+                action,
+            );
+            let result = engine.evaluate_access(&request, &user_roles, trust_score);
+            if !result.success {
+                warn!(
+                    "Micro-segmentation denied {} access to table '{}' for user {:?}: {}",
+                    action,
+                    table,
+                    auth_user.map(|u| &u.id),
+                    result.reason
+                );
+                return Err(McpError::InvalidRequest(format!(
+                    "access denied by micro-segmentation policy for table '{table}' ({action})"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// 読み取りのSQLを検査する（`execute_query`・`explain_query`で同じ。
     /// #646）: 1つのSELECTだけ。マイクロセグメンテーションがあれば、触れる
     /// 表ごとに確かめる。`tool`は、エラーの文に書くツールの名前
@@ -682,37 +727,8 @@ impl DatabaseHandler {
                 ))
             })?;
 
-            let user_roles: HashSet<String> = auth_user
-                .map(|u| u.roles.iter().map(role_name).collect())
-                .unwrap_or_default();
-            // device_verifier/network_analyzerが未配線のため、trust_scoreは
-            // 「識別子ありか」だけを表す暫定値。これらのエンジンが実配線
-            // された将来、device/network/behaviorの実測値に置き換えられる
-            // 前提の、正直な簡略化。
-            let trust_score: TrustScore = if auth_user.is_some() { 100 } else { 0 };
-
-            for table in &tables {
-                let resource = format!("database:{engine_id}:{table}");
-                let request = AccessRequest::new(
-                    auth_user.map(|u| u.id.clone()).unwrap_or_default(),
-                    "unknown", // device_id: device_verifier未配線のため不明値
-                    None,      // source_ip: トランスポート層のIPをDB層は知らない
-                    resource,
-                    "read", // execute_queryはSELECTのみ（既存契約）
-                );
-                let result = engine.evaluate_access(&request, &user_roles, trust_score);
-                if !result.success {
-                    warn!(
-                        "Micro-segmentation denied access to table '{}' for user {:?}: {}",
-                        table,
-                        auth_user.map(|u| &u.id),
-                        result.reason
-                    );
-                    return Err(McpError::InvalidRequest(format!(
-                        "access denied by micro-segmentation policy for table '{table}'"
-                    )));
-                }
-            }
+            // execute_queryはSELECTのみ（既存契約）なので、どの表も"read"
+            Self::check_table_access(engine, &engine_id, &tables, "read", auth_user)?;
         }
 
         Ok(CheckedRead {
@@ -982,8 +998,29 @@ impl DatabaseHandler {
     }
 
     /// コマンド実行処理（INSERT・UPDATE・DELETE）。`allow_write`のときだけ
-    /// ツールとして出す（#453）
+    /// ツールとして出す（#453）。`McpHandler::call_tool`からは、呼び出し元が
+    /// 分からないので、マイクロセグメンテーションは、識別子なしで確かめる
     async fn handle_execute_command(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        self.execute_command_core(&args, None).await
+    }
+
+    /// 検証済みの呼び出し元で`execute_command`を実行する（#609。
+    /// [`Self::execute_query_as`]の書き込み版）。マイクロセグメンテーションを
+    /// 設定しているとき、書き込む表には`"write"`（`DELETE`は`"delete"`）、
+    /// 文の中で読む表には`"read"`の許可を、この呼び出し元で確かめる
+    pub async fn execute_command_as(
+        &self,
+        args: JsonValue,
+        auth_user: &AuthUser,
+    ) -> Result<JsonValue, McpError> {
+        self.execute_command_core(&args, Some(auth_user)).await
+    }
+
+    async fn execute_command_core(
+        &self,
+        args: &JsonValue,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<JsonValue, McpError> {
         if !self.tool_options.allow_write {
             return Err(McpError::InvalidRequest(
                 "execute_command is disabled: the database is read-only (set allow_write = true in [database] to allow INSERT, UPDATE, and DELETE)".to_string(),
@@ -1001,7 +1038,7 @@ impl DatabaseHandler {
             Vec::new()
         };
 
-        let (_, config, pool) = self
+        let (engine_id, config, pool) = self
             .resolve_engine(None)
             .await
             .map_err(|e| McpError::Internal(e.to_string()))?;
@@ -1009,6 +1046,30 @@ impl DatabaseHandler {
         let dialect = dialect_for(config.database_type.clone());
         validate_single_write_statement(&sql, dialect.as_ref())
             .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+        // マイクロセグメンテーションが設定されていれば、実行の前に、触れる
+        // 表のすべてを確かめる（#609。以前は`execute_query`だけで確かめて
+        // いたので、許していない表にも書けた）。書き込む表と読む表に
+        // 分けられない形の文は、断る
+        if let Some(engine) = &self.micro_segmentation {
+            let tables = resolve_write_tables(&sql, dialect.as_ref()).map_err(|e| {
+                McpError::InvalidRequest(format!(
+                    "cannot safely determine which tables this statement touches, \
+                     and micro-segmentation is configured for this database: {e}"
+                ))
+            })?;
+            Self::check_table_access(
+                engine,
+                &engine_id,
+                &tables.written,
+                tables.action,
+                auth_user,
+            )?;
+            if tables.also_deletes {
+                Self::check_table_access(engine, &engine_id, &tables.written, "delete", auth_user)?;
+            }
+            Self::check_table_access(engine, &engine_id, &tables.read, "read", auth_user)?;
+        }
 
         let connection = pool
             .get_connection(&config)
@@ -1772,6 +1833,158 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count["rows"], json!([[4]]));
+    }
+
+    /// マイクロセグメンテーションは、`execute_command`にもかかる（#609）。
+    /// 書き込む表には`write`（`DELETE`は`delete`）、文の中で読む表には`read`の
+    /// 許可が要る。確かめるのは実行の前なので、断った文は何も変えない
+    #[tokio::test]
+    async fn test_micro_segmentation_applies_to_execute_command() {
+        use crate::zero_trust::micro_segmentation::AccessPolicy;
+
+        let (_dir, settings) = sqlite_settings(true).await;
+        let mut engine = MicroSegmentation::new();
+        // editorは、notesに書ける（消せない・読めない）
+        engine.add_global_policy(
+            AccessPolicy::new("editor-writes-notes", "database:sqlite:notes", 0)
+                .with_action("write")
+                .with_role("editor"),
+        );
+        // ownerは、notesを読める・書ける・消せる
+        engine.add_global_policy(
+            AccessPolicy::new("owner-notes", "database:sqlite:notes", 0)
+                .with_action("read")
+                .with_action("write")
+                .with_action("delete")
+                .with_role("owner"),
+        );
+        let handler = DatabaseHandler::from_settings(&settings)
+            .await
+            .unwrap()
+            .with_micro_segmentation(Arc::new(engine));
+        let user = |role: &str| {
+            let mut user = AuthUser::new(role.to_string(), role.to_string());
+            user.roles.insert(Role::Custom(role.to_string()));
+            user
+        };
+        let (editor, owner) = (user("editor"), user("owner"));
+        let denied = |result: Result<JsonValue, McpError>| result.unwrap_err().to_string();
+
+        // 許された書き込み
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "INSERT INTO notes (body) VALUES (?)", "params": ["d"]}),
+                &editor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "UPDATE notes SET body = 'e' WHERE id = 4"}),
+                &editor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+
+        // 消す許可は無い
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "DELETE FROM notes"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'notes' (delete)"), "{error}");
+        // 許していない表には書けない
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "INSERT INTO secret (v) VALUES (1)"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'secret' (write)"), "{error}");
+        // 許していない表を、文の中で読めない（INSERT … SELECT・副問い合わせ）
+        for sql in [
+            "INSERT INTO notes (body) SELECT ssn FROM secret",
+            "UPDATE notes SET body = (SELECT ssn FROM secret LIMIT 1)",
+        ] {
+            let error = denied(
+                handler
+                    .execute_command_as(json!({ "sql": sql }), &owner)
+                    .await,
+            );
+            assert!(error.contains("table 'secret' (read)"), "{error}");
+        }
+        // 書ける表でも、文の中で読むには、読む許可が要る
+        let copy = json!({"sql": "INSERT INTO notes (body) SELECT body FROM notes WHERE id = 1"});
+        let error = denied(handler.execute_command_as(copy.clone(), &editor).await);
+        assert!(error.contains("table 'notes' (read)"), "{error}");
+        let done = handler.execute_command_as(copy, &owner).await.unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+
+        // 分けられない形は、断る
+        let error = denied(
+            handler
+                .execute_command_as(
+                    json!({"sql": "INSERT INTO notes (body) WITH t AS (SELECT body FROM notes) SELECT body FROM t"}),
+                    &owner,
+                )
+                .await,
+        );
+        assert!(
+            error.contains("cannot safely determine which tables"),
+            "{error}"
+        );
+
+        // MCPのツールとして呼ぶと、呼び出し元が分からないので、ロールの要る
+        // 許可は通らない
+        let error = call(
+            &handler,
+            "execute_command",
+            json!({"sql": "INSERT INTO notes (body) VALUES ('x')"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("table 'notes' (write)"), "{error}");
+
+        // ぶつかった行を消してから入れる書き方には、消す許可も要る
+        for sql in [
+            "REPLACE INTO notes (id, body) VALUES (1, 'x')",
+            "INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'x')",
+            "UPDATE OR REPLACE notes SET id = 1 WHERE id = 2",
+        ] {
+            let error = denied(
+                handler
+                    .execute_command_as(json!({ "sql": sql }), &editor)
+                    .await,
+            );
+            assert!(error.contains("table 'notes' (delete)"), "{sql}: {error}");
+        }
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'a')"}),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+
+        // SQLiteは、表の名前の大文字・小文字を区別しない。許可のリソースは
+        // 小文字で書く（`database:sqlite:notes`）。SQLの名前は、小文字に
+        // そろえてから比べるので、どう書いても同じ許可で確かめる
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "DELETE FROM NOTES"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'notes' (delete)"), "{error}");
+
+        // 断った文は、何も変えていない（3行 + 挿入2行）
+        let done = handler
+            .execute_command_as(json!({"sql": "DELETE FROM \"Notes\""}), &owner)
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 5, "{done}");
     }
 
     /// 無いファイルは作らず、起動の前（`mcp-rs check`でも）に知らせる（#528）

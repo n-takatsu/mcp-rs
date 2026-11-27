@@ -128,6 +128,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ライブラリとして使う場合: マイクロセグメンテーション（`with_micro_segmentation`、
+  表ごとの許可）が、`execute_command`にかかっていなかった。許可を確かめるのは
+  `execute_query`だけだったので、許していない表にも書け、`INSERT … SELECT`や
+  副問い合わせで読めた。今は、実行の前に、書き込む表には`write`（`DELETE`は
+  `delete`）、文の中で読む表には`read`の許可を確かめる（#609）。`[database]`の
+  設定からは使えない機能なので、mcp-rsの実行ファイルには影響しない
+  - ぶつかった今の行を消してから入れる書き方（`REPLACE INTO`、SQLiteの
+    `INSERT OR REPLACE`・`UPDATE OR REPLACE`）には、`write`に加えて`delete`の
+    許可も要る。SQLに書いた分だけを見る: 表の定義で`UNIQUE … ON CONFLICT
+    REPLACE`と決めたSQLiteの表では、普通の`INSERT`・`UPDATE`でも、ぶつかった
+    同じ表の行が消えるが、これは`write`の許可だけで通る
+  - MySQLの複数の表の`UPDATE`・`DELETE`は、`JOIN`した表をすべて書き込む表と
+    して確かめる。表を分けられない形（`WITH`等）は断る
+  - 検証済みの呼び出し元で書き込む`DatabaseHandler::execute_command_as`を足した
+    （`execute_query_as`の書き込み版）。MCPのツールとして呼ぶと、呼び出し元が
+    分からないので、ロールや信頼度の要る許可は通らない（`execute_query`と同じ）
+  - 断るときのエラーに、足りない許可を書く（`… for table 'notes' (read)`）
+  - 表の名前を確かに拾えない書き方は、`execute_query`でも断る: `TABLE name`
+    （`SELECT * FROM name`と同じ意味。`UNION`の中でも）と、引用符の中に
+    `.`のある名前（`"public.users"`は、`public.users`とは別の表）、文字列の
+    SQL・表の名前で表を読むPostgreSQLの関数（`query_to_xml`・`table_to_xml`・
+    `ts_stat`・`crosstab`・`connectby`等）。ユーザーが作った関数までは見分けられないので、
+    本来の守りは、データベースのロールの権限
+  - PostgreSQLでは、表の名前を許可と比べる前に、引用符で囲まない名前を
+    小文字にそろえる（PostgreSQLと同じ。`Users`は`users`、`"Users"`は別の表）。
+    SQLiteでは、引用符で囲んだ名前も小文字にそろえる（SQLiteは、表の名前の
+    大文字・小文字を区別しない）。
+    以前は書いたとおりに比べたので、`"Users"`への許可で、`Users`と書いて
+    `users`に触れられた。**許可のリソースを大文字まじりで書いていた場合**
+    （`database:pg:Users`・`database:sqlite:Notes`）は、SQLに合わなくなる
+    （断る側）。許可のリソースの側は、そろえずに、書いたとおりに比べるので、
+    次のように書き直すこと: PostgreSQLは、引用符なしで使う表を小文字で
+    （`"Users"`と引用符で囲んで使う表は、そのまま`Users`）、SQLiteは、
+    すべて小文字で
+  - 確かめるのは、SQLに書いた表の名前だけ。その先でデータベースがすること
+    （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
+    `ON DELETE CASCADE`）は見ない。親の表・ビューへの許可は、それを通して
+    届く行への許可になる
 - カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
   タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
   IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。
