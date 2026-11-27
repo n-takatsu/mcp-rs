@@ -1,6 +1,6 @@
 //! マイクロセグメンテーション
 
-use crate::zero_trust::{AccessRequest, TrustScore, VerificationResult};
+use crate::zero_trust::{AccessRequest, TrustScore, VerificationResult, MAX_TRUST_SCORE};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -58,15 +58,9 @@ impl AccessPolicy {
 
     /// リソースパターンにマッチするか判定
     pub fn matches_resource(&self, resource: &str) -> bool {
-        self.resource_patterns.iter().any(|pattern| {
-            if pattern == "*" {
-                true
-            } else if pattern.ends_with('*') {
-                resource.starts_with(&pattern[..pattern.len() - 1])
-            } else {
-                resource == pattern
-            }
-        })
+        self.resource_patterns
+            .iter()
+            .any(|pattern| pattern_matches(pattern, resource))
     }
 
     /// アクセスリクエストを評価
@@ -122,6 +116,15 @@ impl AccessPolicy {
     }
 }
 
+/// リソースのパターン: `*`はすべて、`…*`は前方一致、ほかは完全一致。
+/// ポリシーのリソースと、セグメントに含めるリソースで、同じ書き方を使う
+fn pattern_matches(pattern: &str, resource: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => resource.starts_with(prefix),
+        None => resource == pattern,
+    }
+}
+
 /// `"HH:MM"`（24時間表記）を`chrono::NaiveTime`にパースする。フォーマットが
 /// 不正な場合は`None` - 呼び出し側は安全側に倒して拒否すること。
 fn parse_hhmm(s: &str) -> Option<chrono::NaiveTime> {
@@ -153,7 +156,8 @@ fn is_within_time_window(
 pub struct ResourceSegment {
     /// セグメント名
     pub name: String,
-    /// 含まれるリソース
+    /// 含まれるリソース。ポリシーのリソースと同じ書き方（`*`はすべて、
+    /// `…*`は前方一致、ほかは完全一致）
     pub resources: Vec<String>,
     /// セグメント間通信許可
     ///
@@ -216,13 +220,21 @@ impl MicroSegmentation {
         self.global_policies.push(policy);
     }
 
-    /// アクセスリクエストを評価
+    /// アクセスリクエストを評価。`trust_score`は0〜100（[`MAX_TRUST_SCORE`]）。
+    /// 超える値は、どのポリシーにも当てずに断る（#768。呼ぶ側の計算の
+    /// 誤りで、最小スコアの確かめをすり抜けないように）
     pub fn evaluate_access(
         &self,
         request: &AccessRequest,
         user_roles: &HashSet<String>,
         trust_score: TrustScore,
     ) -> VerificationResult {
+        if trust_score > MAX_TRUST_SCORE {
+            return VerificationResult::failure(format!(
+                "Trust score {trust_score} is out of range (0-{MAX_TRUST_SCORE})"
+            ));
+        }
+
         // グローバルポリシーチェック
         let global_allowed = self
             .global_policies
@@ -235,7 +247,14 @@ impl MicroSegmentation {
 
         // セグメントポリシーチェック
         for segment in self.segments.values() {
-            if segment.resources.iter().any(|r| r == &request.resource) {
+            // セグメントのリソースも、パターンとして比べる（#768。以前は完全
+            // 一致で、`/api/database/*`と書いたセグメントに、どのリソースも
+            // 入らなかった）
+            if segment
+                .resources
+                .iter()
+                .any(|pattern| pattern_matches(pattern, &request.resource))
+            {
                 for policy in &segment.policies {
                     if policy.evaluate(request, user_roles, trust_score) {
                         return VerificationResult::success(
@@ -251,17 +270,28 @@ impl MicroSegmentation {
     }
 
     /// デフォルトポリシーを設定
+    ///
+    /// - `user`（スコア30以上）: `/api/public/*`を読める
+    /// - `admin`（スコア70以上）: すべてのリソースを読める・書ける・消せる
+    /// - `db_admin`（スコア80以上）: データベースの表（`DatabaseHandler`が
+    ///   確かめるリソース`database:<エンジンのID>:<表>`）と`/api/database/*`を
+    ///   読める・書ける
+    ///
+    /// #768より前は、`AccessPolicy::new`の引数の順（名前、リソース、スコア）を
+    /// 取り違えていて、`user`のポリシーのリソースが`*`になり（スコア30以上の
+    /// `user`が、すべてのリソースを読めた）、`db_admin`のポリシーのリソースが
+    /// `database`との完全一致になっていた（どのリソースにも当たらなかった）
     pub fn setup_default_policies(&mut self) {
         // 読み取り専用アクセス
         self.add_global_policy(
-            AccessPolicy::new("/api/public/*", "*", 30)
+            AccessPolicy::new("public-read", "/api/public/*", 30)
                 .with_action("read")
                 .with_role("user"),
         );
 
         // 管理者フルアクセス
         self.add_global_policy(
-            AccessPolicy::new("*", "*", 70)
+            AccessPolicy::new("admin-full-access", "*", 70)
                 .with_action("read")
                 .with_action("write")
                 .with_action("delete")
@@ -270,13 +300,15 @@ impl MicroSegmentation {
 
         // データベースアクセス
         let mut db_segment = ResourceSegment::new("database");
-        db_segment.add_resource("/api/database/*");
-        db_segment.policies.push(
-            AccessPolicy::new("/api/database/*", "database", 80)
-                .with_action("read")
-                .with_action("write")
-                .with_role("db_admin"),
-        );
+        let mut policy = AccessPolicy::new("database-admin", "database:*", 80)
+            .with_action("read")
+            .with_action("write")
+            .with_role("db_admin");
+        policy.resource_patterns.push("/api/database/*".to_string());
+        for resource in &policy.resource_patterns {
+            db_segment.add_resource(resource.clone());
+        }
+        db_segment.policies.push(policy);
         self.add_segment(db_segment);
     }
 }
@@ -383,6 +415,140 @@ mod tests {
         let result = engine.evaluate_access(&request, &roles, 50);
 
         assert!(!result.success);
+    }
+
+    fn request_for(resource: &str, action: &str) -> AccessRequest {
+        AccessRequest::new("user123", "device456", None, resource, action)
+    }
+
+    fn roles_of(roles: &[&str]) -> HashSet<String> {
+        roles.iter().map(|role| role.to_string()).collect()
+    }
+
+    /// 既定の`user`のポリシーは、`/api/public/*`だけを読める（#768。以前は
+    /// 引数の順を取り違え、すべてのリソースを読めた）
+    #[test]
+    fn default_user_policy_only_reads_public_resources() {
+        let engine = MicroSegmentation::default();
+        let user = roles_of(&["user"]);
+        assert!(
+            engine
+                .evaluate_access(&request_for("/api/public/info", "read"), &user, 30)
+                .success
+        );
+        for (resource, action) in [
+            ("/api/admin/settings", "read"),
+            ("database:main:orders", "read"),
+            ("/api/public/info", "write"),
+        ] {
+            assert!(
+                !engine
+                    .evaluate_access(&request_for(resource, action), &user, 100)
+                    .success,
+                "{resource} {action}"
+            );
+        }
+        // スコアが足りなければ、読めない
+        assert!(
+            !engine
+                .evaluate_access(&request_for("/api/public/info", "read"), &user, 29)
+                .success
+        );
+    }
+
+    /// 既定の`db_admin`のポリシーは、`DatabaseHandler`が確かめるリソース
+    /// （`database:<エンジンのID>:<表>`）に当たる（#768。以前は、セグメントの
+    /// 所属もポリシーのリソースも完全一致で、どれにも当たらなかった）
+    #[test]
+    fn default_database_segment_matches_handler_resources() {
+        let engine = MicroSegmentation::default();
+        let db_admin = roles_of(&["db_admin"]);
+        for (resource, action) in [
+            ("database:main:orders", "read"),
+            ("database:postgresql:public.users", "write"),
+            ("/api/database/tables", "read"),
+        ] {
+            let result = engine.evaluate_access(&request_for(resource, action), &db_admin, 80);
+            assert!(result.success, "{resource} {action}: {}", result.reason);
+            assert_eq!(result.reason, "Segment database policy match");
+        }
+        // 消す許可は無い。スコア・ロールが足りなければ断る。ほかのリソースは断る
+        assert!(
+            !engine
+                .evaluate_access(
+                    &request_for("database:main:orders", "delete"),
+                    &db_admin,
+                    100
+                )
+                .success
+        );
+        assert!(
+            !engine
+                .evaluate_access(&request_for("database:main:orders", "read"), &db_admin, 79)
+                .success
+        );
+        assert!(
+            !engine
+                .evaluate_access(
+                    &request_for("database:main:orders", "read"),
+                    &roles_of(&["user"]),
+                    100
+                )
+                .success
+        );
+        assert!(
+            !engine
+                .evaluate_access(&request_for("/api/admin/settings", "read"), &db_admin, 100)
+                .success
+        );
+    }
+
+    /// セグメントのリソースは、パターンとして比べる（#768）
+    #[test]
+    fn segment_resources_are_patterns() {
+        let mut segment = ResourceSegment::new("reports");
+        segment.add_resource("/reports/*");
+        segment.add_resource("/summary");
+        segment
+            .policies
+            .push(AccessPolicy::new("any", "*", 0).with_action("read"));
+        let mut engine = MicroSegmentation::new();
+        engine.add_segment(segment);
+        let nobody = HashSet::new();
+        for resource in ["/reports/2026", "/reports/", "/summary"] {
+            assert!(
+                engine
+                    .evaluate_access(&request_for(resource, "read"), &nobody, 0)
+                    .success,
+                "{resource}"
+            );
+        }
+        for resource in ["/report", "/summary/2026", "/other"] {
+            assert!(
+                !engine
+                    .evaluate_access(&request_for(resource, "read"), &nobody, 0)
+                    .success,
+                "{resource}"
+            );
+        }
+    }
+
+    /// 0〜100の外のスコアは、断る（#768）
+    #[test]
+    fn trust_score_above_the_maximum_is_refused() {
+        let mut engine = MicroSegmentation::new();
+        engine.add_global_policy(AccessPolicy::new("any", "*", 0));
+        let nobody = HashSet::new();
+        let request = request_for("/anything", "read");
+        assert!(engine.evaluate_access(&request, &nobody, 100).success);
+        let refused = engine.evaluate_access(&request, &nobody, 101);
+        assert!(!refused.success);
+        assert!(
+            refused.reason.contains("out of range"),
+            "{}",
+            refused.reason
+        );
+        assert!(!engine.evaluate_access(&request, &nobody, 255).success);
     }
 
     #[test]
