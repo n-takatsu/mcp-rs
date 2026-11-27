@@ -140,6 +140,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （`execute_query_as`の書き込み版）。MCPのツールとして呼ぶと、呼び出し元が
     分からないので、ロールや信頼度の要る許可は通らない（`execute_query`と同じ）
   - 断るときのエラーに、足りない許可を書く（`… for table 'notes' (read)`）
+  - 表の名前を確かに拾えない書き方は、`execute_query`でも断る: `TABLE name`
+    （`SELECT * FROM name`と同じ意味。`UNION`の中でも）と、引用符の中に
+    `.`のある名前（`"public.users"`は、`public.users`とは別の表）
 - カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
   タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
   IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。

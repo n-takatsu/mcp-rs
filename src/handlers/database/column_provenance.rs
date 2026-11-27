@@ -456,6 +456,8 @@ pub fn resolve_query_tables(
             "expected a plain SELECT (no UNION/EXCEPT/INTERSECT)",
         ));
     };
+    // 副問い合わせの中の`TABLE name`は、下の`visit_relations`で拾えない
+    refuse_table_commands(statement)?;
 
     let mut tables = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -475,6 +477,46 @@ pub fn resolve_query_tables(
     }
 
     Ok(tables)
+}
+
+/// `TABLE name`（`SELECT * FROM name`と同じ。PostgreSQL・MySQL）を探す。
+/// `sqlparser`は、この表の名前を文字列で持つので、`visit_relations`では
+/// 拾えない
+struct TableCommandFinder;
+
+impl sqlparser::ast::Visitor for TableCommandFinder {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &Query) -> std::ops::ControlFlow<()> {
+        fn has_table_command(body: &SetExpr) -> bool {
+            match body {
+                SetExpr::Table(_) => true,
+                SetExpr::SetOperation { left, right, .. } => {
+                    has_table_command(left) || has_table_command(right)
+                }
+                // 入れ子の問い合わせは、それぞれ`pre_visit_query`に来る
+                _ => false,
+            }
+        }
+        if has_table_command(&query.body) {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    }
+}
+
+/// 文のどこか（副問い合わせ・`UNION`の中も）に`TABLE name`があれば、断る。
+/// 表を拾えないまま通すと、その表の許可を確かめずに読める（PR #802の
+/// レビュー）
+fn refuse_table_commands(statement: &Statement) -> Result<(), ProvenanceError> {
+    use sqlparser::ast::Visit;
+    if statement.visit(&mut TableCommandFinder).is_break() {
+        return Err(unsupported(
+            "TABLE name is not supported: write SELECT * FROM name",
+        ));
+    }
+    Ok(())
 }
 
 /// 書き込みの文（`execute_command`）が触れる表（#609）。
@@ -500,7 +542,11 @@ pub struct WriteTables {
 ///   （MySQLは、`JOIN`した表も`SET`で変えられるため。どれを変えるかは
 ///   見分けず、すべて書き込む表とする）。`FROM`の表は読むだけ
 /// - `DELETE`: 書き込むのは、`FROM`の表と、それに`JOIN`した表（MySQLの
-///   `DELETE a, b FROM a JOIN b`のため、同じくすべて）。`USING`の表は読むだけ
+///   `DELETE a, b FROM a JOIN b`のため、同じくすべて）。`USING`の表は読むだけ。
+///   ただしMySQL・MariaDBの`DELETE FROM a USING …`は、`FROM`の名前が
+///   `USING`の表（か、その別名）を指すので、`USING`の表と、それに`JOIN`
+///   した表を、すべて書き込む表とする（`DELETE FROM notes USING secret AS
+///   notes`は、`secret`から消す）
 ///
 /// それ以外の場所に出る表（副問い合わせ・`INSERT … SELECT`の元）は、
 /// `sqlparser`の`visit_relations`で、深さに関わらず拾う。
@@ -520,7 +566,11 @@ pub fn resolve_write_tables(
         return Err(unsupported("expected exactly one SQL statement"));
     };
 
+    refuse_table_commands(statement)?;
+
     let mut written: Vec<String> = Vec::new();
+    // 表としては数えない名前（MySQLの`DELETE FROM a USING …`の`a`）
+    let mut not_tables: Vec<String> = Vec::new();
     let action = match statement {
         Statement::Insert(insert) => {
             let TableObject::TableName(name) = &insert.table else {
@@ -546,7 +596,23 @@ pub fn resolve_write_tables(
             // `DELETE a, b FROM …`の`a`・`b`（表の名前か別名）は、見ない。
             // `FROM`の表をすべて書き込む表とするので、要らない
             // （`visit_relations`も、これらは表として渡さない）
-            collect_written(from, &mut written)?;
+            match &delete.using {
+                // MySQL・MariaDB: `FROM`の名前は、`USING`の表か別名を指す
+                // だけ。消す表は`USING`の中にある（PR #802のレビュー）
+                Some(using) if dialect.is::<MySqlDialect>() => {
+                    for table in from {
+                        let TableFactor::Table { name, .. } = &table.relation else {
+                            return Err(unsupported("expected a table name to write to"));
+                        };
+                        if !table.joins.is_empty() {
+                            return Err(unsupported("unsupported table form in a write"));
+                        }
+                        not_tables.push(object_name_to_qualified_string(name)?);
+                    }
+                    collect_written(using, &mut written)?;
+                }
+                _ => collect_written(from, &mut written)?,
+            }
             "delete"
         }
         _ => {
@@ -572,7 +638,7 @@ pub fn resolve_write_tables(
     }
     // 書き込む場所の分を1回ずつ除く。残りは読む表。除く分が見つからなければ、
     // 数え方が合っていないので、断る
-    for name in &written {
+    for name in written.iter().chain(&not_tables) {
         let Some(index) = seen.iter().position(|table| table == name) else {
             return Err(unsupported(
                 "cannot tell the written tables from the tables that are read",
@@ -643,6 +709,14 @@ fn object_name_to_qualified_string(name: &ObjectName) -> Result<String, Provenan
     let mut parts = Vec::with_capacity(name.0.len());
     for part in &name.0 {
         match part {
+            // 引用符で囲んだ名前は、`.`を含められる（`"public.users"`は、
+            // `public.users`とは別の、1つの名前の表）。`.`でつなぐと区別
+            // できなくなるので、断る（PR #802のレビュー）
+            ObjectNamePart::Identifier(ident) if ident.value.contains('.') => {
+                return Err(unsupported(
+                    "table names that contain a dot inside quotes are not supported",
+                ))
+            }
             ObjectNamePart::Identifier(ident) => parts.push(ident.value.clone()),
             _ => return Err(unsupported("unsupported table name form")),
         }
@@ -1380,6 +1454,84 @@ mod tests {
             mysql("UPDATE users a JOIN users b ON a.boss = b.id SET a.rank = b.rank").unwrap();
         assert_eq!(tables.written, names(&["users"]));
         assert!(tables.read.is_empty());
+    }
+
+    /// MySQL・MariaDBの`DELETE FROM a USING …`は、`USING`の表から消す
+    /// （PR #802のレビュー）。`FROM`の名前は、別名かもしれない
+    #[test]
+    fn resolve_write_tables_mysql_delete_using_writes_the_using_tables() {
+        let mysql = |sql: &str| resolve_write_tables(sql, &MySqlDialect {});
+        let tables = mysql("DELETE FROM notes USING secret AS notes").unwrap();
+        assert_eq!(tables.action, "delete");
+        assert_eq!(tables.written, names(&["secret"]));
+        assert!(tables.read.is_empty(), "{:?}", tables.read);
+
+        let tables = mysql(
+            "DELETE FROM users USING users JOIN orders ON orders.user_id = users.id WHERE users.id IN (SELECT uid FROM secret)",
+        )
+        .unwrap();
+        assert_eq!(tables.written, names(&["users", "orders"]));
+        assert_eq!(tables.read, names(&["secret"]));
+
+        // PostgreSQLでは、`USING`の表は読むだけ
+        let tables =
+            write_tables("DELETE FROM users USING orders WHERE orders.user_id = users.id").unwrap();
+        assert_eq!(tables.written, names(&["users"]));
+        assert_eq!(tables.read, names(&["orders"]));
+    }
+
+    /// `TABLE name`は、表を拾えないので断る（PR #802のレビュー）。`UNION`の
+    /// 中でも断る。副問い合わせの中の`TABLE name`は、今の`sqlparser`では
+    /// 構文エラーになる（どちらにしても通さない）
+    #[test]
+    fn table_commands_are_refused_wherever_they_are() {
+        for sql in [
+            "INSERT INTO archive (ssn) TABLE secret",
+            "INSERT INTO archive (ssn) SELECT ssn FROM users UNION ALL TABLE secret",
+        ] {
+            let error = write_tables(sql).unwrap_err().to_string();
+            assert!(
+                error.contains("TABLE name is not supported"),
+                "{sql}: {error}"
+            );
+        }
+        for sql in [
+            "INSERT INTO archive (ssn) TABLE secret UNION ALL SELECT ssn FROM users",
+            "INSERT INTO archive (ssn) SELECT ssn FROM (TABLE secret) s",
+            "UPDATE users SET n = (SELECT count(*) FROM (TABLE secret) s)",
+            "DELETE FROM users WHERE id IN (TABLE secret)",
+        ] {
+            assert!(write_tables(sql).is_err(), "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM users WHERE id IN (TABLE secret)",
+            "SELECT * FROM (TABLE secret) s",
+            "SELECT * FROM users WHERE id IN (SELECT id FROM users UNION TABLE secret)",
+        ] {
+            assert!(tables(sql).is_err(), "{sql}");
+        }
+    }
+
+    /// 引用符の中に`.`のある名前は、`schema.table`と区別できないので断る
+    /// （PR #802のレビュー）
+    #[test]
+    fn quoted_names_with_a_dot_are_refused() {
+        for sql in [
+            r#"DELETE FROM "public.users""#,
+            r#"INSERT INTO notes (body) SELECT ssn FROM "public.secret""#,
+            r#"UPDATE public."a.b" SET x = 1"#,
+        ] {
+            assert!(write_tables(sql).is_err(), "{sql}");
+        }
+        assert!(tables(r#"SELECT * FROM "public.users""#).is_err());
+        assert!(resolve_write_tables("DELETE FROM `app.users`", &MySqlDialect {}).is_err());
+        // 普通の`schema.table`は、今までどおり
+        assert_eq!(
+            write_tables(r#"DELETE FROM "public"."users""#)
+                .unwrap()
+                .written,
+            names(&["public.users"])
+        );
     }
 
     /// 分けられない形は、断る（#609）
