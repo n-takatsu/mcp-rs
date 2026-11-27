@@ -56,7 +56,7 @@ docker run -d --name mcp-rs-test-mongodb -p 127.0.0.1:27018:27017 mongo:7
 起動したばかりのコンテナは、初期化の間はつながらない（MySQL・MariaDBは数十秒かかる）。テストの前に、どれも答えるまで待つ（起動していないコンテナの行は飛ばす）:
 
 ```bash
-until docker exec mcp-rs-test-postgres pg_isready -U testuser > /dev/null; do sleep 1; done
+until docker exec mcp-rs-test-postgres pg_isready -h 127.0.0.1 -U testuser > /dev/null; do sleep 1; done
 until docker exec mcp-rs-test-redis redis-cli ping > /dev/null; do sleep 1; done
 until docker exec mcp-rs-test-mysql mysqladmin ping -h 127.0.0.1 -ptestpass --silent; do sleep 1; done
 until docker exec mcp-rs-test-mariadb mariadb-admin ping -h 127.0.0.1 -ptestpass --silent; do sleep 1; done
