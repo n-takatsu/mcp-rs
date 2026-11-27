@@ -669,14 +669,26 @@ fn write_not_applied(error: &mongodb::error::Error, many: bool) -> bool {
 }
 
 /// サーバーが、書き込みのエラー・コマンドのエラーで答えたか（再送してよいと
-/// 付いたエラーは除く）
+/// 付いたエラーは除く）。mongosが、シャードから結果を受け取れなかったことを
+/// 書き込みのエラーで返したもの（[`results_unavailable`]）は、断ったのでは
+/// ないので除く（PR #817のレビュー）
 fn write_rejected_by_server(error: &mongodb::error::Error) -> bool {
     use mongodb::error::{ErrorKind, WriteFailure};
-    !error.contains_label("RetryableWriteError")
-        && matches!(
-            error.kind.as_ref(),
-            ErrorKind::Write(WriteFailure::WriteError(_)) | ErrorKind::Command(_)
-        )
+    if error.contains_label("RetryableWriteError") {
+        return false;
+    }
+    match error.kind.as_ref() {
+        ErrorKind::Write(WriteFailure::WriteError(write)) => !results_unavailable(&write.message),
+        ErrorKind::Command(_) => true,
+        _ => false,
+    }
+}
+
+/// mongosが、シャードへ送った後に結果を受け取れなかったときの、書き込みの
+/// エラーの文か（`Write results unavailable from …`）。コードは元のエラーの
+/// ものを引き継ぐので、文で見分ける。シャードでは当たっているかもしれない
+fn results_unavailable(message: &str) -> bool {
+    message.contains("Write results unavailable")
 }
 
 /// `run_to_completion`が、結果を得られなかった理由
@@ -1368,6 +1380,13 @@ mod tests {
         assert!(!write_not_applied(&lost, false));
         assert!(!write_not_applied(&lost, true));
         assert!(!write_rejected_by_server(&lost));
+        // mongosがシャードから結果を受け取れなかったもの（PR #817のレビュー）
+        assert!(results_unavailable(
+            "Write results unavailable from shard0:27018 :: caused by :: HostUnreachable"
+        ));
+        assert!(!results_unavailable(
+            "E11000 duplicate key error collection: app.users"
+        ));
     }
 
     #[test]
