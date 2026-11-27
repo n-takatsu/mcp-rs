@@ -233,8 +233,9 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd dist
-          # new: リリースに足すファイル、attest: そのうちの配るファイル
-          mkdir -p ../new ../attest ../release
+          # new: リリースに足すファイル、attest: そのうちの配るファイル、
+          # replace: 置き換える`.sha256`（配るファイルが無いのに残っていたもの）
+          mkdir -p ../new ../attest ../replace ../release
           on_release=$(gh release view "${TAG}" --json assets --jq '.assets[].name')
           has() { printf '%s\n' "${on_release}" | grep -Fxq -- "$1"; }
           for file in *.zip *.tar.gz *.mcpb; do
@@ -256,18 +257,29 @@ jobs:
                 cp "${file}.sha256" ../new/
               fi
             else
-              cp "${file}" "${file}.sha256" ../new/
+              cp "${file}" ../new/
               cp "${file}" ../attest/
+              # 配るファイルが無いのに`.sha256`だけがあれば（前の実行が途中で
+              # 止まった等）、それは配っているファイルのハッシュではないので、
+              # 置き換える（PR #818のレビュー。足すだけだと、同じ名前で失敗する）
+              if has "${file}.sha256"; then
+                echo "${file}.sha256 is on the release without ${file}: replacing it"
+                cp "${file}.sha256" ../replace/
+              else
+                cp "${file}.sha256" ../new/
+              fi
             fi
           done
           # 全部のハッシュを1つにまとめたもの（sha256sum -c SHA256SUMSで確かめる）
           cat ./*.sha256 > SHA256SUMS
           cat SHA256SUMS
-          if compgen -G '../new/*' > /dev/null; then
-            echo "new=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "new=false" >> "${GITHUB_OUTPUT}"
-          fi
+          for dir in new replace; do
+            if compgen -G "../${dir}/*" > /dev/null; then
+              echo "${dir}=true" >> "${GITHUB_OUTPUT}"
+            else
+              echo "${dir}=false" >> "${GITHUB_OUTPUT}"
+            fi
+          done
           if compgen -G '../attest/*' > /dev/null; then
             echo "built=true" >> "${GITHUB_OUTPUT}"
           else
@@ -291,11 +303,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           NEW: ${{ steps.keep.outputs.new }}
+          REPLACE: ${{ steps.keep.outputs.replace }}
         run: |
           set -euo pipefail
           # 無いファイルだけを足す（`--clobber`を付けない。#809）
           if [ "${NEW}" = "true" ]; then
             gh release upload "${TAG}" new/*
+          fi
+          # 配るファイルが無いのに残っていた`.sha256`は、置き換える
+          if [ "${REPLACE}" = "true" ]; then
+            gh release upload "${TAG}" replace/* --clobber
           fi
           # `SHA256SUMS`は、リリースのファイルから作り直したものなので、
           # 置き換えてよい
