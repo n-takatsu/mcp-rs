@@ -306,13 +306,17 @@ jobs:
           REPLACE: ${{ steps.keep.outputs.replace }}
         run: |
           set -euo pipefail
-          # 無いファイルだけを足す（`--clobber`を付けない。#809）
-          if [ "${NEW}" = "true" ]; then
-            gh release upload "${TAG}" new/*
-          fi
-          # 配るファイルが無いのに残っていた`.sha256`は、置き換える
+          # 配るファイルが無いのに残っていた`.sha256`は、配るファイルを足す前に
+          # 置き換える（PR #818のレビュー。後にすると、置き換えに失敗したとき、
+          # 新しいファイルと古い`.sha256`が残り、やり直しでも直らない。先なら、
+          # 失敗しても配るファイルがまだ無いので、やり直しで同じく置き換える）
           if [ "${REPLACE}" = "true" ]; then
             gh release upload "${TAG}" replace/* --clobber
+          fi
+          # 無いファイルだけを足す（`--clobber`を付けない。#809）。途中で
+          # 失敗しても、やり直しでは、上がったファイルを使い続け、残りを足す
+          if [ "${NEW}" = "true" ]; then
+            gh release upload "${TAG}" new/*
           fi
           # `SHA256SUMS`は、リリースのファイルから作り直したものなので、
           # 置き換えてよい
