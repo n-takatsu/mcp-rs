@@ -142,7 +142,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 断るときのエラーに、足りない許可を書く（`… for table 'notes' (read)`）
   - 表の名前を確かに拾えない書き方は、`execute_query`でも断る: `TABLE name`
     （`SELECT * FROM name`と同じ意味。`UNION`の中でも）と、引用符の中に
-    `.`のある名前（`"public.users"`は、`public.users`とは別の表）
+    `.`のある名前（`"public.users"`は、`public.users`とは別の表）、文字列の
+    SQL・表の名前で表を読むPostgreSQLの関数（`query_to_xml`・`table_to_xml`・
+    `ts_stat`・`crosstab`等）。ユーザーが作った関数までは見分けられないので、
+    本来の守りは、データベースのロールの権限
+  - PostgreSQLでは、表の名前を許可と比べる前に、引用符で囲まない名前を
+    小文字にそろえる（PostgreSQLと同じ。`Users`は`users`、`"Users"`は別の表）。
+    以前は書いたとおりに比べたので、`"Users"`への許可で、`Users`と書いて
+    `users`に触れられた。**許可のリソースを大文字まじりで書いていた場合**
+    （`database:pg:Users`）は、引用符なしのSQLに合わなくなる（断る側）ので、
+    小文字で書き直すこと
 - カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
   タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
   IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。

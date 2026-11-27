@@ -456,13 +456,15 @@ pub fn resolve_query_tables(
             "expected a plain SELECT (no UNION/EXCEPT/INTERSECT)",
         ));
     };
-    // 副問い合わせの中の`TABLE name`は、下の`visit_relations`で拾えない
-    refuse_table_commands(statement)?;
+    // `TABLE name`・文字列のSQLを実行する関数は、下の`visit_relations`で
+    // 拾えない
+    refuse_hidden_reads(statement)?;
+    let fold = folds_unquoted_names(dialect);
 
     let mut tables = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let outcome = sqlparser::ast::visit_relations(select, |name| {
-        match object_name_to_qualified_string(name) {
+        match object_name_to_qualified_string(name, fold) {
             Ok(table) => {
                 if seen.insert(table.clone()) {
                     tables.push(table);
@@ -479,15 +481,56 @@ pub fn resolve_query_tables(
     Ok(tables)
 }
 
-/// `TABLE name`（`SELECT * FROM name`と同じ。PostgreSQL・MySQL）を探す。
-/// `sqlparser`は、この表の名前を文字列で持つので、`visit_relations`では
-/// 拾えない
-struct TableCommandFinder;
+/// 引数の文字列のSQL・表の名前で、表を読む関数（PostgreSQL）。読む表が
+/// 文字列の中にあるので、`visit_relations`では拾えない（PR #802のレビュー）。
+/// 名前がこれで始まる関数を、表ごとの許可を確かめるときは断る:
+///
+/// - `query_to_xml`・`table_to_xml`・`schema_to_xml`・`database_to_xml`・
+///   `cursor_to_xml`（`…_xmlschema`・`…_xml_and_xmlschema`も）
+/// - `ts_stat`（全文検索の統計。引数のSQLを実行する）
+/// - `crosstab`（tablefunc）・`xpath_table`（xml2）: 拡張の関数
+///
+/// 網羅はできない: ユーザーが作った関数は、どの表でも読める。本来の守りは、
+/// データベースのロールの権限
+const TEXT_SQL_FUNCTION_PREFIXES: &[&str] = &[
+    "query_to_xml",
+    "table_to_xml",
+    "schema_to_xml",
+    "database_to_xml",
+    "cursor_to_xml",
+    "ts_stat",
+    "crosstab",
+    "xpath_table",
+];
 
-impl sqlparser::ast::Visitor for TableCommandFinder {
-    type Break = ();
+/// 表を拾えない読み方を探す: `TABLE name`（`SELECT * FROM name`と同じ。
+/// `sqlparser`は、この表の名前を文字列で持つ）と、文字列のSQLを実行する関数
+struct HiddenReadFinder;
 
-    fn pre_visit_query(&mut self, query: &Query) -> std::ops::ControlFlow<()> {
+impl HiddenReadFinder {
+    fn check_function(name: &ObjectName) -> std::ops::ControlFlow<String> {
+        let name = name
+            .0
+            .last()
+            .and_then(|part| part.as_ident())
+            .map(|ident| ident.value.to_ascii_lowercase());
+        match name.filter(|n| {
+            TEXT_SQL_FUNCTION_PREFIXES
+                .iter()
+                .any(|prefix| n.starts_with(prefix))
+        }) {
+            Some(name) => std::ops::ControlFlow::Break(format!(
+                "the function {name}() is not supported: it reads tables that are named in a string"
+            )),
+            None => std::ops::ControlFlow::Continue(()),
+        }
+    }
+}
+
+impl sqlparser::ast::Visitor for HiddenReadFinder {
+    type Break = String;
+
+    fn pre_visit_query(&mut self, query: &Query) -> std::ops::ControlFlow<String> {
         fn has_table_command(body: &SetExpr) -> bool {
             match body {
                 SetExpr::Table(_) => true,
@@ -499,24 +542,52 @@ impl sqlparser::ast::Visitor for TableCommandFinder {
             }
         }
         if has_table_command(&query.body) {
-            std::ops::ControlFlow::Break(())
+            std::ops::ControlFlow::Break(
+                "TABLE name is not supported: write SELECT * FROM name".to_string(),
+            )
         } else {
             std::ops::ControlFlow::Continue(())
         }
     }
+
+    fn pre_visit_expr(&mut self, expr: &Expr) -> std::ops::ControlFlow<String> {
+        match expr {
+            Expr::Function(function) => Self::check_function(&function.name),
+            _ => std::ops::ControlFlow::Continue(()),
+        }
+    }
+
+    // `FROM crosstab(...)`のように、表として呼ぶ関数
+    fn pre_visit_table_factor(&mut self, table: &TableFactor) -> std::ops::ControlFlow<String> {
+        match table {
+            TableFactor::Table {
+                name,
+                args: Some(_),
+                ..
+            }
+            | TableFactor::Function { name, .. } => Self::check_function(name),
+            _ => std::ops::ControlFlow::Continue(()),
+        }
+    }
 }
 
-/// 文のどこか（副問い合わせ・`UNION`の中も）に`TABLE name`があれば、断る。
-/// 表を拾えないまま通すと、その表の許可を確かめずに読める（PR #802の
+/// 文のどこか（副問い合わせ・`UNION`の中も）に、表を拾えない読み方があれば
+/// 断る。拾えないまま通すと、その表の許可を確かめずに読める（PR #802の
 /// レビュー）
-fn refuse_table_commands(statement: &Statement) -> Result<(), ProvenanceError> {
+fn refuse_hidden_reads(statement: &Statement) -> Result<(), ProvenanceError> {
     use sqlparser::ast::Visit;
-    if statement.visit(&mut TableCommandFinder).is_break() {
-        return Err(unsupported(
-            "TABLE name is not supported: write SELECT * FROM name",
-        ));
+    match statement.visit(&mut HiddenReadFinder) {
+        std::ops::ControlFlow::Break(reason) => Err(unsupported(reason)),
+        std::ops::ControlFlow::Continue(()) => Ok(()),
     }
-    Ok(())
+}
+
+/// PostgreSQLは、引用符で囲まない名前を小文字にする（`Users`は`users`、
+/// `"Users"`は別の表）。表の名前を許可と比べる前に、同じようにそろえるか
+/// （PR #802のレビュー）。MySQL・MariaDB・SQLiteでは、引用符の有無で名前は
+/// 変わらないので、書いたとおりにする
+fn folds_unquoted_names(dialect: &dyn Dialect) -> bool {
+    dialect.is::<PostgreSqlDialect>()
 }
 
 /// 書き込みの文（`execute_command`）が触れる表（#609）。
@@ -566,7 +637,8 @@ pub fn resolve_write_tables(
         return Err(unsupported("expected exactly one SQL statement"));
     };
 
-    refuse_table_commands(statement)?;
+    refuse_hidden_reads(statement)?;
+    let fold = folds_unquoted_names(dialect);
 
     let mut written: Vec<String> = Vec::new();
     // 表としては数えない名前（MySQLの`DELETE FROM a USING …`の`a`）
@@ -584,11 +656,11 @@ pub fn resolve_write_tables(
                     "common table expressions (WITH) are not supported",
                 ));
             }
-            written.push(object_name_to_qualified_string(name)?);
+            written.push(object_name_to_qualified_string(name, fold)?);
             "write"
         }
         Statement::Update(update) => {
-            collect_written(std::slice::from_ref(&update.table), &mut written)?;
+            collect_written(std::slice::from_ref(&update.table), fold, &mut written)?;
             "write"
         }
         Statement::Delete(delete) => {
@@ -607,11 +679,11 @@ pub fn resolve_write_tables(
                         if !table.joins.is_empty() {
                             return Err(unsupported("unsupported table form in a write"));
                         }
-                        not_tables.push(object_name_to_qualified_string(name)?);
+                        not_tables.push(object_name_to_qualified_string(name, fold)?);
                     }
-                    collect_written(using, &mut written)?;
+                    collect_written(using, fold, &mut written)?;
                 }
-                _ => collect_written(from, &mut written)?,
+                _ => collect_written(from, fold, &mut written)?,
             }
             "delete"
         }
@@ -625,7 +697,7 @@ pub fn resolve_write_tables(
     // 文の全体に出る表を、出た回数だけ集める
     let mut seen: Vec<String> = Vec::new();
     let outcome = sqlparser::ast::visit_relations(statement, |name| {
-        match object_name_to_qualified_string(name) {
+        match object_name_to_qualified_string(name, fold) {
             Ok(table) => {
                 seen.push(table);
                 std::ops::ControlFlow::Continue(())
@@ -672,6 +744,7 @@ pub fn resolve_write_tables(
 /// 読む表として拾われる）
 fn collect_written(
     tables: &[TableWithJoins],
+    fold: bool,
     written: &mut Vec<String>,
 ) -> Result<(), ProvenanceError> {
     if tables.is_empty() {
@@ -684,13 +757,13 @@ fn collect_written(
         if args.is_some() {
             return Err(unsupported("table functions are not supported"));
         }
-        written.push(object_name_to_qualified_string(name)?);
+        written.push(object_name_to_qualified_string(name, fold)?);
         for join in &table.joins {
             match &join.relation {
                 TableFactor::Table {
                     name, args: None, ..
                 } => {
-                    written.push(object_name_to_qualified_string(name)?);
+                    written.push(object_name_to_qualified_string(name, fold)?);
                 }
                 TableFactor::Derived { .. } => {}
                 _ => return Err(unsupported("unsupported table form in a write")),
@@ -705,7 +778,13 @@ fn collect_written(
 /// comment for why this must not collapse to the bare table name the way
 /// [`object_name_to_string`] deliberately does for column-provenance's
 /// different purpose.
-fn object_name_to_qualified_string(name: &ObjectName) -> Result<String, ProvenanceError> {
+///
+/// `fold`なら、引用符で囲まない部分を小文字にする（[`folds_unquoted_names`]。
+/// PostgreSQLと同じく、ASCIIの文字だけ）
+fn object_name_to_qualified_string(
+    name: &ObjectName,
+    fold: bool,
+) -> Result<String, ProvenanceError> {
     let mut parts = Vec::with_capacity(name.0.len());
     for part in &name.0 {
         match part {
@@ -716,6 +795,9 @@ fn object_name_to_qualified_string(name: &ObjectName) -> Result<String, Provenan
                 return Err(unsupported(
                     "table names that contain a dot inside quotes are not supported",
                 ))
+            }
+            ObjectNamePart::Identifier(ident) if fold && ident.quote_style.is_none() => {
+                parts.push(ident.value.to_ascii_lowercase())
             }
             ObjectNamePart::Identifier(ident) => parts.push(ident.value.clone()),
             _ => return Err(unsupported("unsupported table name form")),
@@ -1532,6 +1614,68 @@ mod tests {
                 .written,
             names(&["public.users"])
         );
+    }
+
+    /// PostgreSQLでは、引用符で囲まない名前を小文字にそろえる（PR #802の
+    /// レビュー）。`Users`は`users`、`"Users"`は別の表
+    #[test]
+    fn unquoted_names_are_folded_like_postgresql() {
+        assert_eq!(
+            write_tables("DELETE FROM Public.Users").unwrap().written,
+            names(&["public.users"])
+        );
+        assert_eq!(
+            write_tables(r#"DELETE FROM public."Users""#)
+                .unwrap()
+                .written,
+            names(&["public.Users"])
+        );
+        let both = write_tables(r#"INSERT INTO Notes SELECT * FROM "Notes" JOIN NOTES n ON true"#)
+            .unwrap();
+        assert_eq!(both.written, names(&["notes"]));
+        assert_eq!(both.read, names(&["Notes", "notes"]));
+        assert_eq!(
+            tables(r#"SELECT * FROM Users JOIN "Users" u ON true"#).unwrap(),
+            names(&["users", "Users"])
+        );
+        // MySQL・SQLiteは、書いたとおり
+        assert_eq!(
+            resolve_write_tables("DELETE FROM Users", &MySqlDialect {})
+                .unwrap()
+                .written,
+            names(&["Users"])
+        );
+        assert_eq!(
+            resolve_query_tables("SELECT * FROM Users", &SQLiteDialect {}).unwrap(),
+            names(&["Users"])
+        );
+    }
+
+    /// 文字列のSQL・表の名前で表を読む関数は、表を拾えないので断る
+    /// （PR #802のレビュー）
+    #[test]
+    fn functions_that_read_tables_named_in_text_are_refused() {
+        for sql in [
+            "INSERT INTO notes (body) VALUES (query_to_xml('SELECT ssn FROM secret', true, false, '')::text)",
+            "INSERT INTO notes (body) SELECT table_to_xml('secret', true, false, '')::text",
+            "UPDATE notes SET body = (SELECT pg_catalog.QUERY_TO_XML_AND_XMLSCHEMA('TABLE secret', true, false, '')::text)",
+            "INSERT INTO notes (body) SELECT word FROM ts_stat('SELECT v FROM secret')",
+            "INSERT INTO notes (body) SELECT * FROM crosstab('SELECT a, b, c FROM secret') AS t(a text, b text)",
+            "DELETE FROM notes WHERE body = schema_to_xml('private', true, false, '')::text",
+        ] {
+            let error = write_tables(sql).unwrap_err().to_string();
+            assert!(error.contains("named in a string"), "{sql}: {error}");
+        }
+        for sql in [
+            "SELECT query_to_xml('SELECT ssn FROM secret', true, false, '') FROM notes",
+            "SELECT * FROM notes, ts_stat('SELECT v FROM secret')",
+        ] {
+            let error = tables(sql).unwrap_err().to_string();
+            assert!(error.contains("named in a string"), "{sql}: {error}");
+        }
+        // ほかの関数・普通のVALUESは、今までどおり
+        assert!(write_tables("INSERT INTO notes (body) VALUES (upper($1)), (now()::text)").is_ok());
+        assert!(tables("SELECT count(*), max(length(body)) FROM notes").is_ok());
     }
 
     /// 分けられない形は、断る（#609）
