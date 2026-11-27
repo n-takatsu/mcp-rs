@@ -18,8 +18,17 @@ use std::time::Duration;
 /// ツールが無いまま起動する
 pub const DATABASE_ITEMS: [&str; 2] = ["database settings", "database"];
 
-/// データベースへの接続・プラグインの起動を待つ時間（1つにつき、#589）
+/// サイトへの接続・プラグインの起動を待つ時間（1つにつき、#589）。
+/// データベースは[`database_connect_limit`]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `[database]`につないでログインするのを待つ時間（#808）。起動で待つ分を
+/// 待つ: つなぐ（10秒と、ドライバーの余裕2秒）と、最初のコマンド（Redisの
+/// `PING`等。`query_timeout_seconds`まで待つ）。10秒で打ち切ると、起動は
+/// できるのに、`check`は失敗と言うことがあった
+fn database_connect_limit(settings: &crate::config::DatabaseSettings) -> Duration {
+    CONNECT_TIMEOUT + Duration::from_secs(2 + u64::from(settings.query_timeout_seconds()))
+}
 
 /// サブコマンドの名前
 pub const SUBCOMMAND: &str = "check";
@@ -162,7 +171,9 @@ if they do not exist, and adds a \"checked\" line to the log file to make
 sure it can be written. Nothing is sent to the site except read requests,
 and nothing is written to the database. Starting a plugin runs its command
 (or its container or Kubernetes Job) for a moment; use --offline to avoid
-it. Connecting and starting each wait up to {timeout} seconds.
+it. Connecting to the site and starting a plugin each wait up to {timeout}
+seconds; connecting to the database waits up to {database} seconds plus
+query_timeout_seconds, as when starting mcp-rs.
 
 Not checked yet: the HTTP mode settings.
 
@@ -181,7 +192,8 @@ Options:
 Exit status: 0 when no errors were found (warnings are allowed), 1 when
 there were errors, 2 for wrong arguments.
 ",
-        timeout = CONNECT_TIMEOUT.as_secs()
+        timeout = CONNECT_TIMEOUT.as_secs(),
+        database = CONNECT_TIMEOUT.as_secs() + 2
     )
 }
 
@@ -625,7 +637,8 @@ async fn check_database(config: &McpConfig, offline: bool, report: &mut Report) 
         report.push(Status::Skip, CONNECTION, "not connected: --offline");
         return;
     }
-    match tokio::time::timeout(CONNECT_TIMEOUT, connect_database(&settings)).await {
+    let limit = database_connect_limit(&settings);
+    match tokio::time::timeout(limit, connect_database(&settings)).await {
         Ok(Ok(())) => report.push(
             Status::Ok,
             CONNECTION,
@@ -638,7 +651,7 @@ async fn check_database(config: &McpConfig, offline: bool, report: &mut Report) 
             format!(
                 "{} did not answer within {} seconds",
                 settings.describe(),
-                CONNECT_TIMEOUT.as_secs()
+                limit.as_secs()
             ),
         ),
     }

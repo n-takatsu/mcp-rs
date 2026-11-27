@@ -421,7 +421,9 @@ impl DatabaseSettings {
                     .to_string(),
             );
         }
-        if name.len() > 63 || name.chars().any(|c| "/\\. \"$*<>:|?\0".contains(c)) {
+        // どのOSのサーバーにも共通する制限だけを確かめる（#808）。Windowsの
+        // サーバーでだけ使えない`*<>:|?`は、サーバーに任せる
+        if name.len() > 63 || name.chars().any(|c| "/\\. \"$\0".contains(c)) {
             return Err(format!(
                 "database.database = \"{name}\" is not a MongoDB database name"
             ));
@@ -3500,6 +3502,13 @@ start_timeout_seconds = 300
             with_user.describe(),
             "mongodb reader@localhost:27017/app (read-only)"
         );
+        // Windowsのサーバーでだけ使えない文字は、サーバーに任せる（#808）
+        assert!(DatabaseSettings {
+            database: "sales:2026".to_string(),
+            ..with_user.clone()
+        }
+        .validate()
+        .is_ok());
         for (invalid, expected) in [
             (
                 DatabaseSettings {

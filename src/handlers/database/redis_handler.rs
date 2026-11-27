@@ -306,6 +306,22 @@ impl RedisHandler {
             .map_err(|e| McpError::ExternalApi(format!("Redis {name}: {e}")))
     }
 
+    /// 書き込みのコマンドを送る。Redisが断ったのではない失敗（応答の時間切れ・
+    /// 切断等）では、成否が分からないと伝える（#808。送ったコマンドは、
+    /// 応答を待つのをやめても取り消されない。送り直すと、`INCR`等が二重に
+    /// 当たる）
+    async fn send_write(&self, name: &str, args: &[String]) -> Result<redis::Value, McpError> {
+        self.send_raw(name, args).await.map_err(|e| {
+            if write_not_applied(&e) {
+                McpError::ExternalApi(format!("Redis {name}: {e}"))
+            } else {
+                McpError::ExternalApi(format!(
+                    "Redis {name}: {e}. The outcome is unknown: Redis may have run the command before the answer was lost. Do not send it again unless you are sure that running it twice leaves the data as you want it"
+                ))
+            }
+        })
+    }
+
     /// `send`の、Redisのエラーをそのまま返すもの
     async fn send_raw(&self, name: &str, args: &[String]) -> redis::RedisResult<redis::Value> {
         let mut cmd = redis::cmd(name);
@@ -537,7 +553,11 @@ impl RedisHandler {
                 ))
             })?;
         let command_args = self.prepare(&name, check, command_args).await?;
-        let value = self.send(&name, &command_args).await?;
+        let value = if write {
+            self.send_write(&name, &command_args).await?
+        } else {
+            self.send(&name, &command_args).await?
+        };
         let mut result = if name == "HGETALL" {
             pairs_to_object(value)
         } else {
@@ -553,12 +573,16 @@ impl RedisHandler {
             // （listpack・intset）の集合は、いつも全部を一度に返す）
         } else {
             // 送る前に確かめた後に増えた分も、返さない（PR #799のレビュー）。
-            // `ZRANGE … WITHSCORES`は、メンバーとスコアの組で数える
-            let per = if name == "ZRANGE"
+            // `ZRANGE … WITHSCORES`は、メンバーとスコアの組で数える。
+            // オブジェクトにできなかった`HGETALL`（フィールドの名前がUTF-8で
+            // ない）も、フィールドと値の組で数える（#808。1つずつ数えると、
+            // 値が落ちる）
+            let per = if (name == "ZRANGE"
                 && command_args
                     .iter()
                     .skip(3)
-                    .any(|a| a.eq_ignore_ascii_case("WITHSCORES"))
+                    .any(|a| a.eq_ignore_ascii_case("WITHSCORES")))
+                || (name == "HGETALL" && result.is_array())
             {
                 2
             } else {
@@ -886,6 +910,23 @@ fn value_to_json(value: redis::Value) -> JsonValue {
     }
 }
 
+/// 書き込みのコマンドのエラーが、実行されていないと分かるものか（#808）。
+/// Redisが返したエラー（断った）・送る前のエラー（引数・設定）・つなげな
+/// かった（拒まれた）とき。それ以外（時間切れ・切断・応答を読めない等）は、
+/// 成否が分からない
+fn write_not_applied(error: &redis::RedisError) -> bool {
+    use redis::ErrorKind;
+    error.is_connection_refusal()
+        || matches!(
+            error.kind(),
+            ErrorKind::Server(_)
+                | ErrorKind::Extension
+                | ErrorKind::Client
+                | ErrorKind::InvalidClientConfig
+                | ErrorKind::AuthenticationFailed
+        )
+}
+
 /// `HGETALL`の結果（項目と値の並び）を、オブジェクトにする。項目がUTF-8で
 /// なければ、並びのまま
 fn pairs_to_object(value: redis::Value) -> JsonValue {
@@ -1163,6 +1204,24 @@ impl McpHandler for RedisHandler {
 
 #[cfg(test)]
 mod tests {
+    /// 実行されていないと分かるエラーと、成否が分からないエラー（#808）
+    #[test]
+    fn test_write_not_applied() {
+        use redis::{ErrorKind, RedisError, ServerErrorKind};
+        let refused = RedisError::from((
+            ErrorKind::Server(ServerErrorKind::ResponseError),
+            "WRONGTYPE",
+        ));
+        assert!(super::write_not_applied(&refused));
+        let lost = RedisError::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert!(!super::write_not_applied(&lost));
+        let timed_out = RedisError::from(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        assert!(!super::write_not_applied(&timed_out));
+        let not_connected =
+            RedisError::from(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        assert!(super::write_not_applied(&not_connected));
+    }
+
     use super::*;
 
     fn s(values: &[&str]) -> Vec<String> {

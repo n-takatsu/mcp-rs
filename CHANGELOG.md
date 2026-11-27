@@ -46,9 +46,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     待つのをやめるだけで、サーバーは続けることがある。結果は分からないと
     エラーに書く。あとから当たることもあるので、読んで確かめるだけでは
     足りない。二重に当たっても結果が同じだと言い切れるときだけ、送り直せる
-    （削除・`$set`・`_id`のある挿入でも、言い切れるとは限らない）
+    （削除・`$set`・`_id`のある挿入でも、言い切れるとは限らない）。通信の
+    エラー（切断等）で終わったときも、同じく結果は分からないと書く。サーバーが
+    断ったエラーは、1つのドキュメントの書き込みなら、そのまま返す（#808）。
+    `update_documents`・`delete_documents`の`many`では、サーバーが途中で
+    止めても、それまでのドキュメントは変わっているので、確かめてから送り直す
+    よう書く。ドライバーは書き込みを送り直さない（`retryWrites`を切った。
+    送り直すと、返るエラーから、1回目が当たったかが分からなくなるため。
+    1つのホストにだけつなぐので、送り直しても同じホストに行く）。mongosが、
+    シャードから結果を受け取れなかったことを書き込みのエラーで返したもの
+    （`Write results unavailable`）も、成否が分からない側にする
   - 待つのをやめても、ドライバーの操作は別のタスクで最後まで動かす（途中で
-    落とすと、ドライバーの内部の状態が壊れることがある）
+    落とすと、ドライバーの内部の状態が壊れることがある）。そのタスクは接続を
+    持ち続けるので、動いているタスクが接続のプールの大きさ（`max_connections`）
+    に達したら、新しい操作を始めずに断る（#808）。枠が空くのは、サーバーが
+    答えるか接続が切れたとき。TCPのkeepaliveが切るのは相手が消えた接続だけで、
+    サーバーが生きていて答えない操作は切らない。枠が埋まったままなら、
+    サーバーで操作を止める（`killOp`）か、mcp-rsを起動し直す
+  - コレクションの名前の前後の空白は削らない（#808。`users `を指定すると、
+    `users`を読み書きしていた）
   - 書いたホストにだけつなぐ（`directConnection`）。レプリカセットの他の
     メンバーは探さない（`ssl_mode`の確認を通っていないホストに、認証の情報を
     送らないため）。書き込むなら、`host`はプライマリー
@@ -56,7 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `database`はデータベースの名前、`username`は省略できる（認証しない。書いたら
     パスワードが要る）、`auth_source`（新しい項目。既定は`admin`）。
     `ssl_mode`は`disable`・`require`・`verify-full`（ループバック以外では必須。
-    省略したら、TLSを使わない）。`auth_source`は、MongoDB以外では断る
+    省略したら、TLSを使わない）。`auth_source`は、MongoDB以外では断る。
+    データベースの名前は、どのOSのサーバーにも共通する制限だけを確かめる
+    （#808。Windowsのサーバーでだけ使えない`*<>:|?`は、サーバーに任せる）
   - 監査ログには、ツールとコレクションの名前だけを書く
   - 既定のビルドに含めた。`mongodb`クレートは、`mongodb+srv://`のためのDNSを
     読む機能を外した（1つのホストにつなぐ）
@@ -76,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `database`はデータベースの番号（省略時は0）、`username`はACLのユーザー
     （省略時は既定のユーザー）。`ssl_mode`は`disable`・`require`・`verify-full`
     （ループバック以外では必須）。`ssl_root_cert`は`verify-full`のときだけ
+  - `redis_write_command`で、Redisが断ったのではない失敗（応答の時間切れ・
+    切断等）では、コマンドが実行されたか分からないと書く（#808。送ったコマンドは
+    取り消されないので、送り直すと`INCR`等が二重に当たる）
+  - オブジェクトにできない`HGETALL`の結果（フィールドの名前がUTF-8でない）は、
+    フィールドと値の組で数えて切る（#808。1つずつ数えると、値が落ちた）
   - 監査ログには、一覧にあるコマンドの名前と引数の数、失敗の種類だけを書く
     （鍵・値・Redisのエラーの文は書かない）
   - `username`を書いたら、パスワード（`password`か`keyring`）が要る（無いと、
@@ -112,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - ライブラリとして使う場合: `SqliteEngine`は、プール（読み取りと書き込み）を
     1つ持ち、接続の間で共有する（以前は接続ごとにプールを作っていた）。
     `SqliteConnection::query`は、読み取り専用の接続で読む。`:memory:`は、
-    1つの接続を共有する
+    1つの接続を共有し、使わない時間・接続の寿命（sqlxの既定は10分・30分）で
+    閉じない（#808。閉じると、データベースが消えていた）
 - データベースのツールに、SELECTの実行計画を返す`explain_query`を足した
   （#646。PostgreSQL・MySQL・MariaDB・SQLite）。遅いSQLの原因や、インデックスが
   使われるかを調べられる。PostgreSQLは`EXPLAIN (FORMAT JSON)`、MySQL・MariaDBは
@@ -154,6 +178,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mcp-rs check`が、`[database]`につなぐのを10秒で打ち切っていた。起動では、
+  つないだ後の最初のコマンド（Redisの`PING`等）を`query_timeout_seconds`まで
+  待つので、起動はできるのに`check`は失敗と言うことがあった。今は、起動と
+  同じだけ（12秒と`query_timeout_seconds`）待つ（#808）
 - ライブラリとして使う場合: ゼロトラスト（`zero_trust`。
   `DatabaseHandler::with_micro_segmentation`が使う）の、レビューの指摘を直した
   （#768）。mcp-rsの実行ファイルは、この機能を使わない

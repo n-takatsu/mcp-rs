@@ -85,6 +85,16 @@ pub struct MongoHandler {
     database: mongodb::Database,
     allow_write: bool,
     limits: Limits,
+    /// ドライバーの操作を動かしているタスクの数の上限（接続のプールの大きさ。
+    /// #808）。待つのをやめた後も、タスクは最後まで動き、接続を持ち続ける。
+    /// その間に新しいタスクを積み上げないよう、空きが無ければ断る。
+    ///
+    /// 枠が空くのは、サーバーが答えるか、接続が切れたとき。TCPのkeepalive
+    /// （ドライバーは120秒）が切るのは、相手が消えた接続だけで、サーバーが
+    /// 生きていて答えない操作（ロックを待つ等）は切らない。そうした操作で枠が
+    /// 埋まったままなら、サーバーで操作を止める（`killOp`）か、mcp-rsを
+    /// 起動し直す（PR #817のレビュー）
+    busy: Arc<tokio::sync::Semaphore>,
     status_line: String,
     audit_logger: Option<Arc<crate::security::AuditLogger>>,
 }
@@ -127,6 +137,13 @@ fn client_options(settings: &DatabaseSettings) -> ClientOptions {
     // 他のメンバーにもつなぐので、`check_settings`が見ていないホストに、TLS
     // なしで認証の情報とデータを送ることがある
     options.direct_connection = Some(true);
+    // 書き込みを、ドライバーで送り直さない（PR #817のレビュー）。送り直すと、
+    // 1回目の通信のエラーの代わりに、2回目のサーバーのエラーが返ることが
+    // あり、1回目が当たったかが分からなくなる（`write_not_applied`が
+    // 見分けられない）。1つのホストにだけつなぐので、送り直しても同じ
+    // ホストに行くだけで、得るものも小さい。通信のエラーは、成否が分から
+    // ないと伝える
+    options.retry_writes = Some(false);
     options.app_name = Some(format!("mcp-rs {}", env!("CARGO_PKG_VERSION")));
     options.connect_timeout = Some(CONNECT_TIMEOUT);
     options.server_selection_timeout = Some(CONNECT_TIMEOUT);
@@ -200,6 +217,11 @@ impl MongoHandler {
         Ok(Self {
             database,
             allow_write: settings.allow_write(),
+            busy: Arc::new(tokio::sync::Semaphore::new(
+                usize::try_from(settings.max_connections())
+                    .unwrap_or(usize::MAX)
+                    .clamp(1, tokio::sync::Semaphore::MAX_PERMITS),
+            )),
             limits: Limits {
                 max_items: settings.max_rows() as usize,
                 max_result_bytes: usize::try_from(settings.max_result_bytes())
@@ -229,6 +251,7 @@ impl MongoHandler {
         write: bool,
         future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
     ) -> Result<mongodb::error::Result<T>, McpError> {
+        let future = self.hold_slot(what, future)?;
         let seconds = self.limits.timeout.as_secs();
         match run_to_completion(self.limits.timeout + CLIENT_TIMEOUT_GRACE, future).await {
             Ok(result) => Ok(result),
@@ -244,6 +267,25 @@ impl MongoHandler {
         }
     }
 
+    /// `future`を、タスクの枠（[`MongoHandler::busy`]）を1つ持ったまま動く
+    /// ものにする。枠が空いていなければ、断る（#808）
+    fn hold_slot<T>(
+        &self,
+        what: &str,
+        future: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Result<impl std::future::Future<Output = T> + Send + 'static, McpError> {
+        let slot = self.busy.clone().try_acquire_owned().map_err(|_| {
+            McpError::ExternalApi(format!(
+                "MongoDB {what} was not started: every connection of the pool is still used by earlier operations that mcp-rs stopped waiting for (the server has not answered them yet). Try again later. If this does not clear, stop those operations on the server (killOp) or restart mcp-rs"
+            ))
+        })?;
+        Ok(async move {
+            let result = future.await;
+            drop(slot);
+            result
+        })
+    }
+
     /// 読み取りの操作を待つ
     async fn wait<T: Send + 'static>(
         &self,
@@ -257,14 +299,31 @@ impl MongoHandler {
 
     /// 書き込みの操作を待つ。書き込みには`maxTimeMS`を送れない（ドライバーに
     /// 無い）ので、時間切れのあとも、サーバーは続けることがある
+    ///
+    /// ドライバーのエラーが、書かれていないと分かるもの（[`write_not_applied`]）
+    /// でなければ、成否が分からないと伝える（#808。書いた後に接続が切れると、
+    /// 送り直しで二重に書く）。`many`（`updateMany`・`deleteMany`）では、
+    /// サーバーが途中で止めたエラーでも、それまでのドキュメントは変わって
+    /// いる（PR #817のレビュー）
     async fn wait_write<T: Send + 'static>(
         &self,
         what: &str,
+        many: bool,
         future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
     ) -> Result<T, McpError> {
-        self.run(what, true, future)
-            .await?
-            .map_err(|e| McpError::ExternalApi(format!("MongoDB {what}: {e}")))
+        self.run(what, true, future).await?.map_err(|e| {
+            if write_not_applied(&e, many) {
+                McpError::ExternalApi(format!("MongoDB {what}: {e}"))
+            } else if many && write_rejected_by_server(&e) {
+                McpError::ExternalApi(format!(
+                    "MongoDB {what}: {e}. The server stopped part way: the documents handled before the error stay changed. Check them before sending it again (sending it again changes them again)"
+                ))
+            } else {
+                McpError::ExternalApi(format!(
+                    "MongoDB {what}: {e}. The outcome is unknown: the server may have applied the write before the answer was lost. Do not send it again unless you are sure that applying it twice leaves the data as you want it"
+                ))
+            }
+        })
     }
 
     fn collection(&self, args: &JsonValue) -> Result<mongodb::Collection<Document>, McpError> {
@@ -394,11 +453,15 @@ impl MongoHandler {
             self.database.name(),
             limits.max_result_bytes,
         )));
+        let task = self.hold_slot(
+            "get_schema",
+            read_schema(self.database.clone(), limits.clone(), progress.clone()),
+        )?;
         schema_within(
             limits.timeout + CLIENT_TIMEOUT_GRACE,
             limits.timeout.as_secs(),
-            progress.clone(),
-            read_schema(self.database.clone(), limits, progress),
+            progress,
+            task,
         )
         .await
     }
@@ -497,12 +560,12 @@ impl MongoHandler {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let result = if many {
-            self.wait_write("updateMany", async move {
+            self.wait_write("updateMany", true, async move {
                 collection.update_many(filter, update).await
             })
             .await?
         } else {
-            self.wait_write("updateOne", async move {
+            self.wait_write("updateOne", false, async move {
                 collection.update_one(filter, update).await
             })
             .await?
@@ -522,16 +585,14 @@ impl MongoHandler {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let result = if many {
-            self.wait_write(
-                "deleteMany",
-                async move { collection.delete_many(filter).await },
-            )
+            self.wait_write("deleteMany", true, async move {
+                collection.delete_many(filter).await
+            })
             .await?
         } else {
-            self.wait_write(
-                "deleteOne",
-                async move { collection.delete_one(filter).await },
-            )
+            self.wait_write("deleteOne", false, async move {
+                collection.delete_one(filter).await
+            })
             .await?
         };
         Ok(json!({ "deleted_count": result.deleted_count }))
@@ -579,6 +640,55 @@ impl MongoHandler {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
         }
     }
+}
+
+/// 書き込みのエラーが、書かれていないと分かるものか（#808）。送る前に
+/// 止まった（サーバーを選べない・引数・BSONにできない・認証）とき。1つの
+/// ドキュメントの書き込み（`many`でない）では、サーバーが断ったとき
+/// （[`write_rejected_by_server`]）も。複数のドキュメントの書き込みは、
+/// サーバーが途中で止めても、それまでの分は変わっている（PR #817の
+/// レビュー）。通信のエラー、`writeConcern`のエラー（主には書けている）等は、
+/// 成否が分からない。
+///
+/// サーバーのエラーで見分けられるのは、ドライバーが書き込みを送り直さない
+/// から（`retry_writes = false`。送り直すと、返るのは2回目のエラーで、
+/// 1回目が当たったかは分からない）
+fn write_not_applied(error: &mongodb::error::Error, many: bool) -> bool {
+    use mongodb::error::ErrorKind;
+    if error.contains_label("RetryableWriteError") {
+        return false;
+    }
+    let not_sent = matches!(
+        error.kind.as_ref(),
+        ErrorKind::ServerSelection { .. }
+            | ErrorKind::InvalidArgument { .. }
+            | ErrorKind::BsonSerialization(_)
+            | ErrorKind::Authentication { .. }
+    );
+    not_sent || (!many && write_rejected_by_server(error))
+}
+
+/// サーバーが、書き込みのエラー・コマンドのエラーで答えたか（再送してよいと
+/// 付いたエラーは除く）。mongosが、シャードから結果を受け取れなかったことを
+/// 書き込みのエラーで返したもの（[`results_unavailable`]）は、断ったのでは
+/// ないので除く（PR #817のレビュー）
+fn write_rejected_by_server(error: &mongodb::error::Error) -> bool {
+    use mongodb::error::{ErrorKind, WriteFailure};
+    if error.contains_label("RetryableWriteError") {
+        return false;
+    }
+    match error.kind.as_ref() {
+        ErrorKind::Write(WriteFailure::WriteError(write)) => !results_unavailable(&write.message),
+        ErrorKind::Command(_) => true,
+        _ => false,
+    }
+}
+
+/// mongosが、シャードへ送った後に結果を受け取れなかったときの、書き込みの
+/// エラーの文か（`Write results unavailable from …`）。コードは元のエラーの
+/// ものを引き継ぐので、文で見分ける。シャードでは当たっているかもしれない
+fn results_unavailable(message: &str) -> bool {
+    message.contains("Write results unavailable")
 }
 
 /// `run_to_completion`が、結果を得られなかった理由
@@ -875,13 +985,14 @@ fn partial_insert_message(failed: usize, total: usize, message: &str) -> String 
     format!("MongoDB insertMany: documents[{failed}] failed: {message}. {before}. The documents after documents[{failed}] were not tried")
 }
 
-/// 引数`collection`。空・`system.`で始まる・`$`やNULを含む名前は断る
+/// 引数`collection`。空（空白だけも）・`system.`で始まる・`$`やNULを含む
+/// 名前は断る。前後の空白は削らない（#808。`users `と`users`は別の
+/// コレクション）
 fn collection_name(args: &JsonValue) -> Result<String, McpError> {
     let name = args
         .get("collection")
         .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
+        .filter(|n| !n.trim().is_empty())
         .ok_or_else(|| McpError::InvalidParams("Missing 'collection' parameter".to_string()))?;
     if name.starts_with("system.") || name.contains('$') || name.contains('\0') || name.len() > 255
     {
@@ -1242,14 +1353,40 @@ mod tests {
             collection_name(&json!({"collection": "users"})).unwrap(),
             "users"
         );
+        // 前後の空白は削らない（#808）
+        assert_eq!(
+            collection_name(&json!({"collection": "users "})).unwrap(),
+            "users "
+        );
         for bad in [
             json!({}),
             json!({"collection": ""}),
+            json!({"collection": "  "}),
             json!({"collection": "system.users"}),
             json!({"collection": "a$b"}),
         ] {
             assert!(collection_name(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// 通信のエラーは、成否が分からない（#808。サーバーが断ったエラーの
+    /// 型は、ドライバーの外では作れない）
+    #[test]
+    fn test_write_not_applied() {
+        use mongodb::error::{Error, ErrorKind};
+        let lost = Error::from(ErrorKind::Io(Arc::new(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        ))));
+        assert!(!write_not_applied(&lost, false));
+        assert!(!write_not_applied(&lost, true));
+        assert!(!write_rejected_by_server(&lost));
+        // mongosがシャードから結果を受け取れなかったもの（PR #817のレビュー）
+        assert!(results_unavailable(
+            "Write results unavailable from shard0:27018 :: caused by :: HostUnreachable"
+        ));
+        assert!(!results_unavailable(
+            "E11000 duplicate key error collection: app.users"
+        ));
     }
 
     #[test]
@@ -1289,10 +1426,10 @@ mod tests {
             .unwrap_err()
             .contains("needs a password"));
         // 書いたホストにだけつなぐ（他のメンバーを探さない）
-        assert_eq!(
-            client_options(&settings("localhost", None)).direct_connection,
-            Some(true)
-        );
+        let options = client_options(&settings("localhost", None));
+        assert_eq!(options.direct_connection, Some(true));
+        // 書き込みを、ドライバーで送り直さない（PR #817のレビュー）
+        assert_eq!(options.retry_writes, Some(false));
     }
 
     /// 時間切れのあとも、タスクは最後まで動く（ドライバーのfutureを落とさない）
