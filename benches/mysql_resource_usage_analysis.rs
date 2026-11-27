@@ -479,7 +479,7 @@ impl ResourceUsageAnalysis {
                     .unwrap_or_else(|_| "resource_user".to_string()),
                 password: std::env::var("MYSQL_PASSWORD")
                     .unwrap_or_else(|_| "resource_pass".to_string()),
-                ssl_mode: Some("disabled".to_string()),
+                ssl_mode: Some("disable".to_string()),
                 timeout_seconds: 30,
                 retry_attempts: 3,
                 options: std::collections::HashMap::new(),

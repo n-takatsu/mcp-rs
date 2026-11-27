@@ -23,8 +23,10 @@ impl MySqlParamConverter {
             Value::String(s) => Ok(mysql_async::Value::Bytes(s.as_bytes().to_vec())),
             Value::Binary(b) => Ok(mysql_async::Value::Bytes(b.clone())),
             Value::Json(j) => Ok(mysql_async::Value::Bytes(j.to_string().into_bytes())),
+            // マイクロ秒まで渡す（#768。以前は`%.3f`で、ミリ秒より下を切り
+            // 捨てた）。MySQLのDATETIMEは時差を持たないので、UTCの時刻
             Value::DateTime(dt) => {
-                let formatted = dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+                let formatted = dt.naive_utc().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
                 Ok(mysql_async::Value::Bytes(formatted.into_bytes()))
             }
         }
@@ -46,7 +48,7 @@ impl MySqlParamConverter {
     /// Ensures the number of provided parameters matches the number of
     /// placeholders in the SQL query to prevent parameter injection attacks.
     pub fn validate_param_count(sql: &str, param_count: usize) -> Result<(), DatabaseError> {
-        let expected_count = sql.matches('?').count();
+        let expected_count = Self::extract_parameter_positions(sql).len();
         if expected_count != param_count {
             return Err(DatabaseError::ValidationError(format!(
                 "Parameter count mismatch: expected {}, provided {}",
@@ -65,7 +67,12 @@ impl MySqlParamConverter {
         match mysql_value {
             mysql_async::Value::NULL => Ok(Value::Null),
             mysql_async::Value::Int(i) => Ok(Value::Int(i)),
-            mysql_async::Value::UInt(u) => Ok(Value::Int(u as i64)),
+            // i64に入らない符号なしの値は、桁を落とさないよう文字列にする
+            // （#768。以前は`as i64`で、`u64::MAX`が-1になった）
+            mysql_async::Value::UInt(u) => Ok(match i64::try_from(u) {
+                Ok(i) => Value::Int(i),
+                Err(_) => Value::String(u.to_string()),
+            }),
             mysql_async::Value::Float(f) => Ok(Value::Float(f as f64)),
             mysql_async::Value::Double(d) => Ok(Value::Float(d)),
             mysql_async::Value::Bytes(b) => match String::from_utf8(b.clone()) {
@@ -124,9 +131,65 @@ impl MySqlParamConverter {
 
     /// Extract parameter placeholders from SQL
     ///
-    /// Identifies parameter positions in SQL for validation and debugging
+    /// Identifies parameter positions (byte offsets) in SQL for validation
+    /// and debugging. A `?` inside a string, a quoted identifier, or a
+    /// comment is not a placeholder (#768: it used to be counted)
     pub fn extract_parameter_positions(sql: &str) -> Vec<usize> {
-        sql.match_indices('?').map(|(pos, _)| pos).collect()
+        let mut positions = Vec::new();
+        let mut chars = sql.char_indices().peekable();
+        while let Some((position, c)) = chars.next() {
+            match c {
+                '?' => positions.push(position),
+                // 文字列・引用符で囲んだ名前。`\`の次の文字と、重ねた引用符は
+                // 終わりにしない（バッククォートの中では、`\`は普通の文字）
+                '\'' | '"' | '`' => {
+                    while let Some((_, inner)) = chars.next() {
+                        if inner == '\\' && c != '`' {
+                            chars.next();
+                        } else if inner == c {
+                            if chars.peek().is_some_and(|(_, next)| *next == c) {
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // `#`と、`-- `（`--`の次が空白か終わり）は、行の終わりまでコメント
+                '#' => {
+                    for (_, inner) in chars.by_ref() {
+                        if inner == '\n' {
+                            break;
+                        }
+                    }
+                }
+                '-' if sql[position..].starts_with("--")
+                    && sql[position + 2..]
+                        .chars()
+                        .next()
+                        .is_none_or(char::is_whitespace) =>
+                {
+                    for (_, inner) in chars.by_ref() {
+                        if inner == '\n' {
+                            break;
+                        }
+                    }
+                }
+                // `/* … */`
+                '/' if chars.peek().is_some_and(|(_, next)| *next == '*') => {
+                    chars.next();
+                    let mut previous = ' ';
+                    for (_, inner) in chars.by_ref() {
+                        if previous == '*' && inner == '/' {
+                            break;
+                        }
+                        previous = inner;
+                    }
+                }
+                _ => {}
+            }
+        }
+        positions
     }
 
     /// Generate safe parameter summary for logging
@@ -200,6 +263,52 @@ mod tests {
             let result = MySqlParamConverter::convert_value(&value);
             assert!(result.is_ok(), "Failed to convert value: {:?}", value);
         }
+    }
+
+    /// 文字列・引用符で囲んだ名前・コメントの中の`?`は、数えない（#768）
+    #[test]
+    fn test_placeholders_in_strings_and_comments_are_not_counted() {
+        for (sql, count) in [
+            ("SELECT * FROM t WHERE a = ? AND b = '?'", 1),
+            ("SELECT '?', \"?\", `a?b` FROM t WHERE a = ?", 1),
+            ("SELECT 'it''s ?', 'a\\'?' FROM t WHERE a = ?", 1),
+            ("SELECT 1 /* ? */ FROM t WHERE a = ? -- ?", 1),
+            ("SELECT 1 # ?\nFROM t WHERE a = ? AND b = ?", 2),
+            ("SELECT a--? FROM t", 1),
+            ("SELECT 'unclosed ?", 0),
+            ("SELECT ?, ?", 2),
+        ] {
+            assert_eq!(
+                MySqlParamConverter::extract_parameter_positions(sql).len(),
+                count,
+                "{sql}"
+            );
+            assert!(MySqlParamConverter::validate_param_count(sql, count).is_ok());
+        }
+        assert_eq!(
+            MySqlParamConverter::extract_parameter_positions("SELECT '?' WHERE a = ?"),
+            vec![21]
+        );
+    }
+
+    /// マイクロ秒まで渡す。i64に入らない符号なしの値は、文字列にする（#768）
+    #[test]
+    fn test_values_keep_their_precision() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-27T01:02:03.123456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let converted = MySqlParamConverter::convert_value(&Value::DateTime(at)).unwrap();
+        assert_eq!(
+            converted,
+            mysql_async::Value::Bytes(b"2026-11-27 01:02:03.123456".to_vec())
+        );
+
+        let big = MySqlParamConverter::convert_from_mysql_value(mysql_async::Value::UInt(u64::MAX))
+            .unwrap();
+        assert!(matches!(big, Value::String(text) if text == u64::MAX.to_string()));
+        let small =
+            MySqlParamConverter::convert_from_mysql_value(mysql_async::Value::UInt(7)).unwrap();
+        assert!(matches!(small, Value::Int(7)));
     }
 
     #[test]

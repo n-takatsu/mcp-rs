@@ -34,9 +34,6 @@ impl MySqlPreparedStatement {
     /// # Returns
     /// A new MySqlPreparedStatement or error if preparation fails
     pub async fn new(pool: Arc<Pool>, sql: String) -> Result<Self, DatabaseError> {
-        // Validate placeholders
-        let param_count = sql.matches('?').count();
-
         // Attempt to prepare the statement by getting a connection and preparing
         let mut conn = pool
             .get_conn()
@@ -46,6 +43,10 @@ impl MySqlPreparedStatement {
         let statement = conn.prep(&sql).await.map_err(|e| {
             DatabaseError::QueryFailed(format!("Failed to prepare statement: {}", e))
         })?;
+
+        // パラメーターの数は、サーバーが数えたものを使う（#768。以前はSQLの
+        // `?`を数えたので、文字列・コメントの中の`?`も数えた）
+        let param_count = usize::from(statement.num_params());
 
         Ok(Self {
             statement: Arc::new(statement),
@@ -174,7 +175,7 @@ impl PreparedStatement for MySqlPreparedStatement {
 
         Ok(ExecuteResult {
             rows_affected,
-            last_insert_id: last_insert_id.map(|id| Value::Int(id as i64)),
+            last_insert_id: last_insert_id.map(super::transaction::last_insert_id_value),
             execution_time_ms: execution_time,
         })
     }
