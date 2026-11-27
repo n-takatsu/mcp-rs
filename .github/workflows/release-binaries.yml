@@ -234,10 +234,24 @@ jobs:
           shopt -s nullglob
           cd dist
           # new: リリースに足すファイル、attest: そのうちの配るファイル、
-          # replace: 置き換える`.sha256`（配るファイルが無いのに残っていたもの）
+          # replace: 同じ名前のものを置き換えて上げるファイル
           mkdir -p ../new ../attest ../replace ../release
-          on_release=$(gh release view "${TAG}" --json assets --jq '.assets[].name')
-          has() { printf '%s\n' "${on_release}" | grep -Fxq -- "$1"; }
+          # 上げ終わったファイル（`state`が`uploaded`）だけを、リリースにある
+          # ものとする。上げるのに失敗すると、中身の無いもの（`starter`）が
+          # 残ることがある（PR #818のレビュー）
+          uploaded=$(gh release view "${TAG}" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')
+          listed=$(gh release view "${TAG}" --json assets --jq '.assets[].name')
+          has() { printf '%s\n' "${uploaded}" | grep -Fxq -- "$1"; }
+          # 上げるファイルを置く。同じ名前のもの（上げ終わっていないもの・配る
+          # ファイルが無いのに残っていた`.sha256`）があれば、置き換える
+          put() {
+            if printf '%s\n' "${listed}" | grep -Fxq -- "$1"; then
+              echo "$1 is on the release but is not a file that is handed out: replacing it"
+              cp "$1" ../replace/
+            else
+              cp "$1" ../new/
+            fi
+          }
           for file in *.zip *.tar.gz *.mcpb; do
             if has "${file}"; then
               echo "${file} is already on the release: keeping it"
@@ -254,20 +268,15 @@ jobs:
                 # リリースの`.sha256`を、そのまま`SHA256SUMS`に入れる
                 cp "../release/${file}.sha256" "${file}.sha256"
               else
-                cp "${file}.sha256" ../new/
+                put "${file}.sha256"
               fi
             else
-              cp "${file}" ../new/
+              put "${file}"
               cp "${file}" ../attest/
               # 配るファイルが無いのに`.sha256`だけがあれば（前の実行が途中で
               # 止まった等）、それは配っているファイルのハッシュではないので、
               # 置き換える（PR #818のレビュー。足すだけだと、同じ名前で失敗する）
-              if has "${file}.sha256"; then
-                echo "${file}.sha256 is on the release without ${file}: replacing it"
-                cp "${file}.sha256" ../replace/
-              else
-                cp "${file}.sha256" ../new/
-              fi
+              put "${file}.sha256"
             fi
           done
           # 全部のハッシュを1つにまとめたもの（sha256sum -c SHA256SUMSで確かめる）
@@ -306,10 +315,11 @@ jobs:
           REPLACE: ${{ steps.keep.outputs.replace }}
         run: |
           set -euo pipefail
-          # 配るファイルが無いのに残っていた`.sha256`は、配るファイルを足す前に
-          # 置き換える（PR #818のレビュー。後にすると、置き換えに失敗したとき、
-          # 新しいファイルと古い`.sha256`が残り、やり直しでも直らない。先なら、
-          # 失敗しても配るファイルがまだ無いので、やり直しで同じく置き換える）
+          # 同じ名前のもの（上げ終わっていないもの・配るファイルが無いのに
+          # 残っていた`.sha256`）を、足す前に置き換える（PR #818のレビュー。
+          # 後にすると、置き換えに失敗したとき、新しいファイルと古い`.sha256`が
+          # 残り、やり直しでも直らない。先なら、失敗しても配るファイルはまだ
+          # 上げ終わっていないので、やり直しで同じく置き換える）
           if [ "${REPLACE}" = "true" ]; then
             gh release upload "${TAG}" replace/* --clobber
           fi
