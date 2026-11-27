@@ -324,6 +324,11 @@ async fn redis_scans_are_not_cut() {
         .arg("b")
         .arg(3)
         .arg("c")
+        // フィールドの名前がUTF-8でないハッシュ（#808）
+        .cmd("HSET")
+        .arg("hb")
+        .arg(&[0xff_u8][..])
+        .arg("v")
         .query_async(&mut conn)
         .await
         .unwrap();
@@ -362,4 +367,9 @@ async fn redis_scans_are_not_cut() {
         // 小さい集合は一度に全部返るので、max_rows（1）を超えるページがある
         assert!(largest > 1, "{name}: {largest}");
     }
+    // オブジェクトにできない`HGETALL`は、フィールドと値の組で数える。
+    // `max_rows = 1`でも、値は落ちない（#808）
+    let hash = command(&handler, "HGETALL", json!(["hb"])).await.unwrap();
+    assert_eq!(hash["truncated"], false, "{hash}");
+    assert_eq!(hash["result"].as_array().map(Vec::len), Some(2), "{hash}");
 }

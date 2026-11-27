@@ -117,8 +117,12 @@ pub(crate) async fn open_pools(config: &DatabaseConfig) -> Result<Arc<SqlitePool
         let options = SqliteConnectOptions::from_str("sqlite::memory:")
             .map_err(open_error)?
             .busy_timeout(busy);
-        // 接続ごとに別のデータベースになるので、1つだけにする
+        // 接続ごとに別のデータベースになるので、1つだけにする。その接続を
+        // 閉じるとデータベースが消えるので、使わない時間・接続の寿命（sqlxの
+        // 既定は10分・30分）で閉じない（#808）
         let pool = pool_options(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(options)
             .await
             .map_err(open_error)?;

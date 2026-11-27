@@ -85,6 +85,12 @@ pub struct MongoHandler {
     database: mongodb::Database,
     allow_write: bool,
     limits: Limits,
+    /// ドライバーの操作を動かしているタスクの数の上限（接続のプールの大きさ。
+    /// #808）。待つのをやめた後も、タスクは最後まで動き、接続を持ち続ける
+    /// （応えないサーバーへの接続は、ドライバーのTCPのkeepaliveで、やがて
+    /// 切れる）。その間に新しいタスクを積み上げないよう、空きが無ければ
+    /// 断る
+    busy: Arc<tokio::sync::Semaphore>,
     status_line: String,
     audit_logger: Option<Arc<crate::security::AuditLogger>>,
 }
@@ -200,6 +206,11 @@ impl MongoHandler {
         Ok(Self {
             database,
             allow_write: settings.allow_write(),
+            busy: Arc::new(tokio::sync::Semaphore::new(
+                usize::try_from(settings.max_connections())
+                    .unwrap_or(usize::MAX)
+                    .clamp(1, tokio::sync::Semaphore::MAX_PERMITS),
+            )),
             limits: Limits {
                 max_items: settings.max_rows() as usize,
                 max_result_bytes: usize::try_from(settings.max_result_bytes())
@@ -229,6 +240,7 @@ impl MongoHandler {
         write: bool,
         future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
     ) -> Result<mongodb::error::Result<T>, McpError> {
+        let future = self.hold_slot(what, future)?;
         let seconds = self.limits.timeout.as_secs();
         match run_to_completion(self.limits.timeout + CLIENT_TIMEOUT_GRACE, future).await {
             Ok(result) => Ok(result),
@@ -244,6 +256,25 @@ impl MongoHandler {
         }
     }
 
+    /// `future`を、タスクの枠（[`MongoHandler::busy`]）を1つ持ったまま動く
+    /// ものにする。枠が空いていなければ、断る（#808）
+    fn hold_slot<T>(
+        &self,
+        what: &str,
+        future: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Result<impl std::future::Future<Output = T> + Send + 'static, McpError> {
+        let slot = self.busy.clone().try_acquire_owned().map_err(|_| {
+            McpError::ExternalApi(format!(
+                "MongoDB {what} was not started: every connection of the pool is still used by earlier operations that mcp-rs stopped waiting for (the server has not answered them yet). Try again later"
+            ))
+        })?;
+        Ok(async move {
+            let result = future.await;
+            drop(slot);
+            result
+        })
+    }
+
     /// 読み取りの操作を待つ
     async fn wait<T: Send + 'static>(
         &self,
@@ -257,14 +288,24 @@ impl MongoHandler {
 
     /// 書き込みの操作を待つ。書き込みには`maxTimeMS`を送れない（ドライバーに
     /// 無い）ので、時間切れのあとも、サーバーは続けることがある
+    ///
+    /// ドライバーのエラーが、書かれていないと分かるもの（サーバーが断った等。
+    /// [`write_not_applied`]）でなければ、成否が分からないと伝える（#808。
+    /// 書いた後に接続が切れると、送り直しで二重に書く）
     async fn wait_write<T: Send + 'static>(
         &self,
         what: &str,
         future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
     ) -> Result<T, McpError> {
-        self.run(what, true, future)
-            .await?
-            .map_err(|e| McpError::ExternalApi(format!("MongoDB {what}: {e}")))
+        self.run(what, true, future).await?.map_err(|e| {
+            if write_not_applied(&e) {
+                McpError::ExternalApi(format!("MongoDB {what}: {e}"))
+            } else {
+                McpError::ExternalApi(format!(
+                    "MongoDB {what}: {e}. The outcome is unknown: the server may have applied the write before the answer was lost. Do not send it again unless you are sure that applying it twice leaves the data as you want it"
+                ))
+            }
+        })
     }
 
     fn collection(&self, args: &JsonValue) -> Result<mongodb::Collection<Document>, McpError> {
@@ -394,11 +435,15 @@ impl MongoHandler {
             self.database.name(),
             limits.max_result_bytes,
         )));
+        let task = self.hold_slot(
+            "get_schema",
+            read_schema(self.database.clone(), limits.clone(), progress.clone()),
+        )?;
         schema_within(
             limits.timeout + CLIENT_TIMEOUT_GRACE,
             limits.timeout.as_secs(),
-            progress.clone(),
-            read_schema(self.database.clone(), limits, progress),
+            progress,
+            task,
         )
         .await
     }
@@ -579,6 +624,27 @@ impl MongoHandler {
             warn!("Failed to write audit log entry for {}: {}", tool_name, e);
         }
     }
+}
+
+/// 書き込みのエラーが、書かれていないと分かるものか（#808）。サーバーが
+/// 断った（書き込みのエラー・コマンドのエラー）か、送る前に止まった（サーバーを
+/// 選べない・引数・BSONにできない・認証）とき。再送してよいと付いたエラー
+/// （`RetryableWriteError`）、通信のエラー、`writeConcern`のエラー（主には
+/// 書けている）等は、成否が分からない
+fn write_not_applied(error: &mongodb::error::Error) -> bool {
+    use mongodb::error::{ErrorKind, WriteFailure};
+    if error.contains_label("RetryableWriteError") {
+        return false;
+    }
+    matches!(
+        error.kind.as_ref(),
+        ErrorKind::Write(WriteFailure::WriteError(_))
+            | ErrorKind::Command(_)
+            | ErrorKind::ServerSelection { .. }
+            | ErrorKind::InvalidArgument { .. }
+            | ErrorKind::BsonSerialization(_)
+            | ErrorKind::Authentication { .. }
+    )
 }
 
 /// `run_to_completion`が、結果を得られなかった理由
@@ -875,13 +941,14 @@ fn partial_insert_message(failed: usize, total: usize, message: &str) -> String 
     format!("MongoDB insertMany: documents[{failed}] failed: {message}. {before}. The documents after documents[{failed}] were not tried")
 }
 
-/// 引数`collection`。空・`system.`で始まる・`$`やNULを含む名前は断る
+/// 引数`collection`。空（空白だけも）・`system.`で始まる・`$`やNULを含む
+/// 名前は断る。前後の空白は削らない（#808。`users `と`users`は別の
+/// コレクション）
 fn collection_name(args: &JsonValue) -> Result<String, McpError> {
     let name = args
         .get("collection")
         .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
+        .filter(|n| !n.trim().is_empty())
         .ok_or_else(|| McpError::InvalidParams("Missing 'collection' parameter".to_string()))?;
     if name.starts_with("system.") || name.contains('$') || name.contains('\0') || name.len() > 255
     {
@@ -1242,14 +1309,31 @@ mod tests {
             collection_name(&json!({"collection": "users"})).unwrap(),
             "users"
         );
+        // 前後の空白は削らない（#808）
+        assert_eq!(
+            collection_name(&json!({"collection": "users "})).unwrap(),
+            "users "
+        );
         for bad in [
             json!({}),
             json!({"collection": ""}),
+            json!({"collection": "  "}),
             json!({"collection": "system.users"}),
             json!({"collection": "a$b"}),
         ] {
             assert!(collection_name(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// 通信のエラーは、成否が分からない（#808。サーバーが断ったエラーの
+    /// 型は、ドライバーの外では作れない）
+    #[test]
+    fn test_write_not_applied() {
+        use mongodb::error::{Error, ErrorKind};
+        let lost = Error::from(ErrorKind::Io(Arc::new(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        ))));
+        assert!(!write_not_applied(&lost));
     }
 
     #[test]
