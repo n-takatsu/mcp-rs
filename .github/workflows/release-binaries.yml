@@ -315,13 +315,26 @@ jobs:
           REPLACE: ${{ steps.keep.outputs.replace }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           # 同じ名前のもの（上げ終わっていないもの・配るファイルが無いのに
           # 残っていた`.sha256`）を、足す前に置き換える（PR #818のレビュー。
           # 後にすると、置き換えに失敗したとき、新しいファイルと古い`.sha256`が
           # 残り、やり直しでも直らない。先なら、失敗しても配るファイルはまだ
           # 上げ終わっていないので、やり直しで同じく置き換える）
+          # `.sha256`を先に、1つずつ置き換える（PR #818のレビュー。まとめて
+          # 上げると、`gh`はファイルごとに並べて置き換えるので、`.sha256`だけが
+          # 古いまま残りうる）。配るファイルの置き換えが途中で失敗しても、
+          # 上げ終わっていないので、やり直しで両方を置き換える
           if [ "${REPLACE}" = "true" ]; then
-            gh release upload "${TAG}" replace/* --clobber
+            for f in replace/*.sha256; do
+              gh release upload "${TAG}" "${f}" --clobber
+            done
+            for f in replace/*; do
+              case "${f}" in
+                *.sha256) ;;
+                *) gh release upload "${TAG}" "${f}" --clobber ;;
+              esac
+            done
           fi
           # 無いファイルだけを足す（`--clobber`を付けない。#809）。途中で
           # 失敗しても、やり直しでは、上がったファイルを使い続け、残りを足す
