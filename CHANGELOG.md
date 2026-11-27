@@ -134,6 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   副問い合わせで読めた。今は、実行の前に、書き込む表には`write`（`DELETE`は
   `delete`）、文の中で読む表には`read`の許可を確かめる（#609）。`[database]`の
   設定からは使えない機能なので、mcp-rsの実行ファイルには影響しない
+  - ぶつかった今の行を消してから入れる書き方（`REPLACE INTO`、SQLiteの
+    `INSERT OR REPLACE`・`UPDATE OR REPLACE`）には、`write`に加えて`delete`の
+    許可も要る
   - MySQLの複数の表の`UPDATE`・`DELETE`は、`JOIN`した表をすべて書き込む表と
     して確かめる。表を分けられない形（`WITH`等）は断る
   - 検証済みの呼び出し元で書き込む`DatabaseHandler::execute_command_as`を足した

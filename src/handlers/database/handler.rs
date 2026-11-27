@@ -1065,6 +1065,9 @@ impl DatabaseHandler {
                 tables.action,
                 auth_user,
             )?;
+            if tables.also_deletes {
+                Self::check_table_access(engine, &engine_id, &tables.written, "delete", auth_user)?;
+            }
             Self::check_table_access(engine, &engine_id, &tables.read, "read", auth_user)?;
         }
 
@@ -1943,6 +1946,28 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("table 'notes' (write)"), "{error}");
+
+        // ぶつかった行を消してから入れる書き方には、消す許可も要る
+        for sql in [
+            "REPLACE INTO notes (id, body) VALUES (1, 'x')",
+            "INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'x')",
+            "UPDATE OR REPLACE notes SET id = 1 WHERE id = 2",
+        ] {
+            let error = denied(
+                handler
+                    .execute_command_as(json!({ "sql": sql }), &editor)
+                    .await,
+            );
+            assert!(error.contains("table 'notes' (delete)"), "{sql}: {error}");
+        }
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'a')"}),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
 
         // SQLiteは、表の名前の大文字・小文字を区別しない。許可のリソースは
         // 小文字で書く（`database:sqlite:notes`）。SQLの名前は、小文字に

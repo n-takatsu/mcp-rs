@@ -615,6 +615,11 @@ fn name_fold(dialect: &dyn Dialect) -> NameFold {
 pub struct WriteTables {
     /// 書き込む表に要る許可: `INSERT`・`UPDATE`は`"write"`、`DELETE`は`"delete"`
     pub action: &'static str,
+    /// 書き込む表に、`"delete"`の許可も要るか。ぶつかった今の行を消してから
+    /// 入れる書き方（`REPLACE INTO`、SQLiteの`INSERT OR REPLACE`・
+    /// `UPDATE OR REPLACE`）のとき。消すときは、削除のトリガーや
+    /// `ON DELETE CASCADE`も動く（PR #802のレビュー）
+    pub also_deletes: bool,
     /// 書き込む表（文に書いたとおりの名前。重複は除く）
     pub written: Vec<String>,
     /// 読むだけの表（`INSERT … SELECT`の元、副問い合わせ、`UPDATE … FROM`・
@@ -665,6 +670,10 @@ pub fn resolve_write_tables(
     refuse_hidden_reads(statement)?;
     let fold = name_fold(dialect);
 
+    let replaces = |or: &Option<sqlparser::ast::SqliteOnConflict>| {
+        matches!(or, Some(sqlparser::ast::SqliteOnConflict::Replace))
+    };
+    let mut also_deletes = false;
     let mut written: Vec<String> = Vec::new();
     // 表としては数えない名前（MySQLの`DELETE FROM a USING …`の`a`）
     let mut not_tables: Vec<String> = Vec::new();
@@ -682,10 +691,12 @@ pub fn resolve_write_tables(
                 ));
             }
             written.push(object_name_to_qualified_string(name, fold)?);
+            also_deletes = insert.replace_into || replaces(&insert.or);
             "write"
         }
         Statement::Update(update) => {
             collect_written(std::slice::from_ref(&update.table), fold, &mut written)?;
+            also_deletes = replaces(&update.or);
             "write"
         }
         Statement::Delete(delete) => {
@@ -758,6 +769,7 @@ pub fn resolve_write_tables(
     }
     Ok(WriteTables {
         action,
+        also_deletes,
         written: targets,
         read,
     })
@@ -1717,6 +1729,34 @@ mod tests {
         // ほかの関数・普通のVALUESは、今までどおり
         assert!(write_tables("INSERT INTO notes (body) VALUES (upper($1)), (now()::text)").is_ok());
         assert!(tables("SELECT count(*), max(length(body)) FROM notes").is_ok());
+    }
+
+    /// ぶつかった今の行を消してから入れる書き方には、`delete`の許可も要る
+    /// （PR #802のレビュー）
+    #[test]
+    fn replacing_writes_also_need_delete() {
+        let mysql = |sql: &str| resolve_write_tables(sql, &MySqlDialect {}).unwrap();
+        let sqlite = |sql: &str| resolve_write_tables(sql, &SQLiteDialect {}).unwrap();
+        for tables in [
+            mysql("REPLACE INTO notes (id, body) VALUES (1, 'x')"),
+            sqlite("REPLACE INTO notes (id, body) VALUES (1, 'x')"),
+            sqlite("INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'x')"),
+            sqlite("UPDATE OR REPLACE notes SET id = 1 WHERE id = 2"),
+        ] {
+            assert_eq!(tables.action, "write");
+            assert!(tables.also_deletes, "{tables:?}");
+            assert_eq!(tables.written, names(&["notes"]));
+        }
+        for tables in [
+            mysql("INSERT INTO notes (id, body) VALUES (1, 'x')"),
+            mysql("INSERT INTO notes (id) VALUES (1) ON DUPLICATE KEY UPDATE body = 'x'"),
+            sqlite("INSERT OR IGNORE INTO notes (id, body) VALUES (1, 'x')"),
+            sqlite("UPDATE OR IGNORE notes SET id = 1 WHERE id = 2"),
+            sqlite("UPDATE notes SET body = 'x'"),
+            sqlite("DELETE FROM notes"),
+        ] {
+            assert!(!tables.also_deletes, "{tables:?}");
+        }
     }
 
     /// 分けられない形は、断る（#609）
