@@ -144,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （`SELECT * FROM name`と同じ意味。`UNION`の中でも）と、引用符の中に
     `.`のある名前（`"public.users"`は、`public.users`とは別の表）、文字列の
     SQL・表の名前で表を読むPostgreSQLの関数（`query_to_xml`・`table_to_xml`・
-    `ts_stat`・`crosstab`等）。ユーザーが作った関数までは見分けられないので、
+    `ts_stat`・`crosstab`・`connectby`等）。ユーザーが作った関数までは見分けられないので、
     本来の守りは、データベースのロールの権限
   - PostgreSQLでは、表の名前を許可と比べる前に、引用符で囲まない名前を
     小文字にそろえる（PostgreSQLと同じ。`Users`は`users`、`"Users"`は別の表）。

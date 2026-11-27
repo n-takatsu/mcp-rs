@@ -488,7 +488,7 @@ pub fn resolve_query_tables(
 /// - `query_to_xml`・`table_to_xml`・`schema_to_xml`・`database_to_xml`・
 ///   `cursor_to_xml`（`…_xmlschema`・`…_xml_and_xmlschema`も）
 /// - `ts_stat`（全文検索の統計。引数のSQLを実行する）
-/// - `crosstab`（tablefunc）・`xpath_table`（xml2）: 拡張の関数
+/// - `crosstab`・`connectby`（tablefunc）・`xpath_table`（xml2）: 拡張の関数
 ///
 /// 網羅はできない: ユーザーが作った関数は、どの表でも読める。本来の守りは、
 /// データベースのロールの権限
@@ -501,6 +501,7 @@ const TEXT_SQL_FUNCTION_PREFIXES: &[&str] = &[
     "ts_stat",
     "crosstab",
     "xpath_table",
+    "connectby",
 ];
 
 /// 表を拾えない読み方を探す: `TABLE name`（`SELECT * FROM name`と同じ。
@@ -1662,6 +1663,7 @@ mod tests {
             "INSERT INTO notes (body) SELECT word FROM ts_stat('SELECT v FROM secret')",
             "INSERT INTO notes (body) SELECT * FROM crosstab('SELECT a, b, c FROM secret') AS t(a text, b text)",
             "DELETE FROM notes WHERE body = schema_to_xml('private', true, false, '')::text",
+            "INSERT INTO notes (body) SELECT keyid FROM connectby('secret', 'id', 'parent_id', '1', 0) AS t(keyid text, parent_keyid text, level int)",
         ] {
             let error = write_tables(sql).unwrap_err().to_string();
             assert!(error.contains("named in a string"), "{sql}: {error}");
