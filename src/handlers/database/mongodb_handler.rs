@@ -86,10 +86,14 @@ pub struct MongoHandler {
     allow_write: bool,
     limits: Limits,
     /// ドライバーの操作を動かしているタスクの数の上限（接続のプールの大きさ。
-    /// #808）。待つのをやめた後も、タスクは最後まで動き、接続を持ち続ける
-    /// （応えないサーバーへの接続は、ドライバーのTCPのkeepaliveで、やがて
-    /// 切れる）。その間に新しいタスクを積み上げないよう、空きが無ければ
-    /// 断る
+    /// #808）。待つのをやめた後も、タスクは最後まで動き、接続を持ち続ける。
+    /// その間に新しいタスクを積み上げないよう、空きが無ければ断る。
+    ///
+    /// 枠が空くのは、サーバーが答えるか、接続が切れたとき。TCPのkeepalive
+    /// （ドライバーは120秒）が切るのは、相手が消えた接続だけで、サーバーが
+    /// 生きていて答えない操作（ロックを待つ等）は切らない。そうした操作で枠が
+    /// 埋まったままなら、サーバーで操作を止める（`killOp`）か、mcp-rsを
+    /// 起動し直す（PR #817のレビュー）
     busy: Arc<tokio::sync::Semaphore>,
     status_line: String,
     audit_logger: Option<Arc<crate::security::AuditLogger>>,
@@ -265,7 +269,7 @@ impl MongoHandler {
     ) -> Result<impl std::future::Future<Output = T> + Send + 'static, McpError> {
         let slot = self.busy.clone().try_acquire_owned().map_err(|_| {
             McpError::ExternalApi(format!(
-                "MongoDB {what} was not started: every connection of the pool is still used by earlier operations that mcp-rs stopped waiting for (the server has not answered them yet). Try again later"
+                "MongoDB {what} was not started: every connection of the pool is still used by earlier operations that mcp-rs stopped waiting for (the server has not answered them yet). Try again later. If this does not clear, stop those operations on the server (killOp) or restart mcp-rs"
             ))
         })?;
         Ok(async move {
@@ -289,17 +293,24 @@ impl MongoHandler {
     /// 書き込みの操作を待つ。書き込みには`maxTimeMS`を送れない（ドライバーに
     /// 無い）ので、時間切れのあとも、サーバーは続けることがある
     ///
-    /// ドライバーのエラーが、書かれていないと分かるもの（サーバーが断った等。
-    /// [`write_not_applied`]）でなければ、成否が分からないと伝える（#808。
-    /// 書いた後に接続が切れると、送り直しで二重に書く）
+    /// ドライバーのエラーが、書かれていないと分かるもの（[`write_not_applied`]）
+    /// でなければ、成否が分からないと伝える（#808。書いた後に接続が切れると、
+    /// 送り直しで二重に書く）。`many`（`updateMany`・`deleteMany`）では、
+    /// サーバーが途中で止めたエラーでも、それまでのドキュメントは変わって
+    /// いる（PR #817のレビュー）
     async fn wait_write<T: Send + 'static>(
         &self,
         what: &str,
+        many: bool,
         future: impl std::future::Future<Output = mongodb::error::Result<T>> + Send + 'static,
     ) -> Result<T, McpError> {
         self.run(what, true, future).await?.map_err(|e| {
-            if write_not_applied(&e) {
+            if write_not_applied(&e, many) {
                 McpError::ExternalApi(format!("MongoDB {what}: {e}"))
+            } else if many && write_rejected_by_server(&e) {
+                McpError::ExternalApi(format!(
+                    "MongoDB {what}: {e}. The server stopped part way: the documents handled before the error stay changed. Check them before sending it again (sending it again changes them again)"
+                ))
             } else {
                 McpError::ExternalApi(format!(
                     "MongoDB {what}: {e}. The outcome is unknown: the server may have applied the write before the answer was lost. Do not send it again unless you are sure that applying it twice leaves the data as you want it"
@@ -542,12 +553,12 @@ impl MongoHandler {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let result = if many {
-            self.wait_write("updateMany", async move {
+            self.wait_write("updateMany", true, async move {
                 collection.update_many(filter, update).await
             })
             .await?
         } else {
-            self.wait_write("updateOne", async move {
+            self.wait_write("updateOne", false, async move {
                 collection.update_one(filter, update).await
             })
             .await?
@@ -567,16 +578,14 @@ impl MongoHandler {
             .and_then(JsonValue::as_bool)
             .unwrap_or(false);
         let result = if many {
-            self.wait_write(
-                "deleteMany",
-                async move { collection.delete_many(filter).await },
-            )
+            self.wait_write("deleteMany", true, async move {
+                collection.delete_many(filter).await
+            })
             .await?
         } else {
-            self.wait_write(
-                "deleteOne",
-                async move { collection.delete_one(filter).await },
-            )
+            self.wait_write("deleteOne", false, async move {
+                collection.delete_one(filter).await
+            })
             .await?
         };
         Ok(json!({ "deleted_count": result.deleted_count }))
@@ -626,25 +635,37 @@ impl MongoHandler {
     }
 }
 
-/// 書き込みのエラーが、書かれていないと分かるものか（#808）。サーバーが
-/// 断った（書き込みのエラー・コマンドのエラー）か、送る前に止まった（サーバーを
-/// 選べない・引数・BSONにできない・認証）とき。再送してよいと付いたエラー
-/// （`RetryableWriteError`）、通信のエラー、`writeConcern`のエラー（主には
-/// 書けている）等は、成否が分からない
-fn write_not_applied(error: &mongodb::error::Error) -> bool {
-    use mongodb::error::{ErrorKind, WriteFailure};
+/// 書き込みのエラーが、書かれていないと分かるものか（#808）。送る前に
+/// 止まった（サーバーを選べない・引数・BSONにできない・認証）とき。1つの
+/// ドキュメントの書き込み（`many`でない）では、サーバーが断ったとき
+/// （[`write_rejected_by_server`]）も。複数のドキュメントの書き込みは、
+/// サーバーが途中で止めても、それまでの分は変わっている（PR #817の
+/// レビュー）。通信のエラー、`writeConcern`のエラー（主には書けている）等は、
+/// 成否が分からない
+fn write_not_applied(error: &mongodb::error::Error, many: bool) -> bool {
+    use mongodb::error::ErrorKind;
     if error.contains_label("RetryableWriteError") {
         return false;
     }
-    matches!(
+    let not_sent = matches!(
         error.kind.as_ref(),
-        ErrorKind::Write(WriteFailure::WriteError(_))
-            | ErrorKind::Command(_)
-            | ErrorKind::ServerSelection { .. }
+        ErrorKind::ServerSelection { .. }
             | ErrorKind::InvalidArgument { .. }
             | ErrorKind::BsonSerialization(_)
             | ErrorKind::Authentication { .. }
-    )
+    );
+    not_sent || (!many && write_rejected_by_server(error))
+}
+
+/// サーバーが、書き込みのエラー・コマンドのエラーで答えたか（再送してよいと
+/// 付いたエラーは除く）
+fn write_rejected_by_server(error: &mongodb::error::Error) -> bool {
+    use mongodb::error::{ErrorKind, WriteFailure};
+    !error.contains_label("RetryableWriteError")
+        && matches!(
+            error.kind.as_ref(),
+            ErrorKind::Write(WriteFailure::WriteError(_)) | ErrorKind::Command(_)
+        )
 }
 
 /// `run_to_completion`が、結果を得られなかった理由
@@ -1333,7 +1354,9 @@ mod tests {
         let lost = Error::from(ErrorKind::Io(Arc::new(std::io::Error::from(
             std::io::ErrorKind::ConnectionReset,
         ))));
-        assert!(!write_not_applied(&lost));
+        assert!(!write_not_applied(&lost, false));
+        assert!(!write_not_applied(&lost, true));
+        assert!(!write_rejected_by_server(&lost));
     }
 
     #[test]
