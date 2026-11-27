@@ -402,29 +402,26 @@ impl DatabaseEngine for MySqlEngine {
         use chrono::Utc;
 
         let started = std::time::Instant::now();
-        let connected = self
-            .pool
-            .get_or_try_init(|| connect_pool(&self.config))
-            .await;
-        let (status, error_message) = match connected {
-            Err(e) => (HealthStatusType::Critical, Some(e.to_string())),
-            Ok((pool, ..)) => {
-                let timeout =
-                    Duration::from_secs(u64::from(self.config.connection.timeout_seconds).max(1));
-                let ping = tokio::time::timeout(timeout, async {
-                    let mut conn = pool.get_conn().await?;
-                    conn.ping().await
-                })
-                .await;
-                match ping {
-                    Ok(Ok(())) => (HealthStatusType::Healthy, None),
-                    Ok(Err(e)) => (HealthStatusType::Critical, Some(e.to_string())),
-                    Err(_) => (
-                        HealthStatusType::Critical,
-                        Some(format!("no answer within {} seconds", timeout.as_secs())),
-                    ),
-                }
-            }
+        // つなぐ（か、ほかのタスクがつなぎ終えるのを待つ）ところから`PING`の
+        // 返事までを、1つの時間の上限に入れる（PR #804のレビュー）
+        let timeout = Duration::from_secs(u64::from(self.config.connection.timeout_seconds).max(1));
+        let checked = tokio::time::timeout(timeout, async {
+            let (pool, ..) = self
+                .pool
+                .get_or_try_init(|| connect_pool(&self.config))
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
+            conn.ping().await.map_err(|e| e.to_string())
+        })
+        .await;
+        let (status, error_message) = match checked {
+            Ok(Ok(())) => (HealthStatusType::Healthy, None),
+            Ok(Err(message)) => (HealthStatusType::Critical, Some(message)),
+            Err(_) => (
+                HealthStatusType::Critical,
+                Some(format!("no answer within {} seconds", timeout.as_secs())),
+            ),
         };
         Ok(HealthStatus {
             status,

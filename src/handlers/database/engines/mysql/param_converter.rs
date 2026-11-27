@@ -159,6 +159,8 @@ impl MySqlParamConverter {
     /// `MySqlPreparedStatement` uses it (`Statement::num_params`)
     pub fn extract_parameter_positions(sql: &str) -> Vec<usize> {
         let mut positions = Vec::new();
+        // 実行されるコメント（`/*! … */`）の中にいるか
+        let mut in_executable_comment = false;
         let mut chars = sql.char_indices().peekable();
         while let Some((position, c)) = chars.next() {
             match c {
@@ -198,9 +200,17 @@ impl MySqlParamConverter {
                         }
                     }
                 }
+                // 実行されるコメントの終わりの`*/`。まとめて飛ばす（PR #804の
+                // レビュー。飛ばさないと、`/*! ? */* ?`の`/`と次の`*`を、
+                // 普通のコメントの始まりと読んでしまう）
+                '*' if in_executable_comment
+                    && chars.peek().is_some_and(|(_, next)| *next == '/') =>
+                {
+                    chars.next();
+                    in_executable_comment = false;
+                }
                 // 実行されるコメント（`/*! … */`・`/*M! … */`）は、中身がSQL。
-                // 始まりの印だけを飛ばし、中身は読む（終わりの`*/`は、ただの
-                // 記号として通り過ぎる）
+                // 始まりの印だけを飛ばし、中身は読む
                 '/' if sql[position..].starts_with("/*!")
                     || sql[position..].starts_with("/*M!") =>
                 {
@@ -212,6 +222,7 @@ impl MySqlParamConverter {
                     for _ in 0..opener {
                         chars.next();
                     }
+                    in_executable_comment = true;
                 }
                 // `/* … */`
                 '/' if chars.peek().is_some_and(|(_, next)| *next == '*') => {
@@ -319,6 +330,10 @@ mod tests {
             ("SELECT 1 /*!80000 + ? */ + ?", 2),
             ("SELECT 1 /*M! + ? */ /* ? */", 1),
             ("SELECT 1 /*! + '?' */", 0),
+            // 終わりの`*/`の後の`*`は、掛け算
+            ("SELECT /*! ? */* ?", 2),
+            ("SELECT /*! 2 */* ? /* ? */", 1),
+            ("SELECT 2 */ 1 + ?", 1),
             ("SELECT ?, ?", 2),
         ] {
             assert_eq!(
