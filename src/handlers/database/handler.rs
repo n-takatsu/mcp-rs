@@ -3,17 +3,13 @@
 //! データベース操作のためのMCPハンドラー実装
 
 use crate::handlers::database::{
-    column_encryption::ColumnEncryptionManager,
     column_provenance::{
-        dialect_for, resolve_column_provenance, resolve_query_tables, resolve_write_tables,
-        validate_single_query_statement, validate_single_write_statement, ColumnProvenance,
-        ProjectionResolution,
+        dialect_for, resolve_query_tables, resolve_write_tables, validate_single_query_statement,
+        validate_single_write_statement,
     },
     engine::{DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
-    types::{
-        DatabaseConfig, DatabaseError, DatabaseType, QueryContext, QueryResult, QueryType, Value,
-    },
+    types::{DatabaseConfig, DatabaseError, DatabaseType, Value},
 };
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolAnnotations,
@@ -28,15 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
-
-/// Placeholder returned in place of an encrypted column's raw value when the
-/// caller isn't authorized to see it decrypted.
-const ENCRYPTED_PLACEHOLDER: &str = "***ENCRYPTED***";
-
-/// Placeholder returned when a result column's source table/column can't be
-/// confidently determined, so it can't be checked against the encrypted-
-/// column configuration at all - see `column_provenance`.
-const UNKNOWN_PROVENANCE_PLACEHOLDER: &str = "***UNKNOWN_PROVENANCE***";
 
 /// Canonical string form of a `Role`, matching the lowercase role-name
 /// convention `MicroSegmentation::setup_default_policies()` uses (`"user"`,
@@ -61,9 +48,6 @@ pub struct DatabaseHandler {
     active_engine: Arc<RwLock<Option<String>>>,
     /// データベース設定
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
-    /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
-    /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
-    column_encryption: Option<Arc<ColumnEncryptionManager>>,
     /// マイクロセグメンテーションエンジン（未設定ならこのハンドラでは
     /// テーブル単位のアクセス制御を一切行わない - 既存の呼び出し元には
     /// 影響しないオプトイン機能）。`src/zero_trust/micro_segmentation.rs`
@@ -198,7 +182,6 @@ struct CheckedRead {
     params: Vec<Value>,
     engine_id: String,
     config: DatabaseConfig,
-    dialect: Box<dyn sqlparser::dialect::Dialect + Send>,
 }
 
 /// 監査ログに記録するSQLの長さの上限（文字数）
@@ -211,15 +194,13 @@ impl DatabaseHandler {
     /// SQLインジェクション検知等）・`SafetyManager`を作っていたが、クエリの
     /// 実行ではどれも使っていなかったため削除した（#499）。このハンドラーの
     /// 安全性は、読み取り専用のロール・文の種類の検査（SELECTだけ、
-    /// `allow_write`のときだけ書き込み）・カラム暗号化・マイクロ
-    /// セグメンテーションによる。
+    /// `allow_write`のときだけ書き込み）・マイクロセグメンテーションによる。
     pub async fn new() -> Result<Self, DatabaseError> {
         Ok(Self {
             engines: Arc::new(RwLock::new(EngineRegistry::new())),
             pool_manager: Arc::new(PoolManager::new()),
             active_engine: Arc::new(RwLock::new(None)),
             configs: Arc::new(RwLock::new(HashMap::new())),
-            column_encryption: None,
             micro_segmentation: None,
             tool_options: DatabaseToolOptions::default(),
             audit_logger: None,
@@ -513,12 +494,6 @@ impl DatabaseHandler {
         }
     }
 
-    /// カラムレベル暗号化＋RBACを有効化する（ビルダースタイル）
-    pub fn with_column_encryption(mut self, manager: Arc<ColumnEncryptionManager>) -> Self {
-        self.column_encryption = Some(manager);
-        self
-    }
-
     /// マイクロセグメンテーション（テーブル単位のアクセス制御）を
     /// 有効化する（ビルダースタイル）
     pub fn with_micro_segmentation(mut self, engine: Arc<MicroSegmentation>) -> Self {
@@ -581,7 +556,7 @@ impl DatabaseHandler {
     }
 
     /// クエリ実行処理（`McpHandler::call_tool`経由 - 呼び出し元の識別子は
-    /// 得られないため、暗号化列は常にfail-closedで扱われる）
+    /// 得られないため、マイクロセグメンテーションは識別子なしで確かめる）
     async fn handle_execute_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
         self.execute_query_core(&args, None).await
     }
@@ -703,22 +678,20 @@ impl DatabaseHandler {
         let dialect = dialect_for(config.database_type.clone());
 
         // execute_queryは「SELECT文のみ」を契約として公開しているツールで
-        // あり（list_toolsのdescription参照）、暗号化設定の有無に関わらず
-        // この契約自体を常に強制する。列暗号化が設定されている場合のみ
-        // 有効になる、より厳密な由来解決チェックとは別に、ここで無条件に
-        // 検証する。SQLの方言はアクティブなエンジンの`DatabaseType`に
+        // あり（list_toolsのdescription参照）、ここで無条件に検証する。
+        // SQLの方言はアクティブなエンジンの`DatabaseType`に
         // 合わせる - Postgres方言で固定すると、MySQL/SQLiteなど他エンジン
         // 向けの正当な構文を誤って拒否しかねない。
         validate_single_query_statement(&sql, dialect.as_ref())
             .map_err(|e| McpError::InvalidRequest(e.to_string().replace("execute_query", tool)))?;
 
         // マイクロセグメンテーションが設定されている場合、クエリが触れる
-        // すべてのテーブルについて事前にアクセスを検証する。列暗号化と同様、
+        // すべてのテーブルについて事前にアクセスを検証する。
         // クエリ実行前に検証する - 実行後にチェックすると、未対応のSQL形が
         // 拒否される前にクエリ（および副作用を持つ別ステートメント）が
         // 既にデータベースに対して実行されてしまう。1つでも拒否された
-        // テーブルがあればクエリ全体を拒否する（列レベルの部分マスクとは
-        // 異なり、テーブルへのアクセス可否は分割できないため）。
+        // テーブルがあればクエリ全体を拒否する（テーブルへのアクセス可否は
+        // 分割できないため）。
         if let Some(engine) = &self.micro_segmentation {
             let tables = resolve_query_tables(&sql, dialect.as_ref()).map_err(|e| {
                 McpError::InvalidRequest(format!(
@@ -736,7 +709,6 @@ impl DatabaseHandler {
             params,
             engine_id,
             config,
-            dialect,
         })
     }
 
@@ -750,7 +722,6 @@ impl DatabaseHandler {
             params,
             engine_id,
             config,
-            dialect,
         } = self.checked_read(args, auth_user, "execute_query").await?;
 
         // 接続プールから接続を取得。上で解決した`engine_id`をそのまま使う
@@ -766,24 +737,6 @@ impl DatabaseHandler {
             .await
             .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {engine_id}")))?;
 
-        // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
-        // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/
-        // 複数ステートメントのような未対応の形が拒否される前に、その
-        // クエリ（および仕込まれた副作用を持つ別ステートメント）が
-        // 既にデータベースに対して実行されてしまっているため、
-        // ここで事前に確認する必要がある。
-        let provenance = match &self.column_encryption {
-            Some(manager) if manager.has_encrypted_columns() => Some(
-                resolve_column_provenance(&sql, dialect.as_ref()).map_err(|e| {
-                    McpError::InvalidRequest(format!(
-                        "cannot safely determine which table this query's columns came from, \
-                             and column encryption is configured for this database: {e}"
-                    ))
-                })?,
-            ),
-            _ => None,
-        };
-
         let connection = pool
             .get_connection(&config)
             .await
@@ -797,22 +750,13 @@ impl DatabaseHandler {
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
         // 返すバイト数の上限（#539）。接続は上限を超えた行まで読んで止める
-        // ので、超えたかが分かる。暗号化の処理で値の大きさが変わる前に
-        // 確かめる
+        // ので、超えたかが分かる
         let max_result_bytes = self.tool_options.max_result_bytes;
         // 受け取った行が上限を超えていれば、接続はそこで読むのを止めたので、
         // 後の行を落としたかもしれない。1行だけ残る場合も、切り詰めたことに
         // する（#724。以前は、値を切らなければ`truncated: false`だった）
         let over_limit = rows_size(&result.rows) > max_result_bytes;
         let mut truncated = keep_rows_within(&mut result.rows, max_result_bytes) || over_limit;
-
-        if let Some(resolution) = provenance {
-            let manager = self
-                .column_encryption
-                .clone()
-                .expect("provenance is only Some when self.column_encryption was Some above");
-            Self::apply_column_encryption(&manager, resolution, &mut result, auth_user).await?;
-        }
 
         // 返す行数の上限（#453）。接続は上限より1行多く読むので、超えたかが
         // 分かる
@@ -856,7 +800,6 @@ impl DatabaseHandler {
             params,
             engine_id,
             config,
-            ..
         } = self.checked_read(&args, None, "explain_query").await?;
         let pool = self
             .pool_manager
@@ -881,120 +824,6 @@ impl DatabaseHandler {
             )));
         }
         Ok(result)
-    }
-
-    /// 事前に解決済みの列由来（`resolution`）を使って、`result`内の
-    /// 暗号化対象と設定された列を復号（許可時）またはマスク（拒否時・
-    /// 由来不明時）に置き換える。SQLの解析自体は`execute_query_core`側で
-    /// クエリ実行前に完了しているため、ここでは失敗しない
-    /// （`decrypt()`呼び出し自体の失敗を除く）。
-    async fn apply_column_encryption(
-        manager: &Arc<ColumnEncryptionManager>,
-        resolution: ProjectionResolution,
-        result: &mut QueryResult,
-        auth_user: Option<&AuthUser>,
-    ) -> Result<(), McpError> {
-        let context = QueryContext {
-            query_type: QueryType::Select,
-            user_id: auth_user.map(|u| u.id.clone()),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now(),
-            source_ip: None,
-            client_info: None,
-        };
-
-        // Normalize both resolution shapes into one per-column-index list,
-        // so the rest of this function has a single code path.
-        let column_provenances: Vec<Option<ColumnProvenance>> = match resolution {
-            ProjectionResolution::WildcardTable(table) => result
-                .columns
-                .iter()
-                .map(|c| {
-                    Some(ColumnProvenance::Resolved {
-                        table: table.clone(),
-                        column: c.name.clone(),
-                    })
-                })
-                .collect(),
-            ProjectionResolution::PerColumn(provenances) => {
-                provenances.into_iter().map(Some).collect()
-            }
-        };
-
-        for (idx, provenance) in column_provenances.iter().enumerate() {
-            match provenance {
-                Some(ColumnProvenance::Resolved { table, column })
-                    if manager.is_encrypted_column(table, column) =>
-                {
-                    Self::apply_encrypted_column(
-                        manager, table, column, idx, result, &context, auth_user,
-                    )
-                    .await?;
-                }
-                Some(ColumnProvenance::Unknown) => {
-                    // NULL carries no ciphertext to hide - preserve it, same
-                    // as the encrypted-column path below does, instead of
-                    // changing result semantics for consumers expecting null.
-                    for row in result.rows.iter_mut() {
-                        if let Some(value) = row.get_mut(idx) {
-                            if !matches!(value, Value::Null) {
-                                *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Decrypts or masks one encrypted column's worth of values across
-    /// every row of `result` at once, via [`ColumnEncryptionManager::decrypt_batch`]
-    /// so the permission check (and, on denial, the audit log entry) happens
-    /// once per query for this column rather than once per row.
-    async fn apply_encrypted_column(
-        manager: &Arc<ColumnEncryptionManager>,
-        table: &str,
-        column: &str,
-        idx: usize,
-        result: &mut QueryResult,
-        context: &QueryContext,
-        auth_user: Option<&AuthUser>,
-    ) -> Result<(), McpError> {
-        let mut row_indices = Vec::new();
-        let mut ciphertexts = Vec::new();
-        for (row_idx, row) in result.rows.iter().enumerate() {
-            if let Some(Value::String(s)) = row.get(idx) {
-                row_indices.push(row_idx);
-                ciphertexts.push(s.as_str());
-            }
-        }
-
-        if !ciphertexts.is_empty() {
-            let decrypted = manager
-                .decrypt_batch(table, column, &ciphertexts, context, auth_user)
-                .await
-                .map_err(|e| McpError::InvalidRequest(format!("decryption failed: {e}")))?;
-
-            for (row_idx, value) in row_indices.into_iter().zip(decrypted) {
-                result.rows[row_idx][idx] = Value::String(value);
-            }
-        }
-
-        // An encrypted column should only ever contain NULL or the base64
-        // ciphertext string produced by `encrypt()` - anything else is
-        // unexpected, so mask it defensively rather than assume it's safe.
-        for row in result.rows.iter_mut() {
-            if let Some(value) = row.get_mut(idx) {
-                if !matches!(value, Value::Null | Value::String(_)) {
-                    *value = Value::String(ENCRYPTED_PLACEHOLDER.to_string());
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// コマンド実行処理（INSERT・UPDATE・DELETE）。`allow_write`のときだけ
