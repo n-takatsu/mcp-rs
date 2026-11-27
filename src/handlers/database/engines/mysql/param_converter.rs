@@ -133,7 +133,21 @@ impl MySqlParamConverter {
     ///
     /// Identifies parameter positions (byte offsets) in SQL for validation
     /// and debugging. A `?` inside a string, a quoted identifier, or a
-    /// comment is not a placeholder (#768: it used to be counted)
+    /// comment is not a placeholder (#768: it used to be counted).
+    ///
+    /// This reads the SQL without asking the server, so it assumes what the
+    /// connections of this engine set up:
+    ///
+    /// - `\` escapes the next character inside `'…'` and `"…"`. The engine
+    ///   removes `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES` from the session's
+    ///   `sql_mode` (`session_setup_sql`), so this holds on its connections
+    /// - Executable comments (`/*! … */`, `/*!80000 … */`, and MariaDB's
+    ///   `/*M! … */`) are read as SQL, so a `?` inside one is counted. A
+    ///   server that skips the comment (a version condition it does not
+    ///   meet, or `/*M!` on MySQL) has fewer placeholders
+    ///
+    /// The server's own count is the one that decides:
+    /// `MySqlPreparedStatement` uses it (`Statement::num_params`)
     pub fn extract_parameter_positions(sql: &str) -> Vec<usize> {
         let mut positions = Vec::new();
         let mut chars = sql.char_indices().peekable();
@@ -173,6 +187,21 @@ impl MySqlParamConverter {
                         if inner == '\n' {
                             break;
                         }
+                    }
+                }
+                // 実行されるコメント（`/*! … */`・`/*M! … */`）は、中身がSQL。
+                // 始まりの印だけを飛ばし、中身は読む（終わりの`*/`は、ただの
+                // 記号として通り過ぎる）
+                '/' if sql[position..].starts_with("/*!")
+                    || sql[position..].starts_with("/*M!") =>
+                {
+                    let opener = if sql[position..].starts_with("/*!") {
+                        2
+                    } else {
+                        3
+                    };
+                    for _ in 0..opener {
+                        chars.next();
                     }
                 }
                 // `/* … */`
@@ -276,6 +305,11 @@ mod tests {
             ("SELECT 1 # ?\nFROM t WHERE a = ? AND b = ?", 2),
             ("SELECT a--? FROM t", 1),
             ("SELECT 'unclosed ?", 0),
+            // 実行されるコメントの中身は、SQLとして読む
+            ("SELECT 1 /*! + ? */", 1),
+            ("SELECT 1 /*!80000 + ? */ + ?", 2),
+            ("SELECT 1 /*M! + ? */ /* ? */", 1),
+            ("SELECT 1 /*! + '?' */", 0),
             ("SELECT ?, ?", 2),
         ] {
             assert_eq!(

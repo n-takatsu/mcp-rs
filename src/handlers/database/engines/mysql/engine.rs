@@ -393,21 +393,22 @@ impl DatabaseEngine for MySqlEngine {
 
     /// プールから接続を受け取り、`PING`を送って確かめる（#768。以前は、
     /// 確かめずに、いつも`Healthy`・`connection_count = 1`を返した）。
-    /// まだ`connect`していなければ`Unknown`。接続の時間の上限
-    /// （`timeout_seconds`）までに返事が無い・失敗したら`Critical`。
-    /// `connection_count`・`active_transactions`は、プールが数を出さない
-    /// ので、0（分からない）
+    /// まだ`connect`していなければ、エンジンを作ったときの設定でつなぐ。
+    /// つながらない・接続の時間の上限（`timeout_seconds`）までに返事が
+    /// 無い・失敗したら`Critical`。`connection_count`・`active_transactions`は、
+    /// プールが数を出さないので、0（分からない）
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError> {
         use crate::handlers::database::types::HealthStatusType;
         use chrono::Utc;
 
         let started = std::time::Instant::now();
-        let (status, error_message) = match self.pool.get() {
-            None => (
-                HealthStatusType::Unknown,
-                Some("not connected yet".to_string()),
-            ),
-            Some((pool, ..)) => {
+        let connected = self
+            .pool
+            .get_or_try_init(|| connect_pool(&self.config))
+            .await;
+        let (status, error_message) = match connected {
+            Err(e) => (HealthStatusType::Critical, Some(e.to_string())),
+            Ok((pool, ..)) => {
                 let timeout =
                     Duration::from_secs(u64::from(self.config.connection.timeout_seconds).max(1));
                 let ping = tokio::time::timeout(timeout, async {
