@@ -34,9 +34,15 @@ ssl_mode = "disable"
 
 # true also offers redis_write_command (SET, DEL, HSET, EXPIRE, ... one at a time)
 allow_write = false
-# Items (list elements, hash fields, keys, ...) returned at most
+# Items (list elements, hash fields, keys, ...) returned at most. The
+# results of SCAN, HSCAN, SSCAN and ZSCAN are never cut (what is cut would
+# not come back with the next cursor), so one page can have more items than
+# this. scan_keys stops once it reaches this number, but does not cut the
+# last batch, so it can return a few more
 max_rows = 1000
-# Size of a result at most (bytes, about 10 MB)
+# Size of a result at most (bytes, about 10 MB). The SCAN commands above
+# are not cut by size either, and scan_keys checks the size after adding a
+# batch, so it can return a little more
 max_result_bytes = 10485760
 # Time to wait for the reply to one command
 query_timeout_seconds = 30

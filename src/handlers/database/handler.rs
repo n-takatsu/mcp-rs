@@ -1214,7 +1214,7 @@ impl McpHandler for DatabaseHandler {
                     if mysql {
                         " and the AUTO_INCREMENT id of an inserted row (last_insert_id)"
                     } else if sqlite {
-                        " and the rowid of an inserted row (last_insert_id)"
+                        " and the rowid of an inserted row (last_insert_id). last_insert_id is null when SQLite does not tell which row was inserted (for example a row with rowid 0 inserted first on a new connection); the write is still done, so do not send it again because of that"
                     } else {
                         ""
                     }

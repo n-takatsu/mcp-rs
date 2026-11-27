@@ -16,6 +16,9 @@ on:
       - 'tests/*mysql*'
       - 'tests/*mariadb*'
       - 'tests/database_handler_*'
+      # データベースのツールのテスト（Redis・MongoDB。#810）
+      - 'tests/*redis*'
+      - 'tests/*mongodb*'
       - 'migrations/**'
       - 'src/handlers/database/**'
       - 'src/transport/**'
@@ -38,6 +41,9 @@ on:
       - 'tests/*mysql*'
       - 'tests/*mariadb*'
       - 'tests/database_handler_*'
+      # データベースのツールのテスト（Redis・MongoDB。#810）
+      - 'tests/*redis*'
+      - 'tests/*mongodb*'
       - 'migrations/**'
       - 'src/handlers/database/**'
       - 'src/transport/**'

@@ -178,6 +178,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- データベースの設定例・ツールの説明・結合テストの文書を、実際の動きに
+  合わせた（#810。v0.30.0からの変更のレビュー、#806）
+  - `configs/database/sqlite.toml`: `max_connections`はプールごとの上限で、
+    `allow_write = true`では読むプールと書くプールがあるので、合わせて2倍まで
+    開く。`max_result_bytes`は目安の上限
+  - `configs/database/redis.toml`: `SCAN`・`HSCAN`・`SSCAN`・`ZSCAN`の結果は
+    切らないので、`max_rows`・`max_result_bytes`を超えることがある。
+    `scan_keys`も、最後のまとまりは切らない
+  - `configs/database/mongodb.toml`: `max_result_bytes`が数えるのは、
+    ドキュメント（コンパクトなJSON）だけ。`get_schema`のコレクションの一覧には
+    `maxTimeMS`が付かない（ドライバーに無い）。`insert_documents`の
+    「既存のコレクションだけ」は、呼んだときに確かめるもの
+  - `username`の説明に、MongoDBでも省けること（認証せずにつなぐ）を書いた
+  - `execute_command`の説明（SQLite）: `last_insert_id`が`null`でも、書き込みは
+    済んでいるので、送り直さない
+  - `docs/development/integration-tests.md`: データベースのツールのテスト
+    （MySQL・MariaDB・Redis・MongoDB）の変数と実行のしかたを書いた。Redis・
+    MongoDBのテストは、決まった番号・名前のデータベースを消すので、使い捨ての
+    サーバーを指すこと（テストのコメントにも書いた）
+  - CI（`container-integration-tests.yml`）: Redis・MongoDBのツールのテストの
+    ファイルだけを変えたときも動くようにした
 - リリースのワークフロー（`release-binaries.yml`）: タグの実行をやり直すと、
   作り直したファイルで、リリースのファイルを`--clobber`で置き換えていた。
   作り直した`.mcpb`・`.zip`は、中身が同じでも時刻が変わるのでハッシュが変わり、

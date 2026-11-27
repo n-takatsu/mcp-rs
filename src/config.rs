@@ -115,7 +115,8 @@ pub struct DatabaseSettings {
     #[serde(default)]
     pub database: String,
     /// SQLiteでは書かない（#528）。Redisでは省略できる（#529。既定の
-    /// ユーザー）。ほかのエンジンでは必須
+    /// ユーザー）。MongoDBでも省略できる（#530。認証せずにつなぐ。#810）。
+    /// ほかのエンジンでは必須
     #[serde(default)]
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる

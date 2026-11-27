@@ -22,10 +22,14 @@ database = "data/app.db"
 allow_write = false
 # Rows returned by execute_query at most
 max_rows = 1000
-# Size of the execute_query result at most (bytes, about 10 MB)
+# Size of the execute_query result, roughly (bytes, about 10 MB). Rows past
+# it are left out, and long values are cut, so the result is about this size;
+# a single small row is always returned
 max_result_bytes = 10485760
 # Time limit of one SQL statement, and of waiting for a lock held by another
 # program
 query_timeout_seconds = 30
-# Connections in the pool at most
+# Connections in each pool at most. With allow_write = true, mcp-rs keeps
+# a pool for reading and another for writing, so up to twice this number of
+# connections are open
 max_connections = 5

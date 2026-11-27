@@ -4,7 +4,11 @@
 //! 実際のRedisが要る。`TEST_REDIS_URL`（例: `redis://localhost:6380/0`）が無ければ、
 //! 何もせずに通る。CIでは、Run Integration Testsのジョブのredisのサービスを使う。
 //! ほかのテストと鍵がぶつからないよう、テストごとに別のデータベースの番号
-//! （9・10・11）を使い、初めに空にする（並べて動かしても、互いの鍵を数えない）
+//! （9・10・11）を使い、初めに空にする（並べて動かしても、互いの鍵を数えない）。
+//!
+//! URLのデータベースの番号に関わらず、番号9・10・11を`FLUSHDB`で空にする。
+//! `TEST_REDIS_URL`は、消してよいテスト用のサーバーを指すこと（共有の
+//! サーバーを指さない。#810。`docs/development/integration-tests.md`）
 #![cfg(feature = "redis-backend")]
 
 use mcp_rs::config::DatabaseSettings;
