@@ -3,7 +3,11 @@
 //!
 //! 実際のMongoDBが要る。`TEST_MONGODB_URL`（例: `mongodb://localhost:27018`）が
 //! 無ければ、何もせずに通る。CIでは、Run Integration Testsのジョブのmongodbの
-//! サービスを使う。テストごとに別のデータベースを使い、初めに消す
+//! サービスを使う。テストごとに別のデータベースを使い、初めに消す。
+//!
+//! 決まった名前（`mcp_rs_tools_read`等）のデータベースを、確かめずに消す。
+//! `TEST_MONGODB_URL`は、消してよいテスト用のサーバーを指すこと（共有の
+//! サーバーを指さない。#810。`docs/development/integration-tests.md`）
 #![cfg(feature = "mongodb-backend")]
 
 use mcp_rs::config::DatabaseSettings;

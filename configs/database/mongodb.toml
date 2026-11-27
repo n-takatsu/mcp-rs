@@ -32,15 +32,20 @@ ssl_mode = "disable"
 # (relative to this file's folder)
 # ssl_root_cert = "certs/ca.pem"
 
-# true also offers insert_documents (into existing collections only),
-# update_documents and delete_documents
+# true also offers insert_documents (into existing collections only: this
+# is checked when it is called, and a collection removed after the check is
+# created again by the insert), update_documents and delete_documents
 allow_write = false
 # Documents (and collections in get_schema) returned at most
 max_rows = 1000
-# Size of a result at most (bytes, about 10 MB)
+# Size of the returned documents at most (bytes of each document as compact
+# JSON, about 10 MB). The rest of the result (the field names around the
+# documents) is not counted
 max_result_bytes = 10485760
-# Time limit of one operation. Reads are also stopped on the server
-# (maxTimeMS). For writes, mcp-rs only stops waiting: the outcome is unknown
+# Time limit of one operation. find, aggregate, count_documents, and the
+# counts in get_schema are also stopped on the server (maxTimeMS). For the
+# list of collections in get_schema and for writes, mcp-rs only stops
+# waiting, and the server may go on (for writes, the outcome is unknown)
 query_timeout_seconds = 30
 # Connections in the pool at most
 max_connections = 5
