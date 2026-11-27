@@ -137,6 +137,13 @@ fn client_options(settings: &DatabaseSettings) -> ClientOptions {
     // 他のメンバーにもつなぐので、`check_settings`が見ていないホストに、TLS
     // なしで認証の情報とデータを送ることがある
     options.direct_connection = Some(true);
+    // 書き込みを、ドライバーで送り直さない（PR #817のレビュー）。送り直すと、
+    // 1回目の通信のエラーの代わりに、2回目のサーバーのエラーが返ることが
+    // あり、1回目が当たったかが分からなくなる（`write_not_applied`が
+    // 見分けられない）。1つのホストにだけつなぐので、送り直しても同じ
+    // ホストに行くだけで、得るものも小さい。通信のエラーは、成否が分から
+    // ないと伝える
+    options.retry_writes = Some(false);
     options.app_name = Some(format!("mcp-rs {}", env!("CARGO_PKG_VERSION")));
     options.connect_timeout = Some(CONNECT_TIMEOUT);
     options.server_selection_timeout = Some(CONNECT_TIMEOUT);
@@ -641,7 +648,11 @@ impl MongoHandler {
 /// （[`write_rejected_by_server`]）も。複数のドキュメントの書き込みは、
 /// サーバーが途中で止めても、それまでの分は変わっている（PR #817の
 /// レビュー）。通信のエラー、`writeConcern`のエラー（主には書けている）等は、
-/// 成否が分からない
+/// 成否が分からない。
+///
+/// サーバーのエラーで見分けられるのは、ドライバーが書き込みを送り直さない
+/// から（`retry_writes = false`。送り直すと、返るのは2回目のエラーで、
+/// 1回目が当たったかは分からない）
 fn write_not_applied(error: &mongodb::error::Error, many: bool) -> bool {
     use mongodb::error::ErrorKind;
     if error.contains_label("RetryableWriteError") {
@@ -1396,10 +1407,10 @@ mod tests {
             .unwrap_err()
             .contains("needs a password"));
         // 書いたホストにだけつなぐ（他のメンバーを探さない）
-        assert_eq!(
-            client_options(&settings("localhost", None)).direct_connection,
-            Some(true)
-        );
+        let options = client_options(&settings("localhost", None));
+        assert_eq!(options.direct_connection, Some(true));
+        // 書き込みを、ドライバーで送り直さない（PR #817のレビュー）
+        assert_eq!(options.retry_writes, Some(false));
     }
 
     /// 時間切れのあとも、タスクは最後まで動く（ドライバーのfutureを落とさない）
