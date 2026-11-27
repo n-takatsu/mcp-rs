@@ -136,7 +136,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   設定からは使えない機能なので、mcp-rsの実行ファイルには影響しない
   - ぶつかった今の行を消してから入れる書き方（`REPLACE INTO`、SQLiteの
     `INSERT OR REPLACE`・`UPDATE OR REPLACE`）には、`write`に加えて`delete`の
-    許可も要る
+    許可も要る。SQLに書いた分だけを見る: 表の定義で`UNIQUE … ON CONFLICT
+    REPLACE`と決めたSQLiteの表では、普通の`INSERT`・`UPDATE`でも、ぶつかった
+    同じ表の行が消えるが、これは`write`の許可だけで通る
   - MySQLの複数の表の`UPDATE`・`DELETE`は、`JOIN`した表をすべて書き込む表と
     して確かめる。表を分けられない形（`WITH`等）は断る
   - 検証済みの呼び出し元で書き込む`DatabaseHandler::execute_command_as`を足した

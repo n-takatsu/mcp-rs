@@ -618,7 +618,8 @@ pub struct WriteTables {
     /// 書き込む表に、`"delete"`の許可も要るか。ぶつかった今の行を消してから
     /// 入れる書き方（`REPLACE INTO`、SQLiteの`INSERT OR REPLACE`・
     /// `UPDATE OR REPLACE`）のとき。消すときは、削除のトリガーや
-    /// `ON DELETE CASCADE`も動く（PR #802のレビュー）
+    /// `ON DELETE CASCADE`も動く（PR #802のレビュー）。文に書いた分だけを
+    /// 見る。表の定義の`ON CONFLICT REPLACE`は、文からは分からない
     pub also_deletes: bool,
     /// 書き込む表（文に書いたとおりの名前。重複は除く）
     pub written: Vec<String>,
@@ -653,9 +654,12 @@ pub struct WriteTables {
 /// 確かに分けられない形（`WITH`、表の関数や副問い合わせへの`INSERT`等）は
 /// エラーにする。呼ぶ側は、そのとき文を断る。
 ///
-/// 確かめるのは、文に書いた名前だけ。その名前の先でデータベースがすること
+/// 確かめるのは、文に書いたことだけ。その先でデータベースがすること
 /// （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
-/// 外部キーの`ON DELETE CASCADE`）は、文からは分からないので、見ない。親の
+/// 外部キーの`ON DELETE CASCADE`）は、文からは分からないので、見ない。
+/// 表の定義で決めた動きも同じ: SQLiteの`UNIQUE … ON CONFLICT REPLACE`の
+/// 表では、`OR REPLACE`を書かない`INSERT`・`UPDATE`でも、ぶつかった同じ表の
+/// 行が消える。これは`also_deletes`にならず、`write`の許可だけで通る。親の
 /// 表・ビューへの許可は、それを通して届く行への許可になる（PostgreSQL自身の
 /// 権限も、親の表を通した操作では、子の表の権限を確かめない）。
 pub fn resolve_write_tables(
