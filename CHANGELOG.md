@@ -148,10 +148,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     本来の守りは、データベースのロールの権限
   - PostgreSQLでは、表の名前を許可と比べる前に、引用符で囲まない名前を
     小文字にそろえる（PostgreSQLと同じ。`Users`は`users`、`"Users"`は別の表）。
+    SQLiteでは、引用符で囲んだ名前も小文字にそろえる（SQLiteは、表の名前の
+    大文字・小文字を区別しない）。
     以前は書いたとおりに比べたので、`"Users"`への許可で、`Users`と書いて
     `users`に触れられた。**許可のリソースを大文字まじりで書いていた場合**
     （`database:pg:Users`）は、引用符なしのSQLに合わなくなる（断る側）ので、
     小文字で書き直すこと
+  - 確かめるのは、SQLに書いた表の名前だけ。その先でデータベースがすること
+    （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
+    `ON DELETE CASCADE`）は見ない。親の表・ビューへの許可は、それを通して
+    届く行への許可になる
 - カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
   タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
   IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。

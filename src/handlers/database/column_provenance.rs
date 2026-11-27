@@ -459,7 +459,7 @@ pub fn resolve_query_tables(
     // `TABLE name`・文字列のSQLを実行する関数は、下の`visit_relations`で
     // 拾えない
     refuse_hidden_reads(statement)?;
-    let fold = folds_unquoted_names(dialect);
+    let fold = name_fold(dialect);
 
     let mut tables = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -583,12 +583,30 @@ fn refuse_hidden_reads(statement: &Statement) -> Result<(), ProvenanceError> {
     }
 }
 
-/// PostgreSQLは、引用符で囲まない名前を小文字にする（`Users`は`users`、
-/// `"Users"`は別の表）。表の名前を許可と比べる前に、同じようにそろえるか
-/// （PR #802のレビュー）。MySQL・MariaDB・SQLiteでは、引用符の有無で名前は
-/// 変わらないので、書いたとおりにする
-fn folds_unquoted_names(dialect: &dyn Dialect) -> bool {
-    dialect.is::<PostgreSqlDialect>()
+/// 表の名前を許可と比べる前に、データベースと同じように小文字にそろえる
+/// 範囲（PR #802のレビュー）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameFold {
+    /// 書いたとおり。MySQL・MariaDBは、表の名前の大文字・小文字を区別するかが
+    /// サーバーの設定（`lower_case_table_names`）とOSで変わるので、そろえない
+    /// （区別しないサーバーで、許可と違う書き方をすれば、断る側になる）
+    AsWritten,
+    /// 引用符で囲まない名前だけ。PostgreSQLは、`Users`を`users`にし、
+    /// `"Users"`は別の表とする
+    Unquoted,
+    /// すべて。SQLiteは、引用符で囲んでも、表の名前の大文字・小文字を
+    /// 区別しない（`Notes`・`"NOTES"`・`notes`は同じ表）
+    All,
+}
+
+fn name_fold(dialect: &dyn Dialect) -> NameFold {
+    if dialect.is::<PostgreSqlDialect>() {
+        NameFold::Unquoted
+    } else if dialect.is::<SQLiteDialect>() {
+        NameFold::All
+    } else {
+        NameFold::AsWritten
+    }
 }
 
 /// 書き込みの文（`execute_command`）が触れる表（#609）。
@@ -629,6 +647,12 @@ pub struct WriteTables {
 ///
 /// 確かに分けられない形（`WITH`、表の関数や副問い合わせへの`INSERT`等）は
 /// エラーにする。呼ぶ側は、そのとき文を断る。
+///
+/// 確かめるのは、文に書いた名前だけ。その名前の先でデータベースがすること
+/// （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
+/// 外部キーの`ON DELETE CASCADE`）は、文からは分からないので、見ない。親の
+/// 表・ビューへの許可は、それを通して届く行への許可になる（PostgreSQL自身の
+/// 権限も、親の表を通した操作では、子の表の権限を確かめない）。
 pub fn resolve_write_tables(
     sql: &str,
     dialect: &dyn Dialect,
@@ -639,7 +663,7 @@ pub fn resolve_write_tables(
     };
 
     refuse_hidden_reads(statement)?;
-    let fold = folds_unquoted_names(dialect);
+    let fold = name_fold(dialect);
 
     let mut written: Vec<String> = Vec::new();
     // 表としては数えない名前（MySQLの`DELETE FROM a USING …`の`a`）
@@ -745,7 +769,7 @@ pub fn resolve_write_tables(
 /// 読む表として拾われる）
 fn collect_written(
     tables: &[TableWithJoins],
-    fold: bool,
+    fold: NameFold,
     written: &mut Vec<String>,
 ) -> Result<(), ProvenanceError> {
     if tables.is_empty() {
@@ -780,11 +804,11 @@ fn collect_written(
 /// [`object_name_to_string`] deliberately does for column-provenance's
 /// different purpose.
 ///
-/// `fold`なら、引用符で囲まない部分を小文字にする（[`folds_unquoted_names`]。
-/// PostgreSQLと同じく、ASCIIの文字だけ）
+/// `fold`に従って、小文字にそろえる（[`NameFold`]。PostgreSQL・SQLiteと
+/// 同じく、ASCIIの文字だけ）
 fn object_name_to_qualified_string(
     name: &ObjectName,
-    fold: bool,
+    fold: NameFold,
 ) -> Result<String, ProvenanceError> {
     let mut parts = Vec::with_capacity(name.0.len());
     for part in &name.0 {
@@ -797,7 +821,10 @@ fn object_name_to_qualified_string(
                     "table names that contain a dot inside quotes are not supported",
                 ))
             }
-            ObjectNamePart::Identifier(ident) if fold && ident.quote_style.is_none() => {
+            ObjectNamePart::Identifier(ident)
+                if fold == NameFold::All
+                    || (fold == NameFold::Unquoted && ident.quote_style.is_none()) =>
+            {
                 parts.push(ident.value.to_ascii_lowercase())
             }
             ObjectNamePart::Identifier(ident) => parts.push(ident.value.clone()),
@@ -1639,17 +1666,29 @@ mod tests {
             tables(r#"SELECT * FROM Users JOIN "Users" u ON true"#).unwrap(),
             names(&["users", "Users"])
         );
-        // MySQL・SQLiteは、書いたとおり
+        // MySQLは、書いたとおり
         assert_eq!(
             resolve_write_tables("DELETE FROM Users", &MySqlDialect {})
                 .unwrap()
                 .written,
             names(&["Users"])
         );
+        // SQLiteは、引用符で囲んでも、大文字・小文字を区別しない
         assert_eq!(
-            resolve_query_tables("SELECT * FROM Users", &SQLiteDialect {}).unwrap(),
-            names(&["Users"])
+            resolve_query_tables(
+                r#"SELECT * FROM Users JOIN "USERS" u ON true"#,
+                &SQLiteDialect {}
+            )
+            .unwrap(),
+            names(&["users"])
         );
+        let sqlite = resolve_write_tables(
+            r#"INSERT INTO "Notes" SELECT * FROM NOTES"#,
+            &SQLiteDialect {},
+        )
+        .unwrap();
+        assert_eq!(sqlite.written, names(&["notes"]));
+        assert_eq!(sqlite.read, names(&["notes"]));
     }
 
     /// 文字列のSQL・表の名前で表を読む関数は、表を拾えないので断る
