@@ -128,6 +128,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ライブラリとして使う場合: ゼロトラスト（`zero_trust`。
+  `DatabaseHandler::with_micro_segmentation`が使う）の、レビューの指摘を直した
+  （#768）。mcp-rsの実行ファイルは、この機能を使わない
+  - `MicroSegmentation::default()`・`setup_default_policies()`の既定のポリシーで、
+    `AccessPolicy::new`の引数の順（名前、リソース、スコア）を取り違えていた。
+    `user`のポリシーのリソースが`*`になり、信頼スコア30以上の`user`が、
+    すべてのリソースを読めた。今は`/api/public/*`だけ。**既定のポリシーに
+    頼って`user`にほかのリソースを読ませていた場合は、ポリシーを足すこと**
+  - 既定のデータベースのセグメント（`db_admin`）が、どのリソースにも当たら
+    なかった（セグメントの所属が`/api/database/*`との完全一致、ポリシーの
+    リソースが`database`との完全一致）。今は、データベースのハンドラーが
+    確かめるリソース（`database:<エンジンのID>:<表>`）と`/api/database/*`に当たる
+  - `ResourceSegment`のリソースを、ポリシーと同じパターン（`…*`は前方一致）で
+    比べる。以前は完全一致だった
+  - `ZeroTrustContext::is_valid`が、`verified_at`が未来のとき、引き算があふれた
+    （デバッグビルドではpanic）。今は無効とする
+  - 信頼スコアの範囲（0〜100）を確かめる。`ZeroTrustContext`は、100を超える
+    スコアを100に丸めてから平均する。`MicroSegmentation::evaluate_access`は、
+    100を超えるスコアを断る
 - ライブラリとして使う場合: マイクロセグメンテーション（`with_micro_segmentation`、
   表ごとの許可）が、`execute_command`にかかっていなかった。許可を確かめるのは
   `execute_query`だけだったので、許していない表にも書け、`INSERT … SELECT`や
