@@ -126,6 +126,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 計画は切らない（`max_rows`は当てはめない）。`max_result_bytes`を超える
     なら、エラーにする
 
+### Removed
+
+- ライブラリとして使う場合: 列の暗号化を外した（#768）。mcp-rsの実行ファイル
+  （`[database]`の設定）は使っていなかった機能で、実行ファイルの動きは変わら
+  ない。ライブラリとして使う場合には互換性の無い変更。レビューで、鍵の管理に
+  13件の指摘があった（`Local`の鍵をメモリにだけ持ち、再起動すると保存した
+  値を復号できない。ローテーション・キャッシュ・排他の不具合。`AwsKms`・
+  `Vault`を選んでもメモリの鍵で動く等）。直すには鍵の管理の作り直しが要る
+  ので、不具合のあるAPIを公開したままにせず、外した。指摘は、外したので直さない
+  - `handlers::database::column_encryption`（`ColumnEncryptionManager`・
+    `ColumnEncryptionConfig`・`KeyManager`・`KeyManagerConfig`・`KeyProvider`・
+    `KeyMetadata`・`EncryptionAlgorithm`・`CacheStats`）
+  - `handlers::database::column_encryption_rbac`（`ColumnEncryptionRbac`・
+    `ColumnEncryptionPermission`・`EncryptionAuditLog`・`EncryptionOperation`）と、
+    その表を作るマイグレーション（`migrations/20260201_column_encryption_rbac.sql`）
+  - `DatabaseHandler::with_column_encryption`と、`execute_query`の結果の列を
+    復号する・伏せる処理。`DatabaseHandler::execute_query_as`は残る
+    （マイクロセグメンテーションが使う）
+  - `handlers::database::column_provenance`の`resolve_column_provenance`・
+    `ColumnProvenance`・`ProjectionResolution`（列の暗号化だけが使った）
+  - HSM（PKCS#11）との連携: `security::hsm`、Cargoの機能`hsm`、依存クレートの
+    `cryptoki`（列の暗号化の鍵だけが使った）
+  - 例の`column_encryption_demo`と、結合テスト
+    （`database_handler_column_encryption_test`・`column_encryption_rbac_test`・
+    `hsm_pkcs11_integration_test`）
+
 ### Fixed
 
 - ライブラリとして使う場合: ゼロトラスト（`zero_trust`。

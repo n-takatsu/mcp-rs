@@ -128,9 +128,6 @@ crossterm = "0.27"
 # ratatui = { version = "0.29", optional = true, default-features = false }
 # tui-input = { version = "0.8", optional = true }
 
-# HSM integration via PKCS#11 (dynamically loads the provider's shared
-# library at runtime, e.g. SoftHSM2 or a real HSM's vendor-supplied module)
-cryptoki = { version = "0.12", optional = true }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 # O_NOFOLLOW for the log files (#543). Already in Cargo.lock through other
 # crates
@@ -187,10 +184,6 @@ sqlite = []
 # to become usable in v0.31.0 (#530)
 mongodb-backend = ["database", "mongodb"]
 
-# Hardware Security Module integration via PKCS#11 (e.g. SoftHSM2 or a
-# vendor-supplied PKCS#11 module for a real HSM/cloud HSM)
-hsm = ["dep:cryptoki"]
-
 # No code checks this feature; kept because CI and scripts/run-integration-tests.*
 # pass --features integration-tests
 integration-tests = []
@@ -226,7 +219,3 @@ debug = false
 lto = true
 
 # Data masking examples require the database feature
-# Column encryption example requires the database feature
-[[example]]
-name = "column_encryption_demo"
-required-features = ["database"]

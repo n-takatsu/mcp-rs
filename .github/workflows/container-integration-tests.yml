@@ -16,7 +16,6 @@ on:
       - 'tests/*mysql*'
       - 'tests/*mariadb*'
       - 'tests/database_handler_*'
-      - 'tests/column_encryption_rbac_test.rs'
       - 'migrations/**'
       - 'src/handlers/database/**'
       - 'src/transport/**'
@@ -39,7 +38,6 @@ on:
       - 'tests/*mysql*'
       - 'tests/*mariadb*'
       - 'tests/database_handler_*'
-      - 'tests/column_encryption_rbac_test.rs'
       - 'migrations/**'
       - 'src/handlers/database/**'
       - 'src/transport/**'
@@ -211,9 +209,7 @@ jobs:
         run: >-
           cargo test --features redis-backend --no-fail-fast
           --test mod
-          --test database_handler_column_encryption_test
           --test database_handler_micro_segmentation_test
-          --test column_encryption_rbac_test
           -- --ignored --test-threads=1
 
       - name: Verify integration test compilation

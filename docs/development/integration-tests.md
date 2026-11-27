@@ -6,7 +6,7 @@ PostgreSQL・Redisのサーバーが要るテストは`#[ignore]`にしてあり
 
 接続先は環境変数で渡す（`tests/common/mod.rs`）。`--ignored`で実行したのに変数が無いときや、つながらないときは、テストを失敗にする。
 
-**使い捨てのデータベースを指すこと。** テストは準備で、`test_schema`のスキーマと、RBACの表（`column_encryption_permissions`・`encryption_audit_log`。本番のマイグレーションと同じ名前）を`DROP … CASCADE`で消して作り直す。ほかにも`test_`・`encryption_it_`・`microseg_it_`で始まる表を作って消す。Redisは`test:`等で始まるキーを書いて消す。
+**使い捨てのデータベースを指すこと。** テストは準備で、`test_schema`のスキーマを`DROP … CASCADE`で消して作り直す。ほかにも`test_`・`microseg_it_`で始まる表を作って消す。Redisは`test:`等で始まるキーを書いて消す。
 
 | 変数 | CIの値 |
 |---|---|
@@ -17,7 +17,7 @@ PostgreSQL・Redisのサーバーが要るテストは`#[ignore]`にしてあり
 
 | データベース | テスト（`--test`） |
 |---|---|
-| PostgreSQL（`engines::postgresql`、本体のハンドラーが使う） | `mod`の`database::postgresql_integration_tests`・`database::postgres_database_integration_tests`、`database_handler_column_encryption_test`・`database_handler_micro_segmentation_test`・`column_encryption_rbac_test` |
+| PostgreSQL（`engines::postgresql`、本体のハンドラーが使う） | `mod`の`database::postgresql_integration_tests`・`database::postgres_database_integration_tests`、`database_handler_micro_segmentation_test` |
 | Redis | `mod`の`database::redis_integration_test`・`database::redis_integration_tests` |
 
 古いPostgreSQLの実装（`engines::postgres`）とそのテストは、本体から使われていなかったので消した（#638）。
@@ -45,9 +45,7 @@ export TEST_REDIS_URL=redis://localhost:6380/0
 
 cargo test --features redis-backend --no-fail-fast \
   --test mod \
-  --test database_handler_column_encryption_test \
   --test database_handler_micro_segmentation_test \
-  --test column_encryption_rbac_test \
   -- --ignored --test-threads=1
 ```
 
