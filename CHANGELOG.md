@@ -178,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- リリースのワークフロー（`release-binaries.yml`）: タグの実行をやり直すと、
+  作り直したファイルで、リリースのファイルを`--clobber`で置き換えていた。
+  作り直した`.mcpb`・`.zip`は、中身が同じでも時刻が変わるのでハッシュが変わり、
+  MCP Registryに登録した`.mcpb`の`fileSha256`と合わなくなる（同じ版は
+  登録し直せない）。今は、リリースにすでにあるファイルは置き換えず、無い
+  ファイルだけを足す（#809）。`SHA256SUMS`は、リリースのファイルの
+  `.sha256`から作り直す。出所の証明は、足すファイルだけに作る。リリースの
+  `.sha256`がリリースのファイルと合わなければ、止める
 - `mcp-rs check`が、`[database]`につなぐのを10秒で打ち切っていた。起動では、
   つないだ後の最初のコマンド（Redisの`PING`等）を`query_timeout_seconds`まで
   待つので、起動はできるのに`check`は失敗と言うことがあった。今は、起動と
