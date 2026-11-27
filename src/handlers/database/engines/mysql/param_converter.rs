@@ -47,6 +47,15 @@ impl MySqlParamConverter {
     ///
     /// Ensures the number of provided parameters matches the number of
     /// placeholders in the SQL query to prevent parameter injection attacks.
+    ///
+    /// This is an early check made without the server: the placeholders are
+    /// counted by [`Self::extract_parameter_positions`], with the
+    /// assumptions written there. The count can differ from the server's
+    /// when the SQL has an executable comment (`/*! … */`, `/*M! … */`) that
+    /// the server skips, so a statement this refuses may still be valid on
+    /// that server. To check against the server's own count, prepare the
+    /// statement (`MySqlPreparedStatement::new`) and use its
+    /// `parameter_count()`.
     pub fn validate_param_count(sql: &str, param_count: usize) -> Result<(), DatabaseError> {
         let expected_count = Self::extract_parameter_positions(sql).len();
         if expected_count != param_count {
