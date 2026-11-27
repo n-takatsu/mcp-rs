@@ -152,8 +152,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     大文字・小文字を区別しない）。
     以前は書いたとおりに比べたので、`"Users"`への許可で、`Users`と書いて
     `users`に触れられた。**許可のリソースを大文字まじりで書いていた場合**
-    （`database:pg:Users`）は、引用符なしのSQLに合わなくなる（断る側）ので、
-    小文字で書き直すこと
+    （`database:pg:Users`・`database:sqlite:Notes`）は、SQLに合わなくなる
+    （断る側）。許可のリソースの側は、そろえずに、書いたとおりに比べるので、
+    次のように書き直すこと: PostgreSQLは、引用符なしで使う表を小文字で
+    （`"Users"`と引用符で囲んで使う表は、そのまま`Users`）、SQLiteは、
+    すべて小文字で
   - 確かめるのは、SQLに書いた表の名前だけ。その先でデータベースがすること
     （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
     `ON DELETE CASCADE`）は見ない。親の表・ビューへの許可は、それを通して

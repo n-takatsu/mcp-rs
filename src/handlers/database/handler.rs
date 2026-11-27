@@ -1944,9 +1944,19 @@ mod tests {
         .to_string();
         assert!(error.contains("table 'notes' (write)"), "{error}");
 
+        // SQLiteは、表の名前の大文字・小文字を区別しない。許可のリソースは
+        // 小文字で書く（`database:sqlite:notes`）。SQLの名前は、小文字に
+        // そろえてから比べるので、どう書いても同じ許可で確かめる
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "DELETE FROM NOTES"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'notes' (delete)"), "{error}");
+
         // 断った文は、何も変えていない（3行 + 挿入2行）
         let done = handler
-            .execute_command_as(json!({"sql": "DELETE FROM notes"}), &owner)
+            .execute_command_as(json!({"sql": "DELETE FROM \"Notes\""}), &owner)
             .await
             .unwrap();
         assert_eq!(done["rows_affected"], 5, "{done}");
