@@ -184,8 +184,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     許可も要る。SQLに書いた分だけを見る: 表の定義で`UNIQUE … ON CONFLICT
     REPLACE`と決めたSQLiteの表では、普通の`INSERT`・`UPDATE`でも、ぶつかった
     同じ表の行が消えるが、これは`write`の許可だけで通る
-  - MySQLの複数の表の`UPDATE`・`DELETE`は、`JOIN`した表をすべて書き込む表と
-    して確かめる。表を分けられない形（`WITH`等）は断る
+  - MySQLの複数の表の`UPDATE`・`DELETE`は、`SET`の代入先（`u.note`の`u`）・
+    `DELETE`の直後に書いた表（`DELETE o FROM …`の`o`）だけを書き込む表とし、
+    ほかの`JOIN`した表には`read`を求める（#807。`JOIN`しただけの表の値を、
+    `read`の許可なしに書き込みに使えた）。`SET note = …`のように代入先の表を
+    見分けられないときは、`JOIN`した表のすべてに、書き込みと`read`の両方を
+    求める。消す表を見分けられない`DELETE`と、表を分けられない形（`WITH`等）は
+    断る
   - 検証済みの呼び出し元で書き込む`DatabaseHandler::execute_command_as`を足した
     （`execute_query_as`の書き込み版）。MCPのツールとして呼ぶと、呼び出し元が
     分からないので、ロールや信頼度の要る許可は通らない（`execute_query`と同じ）
