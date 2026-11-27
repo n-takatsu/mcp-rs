@@ -15,8 +15,8 @@
 
 use super::types::DatabaseType;
 use sqlparser::ast::{
-    Expr, FromTable, ObjectName, ObjectNamePart, Query, SetExpr, Statement, TableFactor,
-    TableObject, TableWithJoins,
+    AssignmentTarget, Expr, FromTable, Ident, ObjectName, ObjectNamePart, Query, SetExpr,
+    Statement, TableFactor, TableObject, TableWithJoins,
 };
 use sqlparser::dialect::{
     ClickHouseDialect, Dialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
@@ -570,15 +570,19 @@ pub struct WriteTables {
 /// セグメンテーションが、表ごとに許可を確かめるために使う。
 ///
 /// - `INSERT`: 書き込むのは、`INTO`の表
-/// - `UPDATE`: 書き込むのは、`UPDATE`の直後の表と、それに`JOIN`した表
-///   （MySQLは、`JOIN`した表も`SET`で変えられるため。どれを変えるかは
-///   見分けず、すべて書き込む表とする）。`FROM`の表は読むだけ
-/// - `DELETE`: 書き込むのは、`FROM`の表と、それに`JOIN`した表（MySQLの
-///   `DELETE a, b FROM a JOIN b`のため、同じくすべて）。`USING`の表は読むだけ。
+/// - `UPDATE`: 書き込むのは、`UPDATE`の直後の表。MySQLの、表を`JOIN`した
+///   `UPDATE`では、`SET`の代入先（`u.note`の`u`）が指す表だけを書き込む表
+///   とし、ほかの`JOIN`した表は読む表とする（#807。`JOIN`しただけの表の
+///   値を、`read`の許可なしに写せないように）。代入先の表を見分けられない
+///   とき（`SET note = …`のように表を書いていない等）は、`JOIN`した表を
+///   すべて、書き込む表にも読む表にもする。`FROM`の表は読むだけ
+/// - `DELETE`: 書き込むのは、`FROM`の表。MySQLの`DELETE a, b FROM a JOIN b`
+///   では、`DELETE`の直後に書いた表（か別名）だけを消す表とし、ほかの
+///   `JOIN`した表は読む表とする（#807）。`USING`の表は読むだけ。
 ///   ただしMySQL・MariaDBの`DELETE FROM a USING …`は、`FROM`の名前が
-///   `USING`の表（か、その別名）を指すので、`USING`の表と、それに`JOIN`
-///   した表を、すべて書き込む表とする（`DELETE FROM notes USING secret AS
-///   notes`は、`secret`から消す）
+///   `USING`の表（か、その別名）を指すので、それが指す表を消す表とし、
+///   ほかの`USING`の表は読む表とする（`DELETE FROM notes USING secret AS
+///   notes`は、`secret`から消す）。消す表を見分けられない文は、断る
 ///
 /// それ以外の場所に出る表（副問い合わせ・`INSERT … SELECT`の元）は、
 /// `sqlparser`の`visit_relations`で、深さに関わらず拾う。
@@ -617,6 +621,9 @@ pub fn resolve_write_tables(
     let mut written: Vec<String> = Vec::new();
     // 表としては数えない名前（MySQLの`DELETE FROM a USING …`の`a`）
     let mut not_tables: Vec<String> = Vec::new();
+    // 書き込む表のうち、読む表にも入れるもの（どれに書くかを見分けられない
+    // とき。#807）
+    let mut also_read: Vec<String> = Vec::new();
     let action = match statement {
         Statement::Insert(insert) => {
             let TableObject::TableName(name) = &insert.table else {
@@ -635,19 +642,53 @@ pub fn resolve_write_tables(
             "write"
         }
         Statement::Update(update) => {
-            collect_written(std::slice::from_ref(&update.table), fold, &mut written)?;
+            let joined = collect_joined(std::slice::from_ref(&update.table), fold)?;
+            // `SET`の代入先が指す表（#807）。1つでも見分けられなければ`None`
+            let targets: Option<Vec<String>> = if joined.len() == 1 {
+                Some(vec![joined[0].table.clone()])
+            } else {
+                update
+                    .assignments
+                    .iter()
+                    .flat_map(|assignment| match &assignment.target {
+                        AssignmentTarget::ColumnName(column) => vec![column],
+                        AssignmentTarget::Tuple(columns) => columns.iter().collect(),
+                    })
+                    .map(|column| {
+                        let parts = ident_parts(column)?;
+                        let (_, qualifier) = parts.split_last()?;
+                        resolve_joined(qualifier, &joined, fold)
+                    })
+                    .collect()
+            };
+            match targets {
+                Some(targets) => {
+                    written.extend(
+                        joined
+                            .iter()
+                            .filter(|entry| targets.contains(&entry.table))
+                            .map(|entry| entry.table.clone()),
+                    );
+                }
+                None => {
+                    written.extend(joined.iter().map(|entry| entry.table.clone()));
+                    also_read.extend(joined.iter().map(|entry| entry.table.clone()));
+                }
+            }
             also_deletes = replaces(&update.or);
             "write"
         }
         Statement::Delete(delete) => {
             let (FromTable::WithFromKeyword(from) | FromTable::WithoutKeyword(from)) = &delete.from;
-            // `DELETE a, b FROM …`の`a`・`b`（表の名前か別名）は、見ない。
-            // `FROM`の表をすべて書き込む表とするので、要らない
-            // （`visit_relations`も、これらは表として渡さない）
-            match &delete.using {
+            // 消す表を指す名前（表の名前か別名）と、その名前で探す表
+            let (target_names, joined): (Vec<&ObjectName>, Vec<Joined>) = match &delete.using {
                 // MySQL・MariaDB: `FROM`の名前は、`USING`の表か別名を指す
                 // だけ。消す表は`USING`の中にある（PR #802のレビュー）
                 Some(using) if dialect.is::<MySqlDialect>() => {
+                    if !delete.tables.is_empty() {
+                        return Err(unsupported("unsupported DELETE form"));
+                    }
+                    let mut names = Vec::new();
                     for table in from {
                         let TableFactor::Table { name, .. } = &table.relation else {
                             return Err(unsupported("expected a table name to write to"));
@@ -655,11 +696,42 @@ pub fn resolve_write_tables(
                         if !table.joins.is_empty() {
                             return Err(unsupported("unsupported table form in a write"));
                         }
+                        // `visit_relations`は、この名前も表として渡すので、除く
                         not_tables.push(object_name_to_qualified_string(name, fold)?);
+                        names.push(name);
                     }
-                    collect_written(using, fold, &mut written)?;
+                    (names, collect_joined(using, fold)?)
                 }
-                _ => collect_written(from, fold, &mut written)?,
+                // `DELETE a, b FROM a JOIN b …`の`a`・`b`（`visit_relations`は、
+                // これらを表として渡さない）
+                _ => (delete.tables.iter().collect(), collect_joined(from, fold)?),
+            };
+            if target_names.is_empty() {
+                if joined.len() == 1 {
+                    written.push(joined[0].table.clone());
+                } else {
+                    // 消す表を書かない、複数の表の`DELETE`（MySQLでは
+                    // 構文エラー）。すべてを、消す表にも読む表にもする
+                    written.extend(joined.iter().map(|entry| entry.table.clone()));
+                    also_read.extend(joined.iter().map(|entry| entry.table.clone()));
+                }
+            } else {
+                // 消す表を見分けられない文は、断る（#807）
+                let mut targets: Vec<String> = Vec::new();
+                for name in target_names {
+                    let target = ident_parts(name)
+                        .and_then(|parts| resolve_joined(&parts, &joined, fold))
+                        .ok_or_else(|| {
+                            unsupported("cannot tell which table a DELETE target names")
+                        })?;
+                    targets.push(target);
+                }
+                written.extend(
+                    joined
+                        .iter()
+                        .filter(|entry| targets.contains(&entry.table))
+                        .map(|entry| entry.table.clone()),
+                );
             }
             "delete"
         }
@@ -695,7 +767,7 @@ pub fn resolve_write_tables(
         seen.remove(index);
     }
     let mut read: Vec<String> = Vec::new();
-    for table in seen {
+    for table in seen.into_iter().chain(also_read) {
         if !read.contains(&table) {
             read.push(table);
         }
@@ -715,39 +787,115 @@ pub fn resolve_write_tables(
     })
 }
 
-/// `UPDATE`の直後・`DELETE FROM`の表と、それに`JOIN`した表を、書き込む表
-/// として集める。最初の表は、名前で書いた表でなければならない。`JOIN`
-/// した副問い合わせは、書き込めないので、ここでは集めない（中の表は、
-/// 読む表として拾われる）
-fn collect_written(
+/// `UPDATE`の直後・`DELETE FROM`（か`USING`）の表と、それに`JOIN`した表の
+/// 1つ
+#[derive(Debug)]
+struct Joined {
+    /// 表の名前（[`object_name_to_qualified_string`]の形）
+    table: String,
+    /// 別名（`users u`の`u`）
+    alias: Option<String>,
+    /// 名前の最後の部分（`db.users`の`users`）
+    last: String,
+}
+
+/// `UPDATE`の直後・`DELETE FROM`の表と、それに`JOIN`した表を、文に出た順に
+/// 集める。最初の表は、名前で書いた表でなければならない。`JOIN`した
+/// 副問い合わせは、書き込めないので、ここでは集めない（中の表は、読む表
+/// として拾われる）
+fn collect_joined(
     tables: &[TableWithJoins],
     fold: NameFold,
-    written: &mut Vec<String>,
-) -> Result<(), ProvenanceError> {
+) -> Result<Vec<Joined>, ProvenanceError> {
     if tables.is_empty() {
         return Err(unsupported("expected a table to write to"));
     }
+    let entry = |name: &ObjectName, alias: &Option<sqlparser::ast::TableAlias>| {
+        let last = match name.0.last() {
+            Some(ObjectNamePart::Identifier(ident)) => ident.value.clone(),
+            _ => return Err(unsupported("unsupported table name form")),
+        };
+        Ok(Joined {
+            table: object_name_to_qualified_string(name, fold)?,
+            alias: alias.as_ref().map(|alias| alias.name.value.clone()),
+            last,
+        })
+    };
+    let mut joined = Vec::new();
     for table in tables {
-        let TableFactor::Table { name, args, .. } = &table.relation else {
+        let TableFactor::Table {
+            name, args, alias, ..
+        } = &table.relation
+        else {
             return Err(unsupported("expected a table name to write to"));
         };
         if args.is_some() {
             return Err(unsupported("table functions are not supported"));
         }
-        written.push(object_name_to_qualified_string(name, fold)?);
+        joined.push(entry(name, alias)?);
         for join in &table.joins {
             match &join.relation {
                 TableFactor::Table {
-                    name, args: None, ..
-                } => {
-                    written.push(object_name_to_qualified_string(name, fold)?);
-                }
+                    name,
+                    args: None,
+                    alias,
+                    ..
+                } => joined.push(entry(name, alias)?),
                 TableFactor::Derived { .. } => {}
                 _ => return Err(unsupported("unsupported table form in a write")),
             }
         }
     }
-    Ok(())
+    Ok(joined)
+}
+
+/// 名前の部分（`u.note`の`u`・`note`）。識別子でない部分があれば`None`
+fn ident_parts(name: &ObjectName) -> Option<Vec<&Ident>> {
+    name.0
+        .iter()
+        .map(|part| match part {
+            ObjectNamePart::Identifier(ident) => Some(ident),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `SET u.note`の`u`・`DELETE o FROM …`の`o`のような名前が指す、`JOIN`した
+/// 表（#807）。1つの部分なら、別名か、別名の無い表の名前の最後の部分と
+/// 比べる。2つ以上の部分（`db.users`）なら、別名の無い表の名前と比べる。
+/// 大文字・小文字は区別しない（MySQLは、OSによって区別しない）。当たる表が
+/// ちょうど1つ（自分自身との`JOIN`で、同じ表に何度か当たるのは1つと数える）
+/// のときだけ返し、当たらない・2つ以上に当たるときは`None`
+fn resolve_joined(qualifier: &[&Ident], joined: &[Joined], fold: NameFold) -> Option<String> {
+    let mut found: Option<&str> = None;
+    for entry in joined {
+        let hit = match qualifier {
+            [] => false,
+            [name] => match &entry.alias {
+                Some(alias) => alias.eq_ignore_ascii_case(&name.value),
+                None => entry.last.eq_ignore_ascii_case(&name.value),
+            },
+            parts => {
+                entry.alias.is_none() && {
+                    let name = ObjectName(
+                        parts
+                            .iter()
+                            .map(|ident| ObjectNamePart::Identifier((*ident).clone()))
+                            .collect(),
+                    );
+                    object_name_to_qualified_string(&name, fold)
+                        .is_ok_and(|name| name.eq_ignore_ascii_case(&entry.table))
+                }
+            }
+        };
+        if hit {
+            match found {
+                Some(table) if table != entry.table => return None,
+                _ => found = Some(&entry.table),
+            }
+        }
+    }
+    found.map(str::to_string)
 }
 
 /// Fully schema-qualified table name (all parts joined with `.`), preserving
@@ -1203,20 +1351,74 @@ mod tests {
         }
     }
 
-    /// MySQLの、複数の表のUPDATE・DELETE（#609）。JOINした表は、すべて
-    /// 書き込む表とする
+    /// MySQLの、複数の表のUPDATE・DELETE（#609・#807）。`SET`の代入先・
+    /// `DELETE`の直後に書いた表だけを書き込む表とし、ほかのJOINした表は
+    /// 読む表とする
     #[test]
-    fn resolve_write_tables_treats_joined_tables_as_written() {
+    fn resolve_write_tables_splits_joined_tables_by_target() {
         let mysql = |sql: &str| resolve_write_tables(sql, &MySqlDialect {});
         let tables =
             mysql("UPDATE users u JOIN orders o ON o.user_id = u.id SET o.total = 0").unwrap();
-        assert_eq!(tables.written, names(&["users", "orders"]));
-        assert!(tables.read.is_empty());
+        assert_eq!(tables.written, names(&["orders"]));
+        assert_eq!(tables.read, names(&["users"]));
 
         let tables = mysql("DELETE o FROM users u JOIN orders o ON o.user_id = u.id").unwrap();
         assert_eq!(tables.action, "delete");
+        assert_eq!(tables.written, names(&["orders"]));
+        assert_eq!(tables.read, names(&["users"]));
+
+        // JOINしただけの表の値を写すには、その表のreadが要る（#807の例）
+        let tables =
+            mysql("UPDATE users u JOIN secret s ON s.uid = u.id SET u.note = s.ssn").unwrap();
+        assert_eq!(tables.written, names(&["users"]));
+        assert_eq!(tables.read, names(&["secret"]));
+        // 探すのに使うだけの表には、deleteではなくreadを求める
+        let tables =
+            mysql("DELETE u FROM users u JOIN secret s ON s.uid = u.id WHERE s.flag = 1").unwrap();
+        assert_eq!(tables.written, names(&["users"]));
+        assert_eq!(tables.read, names(&["secret"]));
+
+        // 両方を変える・両方から消す
+        let tables =
+            mysql("UPDATE users u JOIN orders o ON o.user_id = u.id SET u.a = 1, o.b = 2").unwrap();
         assert_eq!(tables.written, names(&["users", "orders"]));
         assert!(tables.read.is_empty(), "{:?}", tables.read);
+        let tables = mysql("DELETE u, o FROM users u JOIN orders o ON o.user_id = u.id").unwrap();
+        assert_eq!(tables.written, names(&["users", "orders"]));
+        assert!(tables.read.is_empty(), "{:?}", tables.read);
+
+        // 別名の無い表は名前で、`db.table`はそのまま指す。大文字・小文字は
+        // 区別しない
+        let tables = mysql(
+            "UPDATE users JOIN shop.orders ON orders.user_id = users.id SET shop.orders.total = 0",
+        )
+        .unwrap();
+        assert_eq!(tables.written, names(&["shop.orders"]));
+        assert_eq!(tables.read, names(&["users"]));
+        let tables = mysql("DELETE O FROM users u JOIN orders o ON o.user_id = u.id").unwrap();
+        assert_eq!(tables.written, names(&["orders"]));
+        assert_eq!(tables.read, names(&["users"]));
+
+        // 代入先の表を見分けられないときは、すべてを書き込む表にも読む表にも
+        // する（表を書いていない列・同じ名前の2つの表）
+        for sql in [
+            "UPDATE users u JOIN secret s ON s.uid = u.id SET note = 1",
+            "UPDATE a.users JOIN b.users ON a.users.id = b.users.id SET users.x = 1",
+        ] {
+            let tables = mysql(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            assert_eq!(tables.written.len(), 2, "{sql}: {tables:?}");
+            assert_eq!(tables.read, tables.written, "{sql}");
+        }
+
+        // 消す表を見分けられないDELETEは断る
+        for sql in [
+            "DELETE x FROM users u JOIN orders o ON o.user_id = u.id",
+            "DELETE users FROM users u JOIN orders o ON o.user_id = u.id",
+            "DELETE FROM x USING users u JOIN orders o ON o.user_id = u.id",
+        ] {
+            let error = mysql(sql).unwrap_err().to_string();
+            assert!(error.contains("DELETE target"), "{sql}: {error}");
+        }
 
         // JOINした副問い合わせの中の表は、読むだけ
         let tables = mysql(
@@ -1243,12 +1445,13 @@ mod tests {
         assert_eq!(tables.written, names(&["secret"]));
         assert!(tables.read.is_empty(), "{:?}", tables.read);
 
+        // `FROM`の名前が指す表だけを消す。ほかの`USING`の表は読むだけ（#807）
         let tables = mysql(
             "DELETE FROM users USING users JOIN orders ON orders.user_id = users.id WHERE users.id IN (SELECT uid FROM secret)",
         )
         .unwrap();
-        assert_eq!(tables.written, names(&["users", "orders"]));
-        assert_eq!(tables.read, names(&["secret"]));
+        assert_eq!(tables.written, names(&["users"]));
+        assert_eq!(tables.read, names(&["orders", "secret"]));
 
         // PostgreSQLでは、`USING`の表は読むだけ
         let tables =
