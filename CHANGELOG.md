@@ -185,6 +185,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
     `ON DELETE CASCADE`）は見ない。親の表・ビューへの許可は、それを通して
     届く行への許可になる
+- ライブラリとして使う場合: MySQL・MariaDBのエンジンの、レビューの指摘を直した
+  （#768）。どれも、mcp-rsの実行ファイル（`[database]`のツール）が通らない経路
+  - `MySqlEngine::connect`が、最初の設定で作ったプールを、別の接続先の設定を
+    渡されても使っていた。今は断る（接続先ごとにエンジンを作ること）
+  - `MySqlEngine::connect`は、ループバック以外のホストで`ssl_mode`を省略したら
+    断る（本体はハンドラーで断っていた。#722）。最初の接続で`SELECT VERSION()`を
+    待つ時間も、接続の時間の上限に入れた
+  - `MySqlEngine::health_check`が、確かめずに、いつも`Healthy`・
+    `connection_count = 1`を返していた。今は、接続を受け取って`PING`を送る
+    （まだつないでいなければ、エンジンの設定でつなぐ。つながらない・失敗・
+    時間切れは`Critical`。`connection_count`は分からないので0）
+  - `begin_transaction`の`START TRANSACTION`に、時間の上限を付けた
+  - `MySqlParamConverter`: 日時をマイクロ秒まで渡す（以前はミリ秒まで）。
+    文字列・コメントの中の`?`を、パラメーターとして数えない（実行される
+    コメント`/*! … */`の中は数える）。i64に入らない符号なしの整数を、-1等に
+    せず、文字列で返す
+  - `MySqlPreparedStatement`は、パラメーターの数をサーバーから受け取る。
+    `MySqlPreparedStatement`・`MySqlTransaction`の`last_insert_id`は、i64に
+    入らないとき、負の数にせず、文字列で返す
+  - ベンチマークとテストの`ssl_mode = "disabled"`（正しくは`"disable"`）を直した
 - カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
   タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
   IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。

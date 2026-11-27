@@ -292,15 +292,32 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running MySQL server
     async fn test_mysql_health_check() {
-        let config = create_test_config();
-        let engine = MySqlEngine::new(config).await.unwrap();
-
-        let health = engine.health_check().await;
-        assert!(health.is_ok());
-
         use mcp_rs::handlers::database::types::HealthStatusType;
-        let status = health.unwrap();
-        assert_eq!(status.status, HealthStatusType::Healthy);
+
+        // `health_check`は、実際につないで確かめる（#768。以前は、確かめずに
+        // `Healthy`を返したので、決め打ちの接続先でも通っていた）
+        let Some(config) = test_config() else {
+            return;
+        };
+        // まだつないでいなくても、エンジンの設定でつないで確かめる
+        let engine = MySqlEngine::new(config.clone()).await.unwrap();
+        let status = engine.health_check().await.unwrap();
+        assert_eq!(
+            status.status,
+            HealthStatusType::Healthy,
+            "{:?}",
+            status.error_message
+        );
+        assert!(status.error_message.is_none());
+
+        // つながらない接続先は、`Critical`と理由
+        let mut wrong = config;
+        wrong.connection.password = "wrong-password".to_string();
+        wrong.connection.timeout_seconds = 5;
+        let engine = MySqlEngine::new(wrong).await.unwrap();
+        let status = engine.health_check().await.unwrap();
+        assert_eq!(status.status, HealthStatusType::Critical);
+        assert!(status.error_message.is_some());
     }
 
     #[tokio::test]

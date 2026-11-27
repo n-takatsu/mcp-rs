@@ -30,8 +30,44 @@ pub const SSL_MODES: &[&str] = &["disable", "prefer", "require", "verify-ca", "v
 pub struct MySqlEngine {
     config: DatabaseConfig,
     /// 接続のプールと、その設定と、つないだサーバーの種類。最初の
-    /// `connect`で作る
-    pool: Arc<tokio::sync::OnceCell<(Pool, Opts, ServerKind)>>,
+    /// `connect`で作る。プールを作った接続先（`PoolTarget`）も持ち、別の
+    /// 接続先の設定で`connect`されたら断る（#768）
+    pool: Arc<tokio::sync::OnceCell<(Pool, Opts, ServerKind, PoolTarget)>>,
+}
+
+/// プールがつなぐ先を決める設定（ホスト・ポート・データベース・ユーザー・
+/// パスワード・TLS）。`Debug`は付けない（パスワードを含む）
+#[derive(Clone, PartialEq, Eq)]
+struct PoolTarget {
+    host: String,
+    port: u16,
+    database: String,
+    username: String,
+    password: String,
+    ssl_mode: Option<String>,
+    ssl_root_cert: Option<String>,
+}
+
+impl PoolTarget {
+    fn of(connection: &ConnectionConfig) -> Self {
+        Self {
+            host: connection.host.clone(),
+            port: connection.port,
+            database: connection.database.clone(),
+            username: connection.username.clone(),
+            password: connection.password.clone(),
+            ssl_mode: connection.ssl_mode.clone(),
+            ssl_root_cert: ssl_root_cert(connection).map(str::to_string),
+        }
+    }
+
+    /// エラーの文に出す形（パスワードは出さない）
+    fn describe(&self) -> String {
+        format!(
+            "{}@{}:{}/{}",
+            self.username, self.host, self.port, self.database
+        )
+    }
 }
 
 impl MySqlEngine {
@@ -244,7 +280,9 @@ pub fn check_ssl_root_cert(config: &ConnectionConfig) -> Result<(), String> {
 /// プールを作り、つながるかを確かめる。`prefer`で、サーバーがTLSを使えない
 /// ときは、暗号化せずにつなぎ直す。サーバーの版から、MySQLかMariaDBかを
 /// 決める（`engine`の書き方ではなく、実際のサーバーに合わせる）
-async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts, ServerKind), DatabaseError> {
+async fn connect_pool(
+    config: &DatabaseConfig,
+) -> Result<(Pool, Opts, ServerKind, PoolTarget), DatabaseError> {
     // rustlsの暗号の実装（プロバイダー）を決める。依存クレートの都合で、
     // ringとaws-lc-rsの両方が入っているので、決めないとTLSの接続でパニック
     // する（CIのtls_modesで分かった）。HTTPのサーバー（`build_tls_acceptor`）
@@ -255,23 +293,36 @@ async fn connect_pool(config: &DatabaseConfig) -> Result<(Pool, Opts, ServerKind
     // CAとTLSモードの組み合わせを、プールを作る前に確かめる（#717。ライブラリ
     // として直接つなぐ場合も。`require`とCAを書くと、CAを使わずにつないでいた）
     check_ssl_root_cert(connection).map_err(DatabaseError::ConfigurationError)?;
+    // ループバック以外で`ssl_mode`を省略したら、つながない（#722）。本体は
+    // ハンドラーで確かめているが、ライブラリとして直接つなぐ場合もここで
+    // 確かめる（#768。確かめないと、省略時の`prefer`で、暗号化せずに
+    // つなぎうる）
+    check_ssl_mode_set(connection).map_err(DatabaseError::ConfigurationError)?;
     let mode = ssl_mode(connection);
     let root_cert = ssl_root_cert(connection);
     let timeout = Duration::from_secs(u64::from(connection.timeout_seconds).max(1));
-    let try_connect = |opts: Opts| async move {
-        let pool = Pool::new(opts.clone());
-        let conn = tokio::time::timeout(timeout, pool.get_conn())
+    let target = PoolTarget::of(connection);
+    let try_connect = |opts: Opts| {
+        let target = target.clone();
+        async move {
+            let pool = Pool::new(opts.clone());
+            // 接続を受け取ってから版を聞くまでを、1つの時間の上限に入れる
+            // （#768。以前は`SELECT VERSION()`が上限の外で、返事の無い
+            // サーバーをいつまでも待った）
+            let version = tokio::time::timeout(timeout, async {
+                let mut conn = pool.get_conn().await?;
+                let version: Option<String> = conn.query_first("SELECT VERSION()").await?;
+                Ok::<_, mysql_async::Error>(version)
+            })
             .await
             .map_err(|_| {
                 mysql_async::Error::Other(
                     format!("no connection within {} seconds", timeout.as_secs()).into(),
                 )
-            })?;
-        let mut conn = conn?;
-        let version: Option<String> = conn.query_first("SELECT VERSION()").await?;
-        drop(conn);
-        let server = ServerKind::from_version(version.as_deref().unwrap_or_default());
-        Ok::<_, mysql_async::Error>((pool, opts, server))
+            })??;
+            let server = ServerKind::from_version(version.as_deref().unwrap_or_default());
+            Ok::<_, mysql_async::Error>((pool, opts, server, target))
+        }
     };
     let opts = connect_opts(config, ssl_opts(mode, root_cert)?);
     match try_connect(opts).await {
@@ -301,11 +352,20 @@ impl DatabaseEngine for MySqlEngine {
         &self,
         config: &DatabaseConfig,
     ) -> Result<Box<dyn DatabaseConnection>, DatabaseError> {
-        let (pool, opts, server) = self
+        let (pool, opts, server, target) = self
             .pool
             .get_or_try_init(|| connect_pool(config))
             .await?
             .clone();
+        // プールは最初の設定で作る。別の接続先の設定を渡されたら、黙って
+        // 最初の接続先につながずに、断る（#768）
+        if target != PoolTarget::of(&config.connection) {
+            return Err(DatabaseError::ConfigurationError(format!(
+                "this engine is already connected to {}: create another engine to connect to {}",
+                target.describe(),
+                PoolTarget::of(&config.connection).describe(),
+            )));
+        }
         let limit = |key: &str| {
             config
                 .connection
@@ -331,16 +391,44 @@ impl DatabaseEngine for MySqlEngine {
         Ok(Box::new(conn))
     }
 
+    /// プールから接続を受け取り、`PING`を送って確かめる（#768。以前は、
+    /// 確かめずに、いつも`Healthy`・`connection_count = 1`を返した）。
+    /// まだ`connect`していなければ、エンジンを作ったときの設定でつなぐ。
+    /// つながらない・接続の時間の上限（`timeout_seconds`）までに返事が
+    /// 無い・失敗したら`Critical`。`connection_count`・`active_transactions`は、
+    /// プールが数を出さないので、0（分からない）
     async fn health_check(&self) -> Result<HealthStatus, DatabaseError> {
         use crate::handlers::database::types::HealthStatusType;
         use chrono::Utc;
 
+        let started = std::time::Instant::now();
+        // つなぐ（か、ほかのタスクがつなぎ終えるのを待つ）ところから`PING`の
+        // 返事までを、1つの時間の上限に入れる（PR #804のレビュー）
+        let timeout = Duration::from_secs(u64::from(self.config.connection.timeout_seconds).max(1));
+        let checked = tokio::time::timeout(timeout, async {
+            let (pool, ..) = self
+                .pool
+                .get_or_try_init(|| connect_pool(&self.config))
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
+            conn.ping().await.map_err(|e| e.to_string())
+        })
+        .await;
+        let (status, error_message) = match checked {
+            Ok(Ok(())) => (HealthStatusType::Healthy, None),
+            Ok(Err(message)) => (HealthStatusType::Critical, Some(message)),
+            Err(_) => (
+                HealthStatusType::Critical,
+                Some(format!("no answer within {} seconds", timeout.as_secs())),
+            ),
+        };
         Ok(HealthStatus {
-            status: HealthStatusType::Healthy,
+            status,
             last_check: Utc::now(),
-            response_time_ms: 0,
-            error_message: None,
-            connection_count: 1,
+            response_time_ms: started.elapsed().as_millis() as u64,
+            error_message,
+            connection_count: 0,
             active_transactions: 0,
         })
     }
