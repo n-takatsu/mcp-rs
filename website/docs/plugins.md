@@ -102,7 +102,7 @@ allowed_hosts = ["api.example.com:443"]   # host:port; "*.example.com:443" also 
 
 mcp-rs then:
 
-1. creates an internal Docker network (`docker network create --internal`, named `mcp-rs-<plugin name>-<random>-net`), from which containers cannot reach the outside
+1. creates an internal Docker network (`docker network create --internal`, named `mcp-rs-<plugin name>-<random>-net`), from which containers cannot reach the outside. On Docker 28 or later, its gateway is also isolated (`com.docker.network.bridge.gateway_mode_ipv4=isolated`), so that the plugin cannot reach services on the Docker host through the gateway address; on an older Docker, mcp-rs creates the network without it and warns in the log
 2. creates a second, ordinary network (`mcp-rs-<plugin name>-<random>-out`) and starts an egress proxy in a second container (`mcp-rs-<plugin name>-<random>-egress`), on both networks. The proxy is mcp-rs itself (`mcp-rs egress-proxy`), from the mcp-rs Docker image of the same version, with the same restrictions as the plugin (no capabilities, read-only)
 3. starts the plugin on the internal network, with `HTTPS_PROXY` and `HTTP_PROXY` (and the lower-case names) set to the proxy
 
@@ -119,8 +119,8 @@ Before using it:
 What it does not protect:
 
 - A plugin can still send data to the allowed hosts themselves
-- An internal Docker network has no route to the outside, but the plugin may still reach services on the Docker host itself at the network's gateway address, without going through the proxy (this depends on the Docker version and its settings; newer Docker versions can isolate the gateway). Do not leave services without authentication listening on all addresses of the host where you run such plugins
-- Name lookups of the plugin are answered by Docker's own DNS server. Whether Docker forwards lookups of outside names from an internal network depends on the Docker version, so a plugin may still be able to send small amounts of data in DNS queries
+- On Docker older than 28 (or another engine, such as Podman, that does not support the isolated gateway), the plugin can reach services on the Docker host at the internal network's gateway address without going through the proxy (on Docker 29.9 without the isolated gateway, this was checked to be possible). mcp-rs warns in the log in that case. Do not leave services without authentication listening on all addresses of such a host
+- Name lookups of the plugin are answered by Docker's own DNS server. On Docker 29.9, it does not look up outside names for an internal network (checked); other versions may differ, and then a plugin may be able to send small amounts of data in DNS queries
 - It applies to container plugins only. A child-process plugin has no isolation, and on Kubernetes `network` is still `none` or `allow`
 - Limiting the network does not stop prompt injection: a plugin can still write instructions for the AI in its tool descriptions and results. Do not use a plugin you do not trust in the same conversation as tools that change things (WordPress, `[database]` with `allow_write`); check what such tools are about to do before you approve them; and in HTTP mode, give separate API keys the tools they need
 

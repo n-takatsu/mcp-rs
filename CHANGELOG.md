@@ -20,11 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 中継するのはHTTPSの`CONNECT`だけ（中身は復号しない）。名前はプロキシが
     引き、ループバック・プライベート等のアドレスにはつながない。平文のHTTP・
     IPアドレスは断る。中継した・断った行き先は`[plugin <名前>/egress]`のログに出る
+  - 内部のネットワークは、Docker 28以降では出入り口（ゲートウェイ）も
+    切り離す（`gateway_mode_ipv4=isolated`）。`--internal`だけでは、プラグインが
+    ゲートウェイのアドレスで、プロキシを通らずにDockerのホストのサービスに
+    つながる（Docker 29.9で確かめた）。切り離せない版では、付けずに作り、ログで
+    警告する
   - プロキシのイメージも事前に`docker pull`する（`egress_proxy_image`で変えられる）。
     Docker 25以降が要る
   - 許した行き先そのものへの持ち出し、DNSの問い合わせに載せた持ち出し（Dockerの
-    版による）、内部のネットワークのゲートウェイのアドレスにある、Dockerの
-    ホストのサービスへの接続（プロキシを通らない。Dockerの版と設定による）、
+    版による。Docker 29.9では引けないことを確かめた）、
     プロンプトインジェクションは防げないこと、子プロセスと
     Kubernetesのプラグインには効かないことを、文書に書いた
 

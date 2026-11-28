@@ -459,6 +459,41 @@ fn docker_command(program: &str, env: &[(String, String)]) -> Command {
     command
 }
 
+/// `docker network create`の、内部のネットワークの出入り口（ゲートウェイ）を
+/// 切り離すオプション（Docker 28以降、#615）
+const ISOLATED_GATEWAY_OPTIONS: &[&str] = &[
+    "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+    "com.docker.network.bridge.gateway_mode_ipv6=isolated",
+];
+
+/// `args`（`network create …`）にラベルと名前を足して、ネットワークを作る
+async fn create_network(
+    plugin: &str,
+    program: &str,
+    env: &[(String, String)],
+    mut args: Vec<String>,
+    network: &str,
+) -> Result<(), String> {
+    args.push(format!("--label={CONTAINER_LABEL}={plugin}"));
+    args.push(network.to_string());
+    let created = docker_command(program, env)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("could not run `{program} network create`: {e}"))?;
+    if !created.status.success() {
+        return Err(format!(
+            "could not create the network '{}' for allowed_hosts: {}",
+            network,
+            truncate(String::from_utf8_lossy(&created.stderr).trim(), 300)
+        ));
+    }
+    Ok(())
+}
+
 /// 内部のネットワークを作り、中継のプロキシを起動して、待ち受けを始めるまで
 /// 待つ（#615）。返すプロキシの子プロセスは、プラグインと一緒に止める
 async fn start_egress_proxy(
@@ -468,31 +503,39 @@ async fn start_egress_proxy(
     egress: &EgressLaunch,
     timeout: Duration,
 ) -> Result<Child, String> {
-    // プラグインの入る内部のネットワークと、プロキシだけが外に出る
-    // ネットワーク
-    for (network, internal) in [(&egress.network, true), (&egress.outside_network, false)] {
-        let mut args = vec!["network".to_string(), "create".to_string()];
-        if internal {
-            args.push("--internal".to_string());
+    // プラグインの入る内部のネットワーク。`--internal`だけでは、プラグインが
+    // ネットワークの出入り口（ゲートウェイ）のアドレスで、Dockerのホストの
+    // サービスにつながる（Docker 29.9で確かめた。PR #828のレビュー）。
+    // Docker 28以降の`gateway_mode`を`isolated`にして、出入り口のアドレスを
+    // 持たせない。受け付けない版（27以前、Podman等）では付けずに作り、警告する
+    let internal = |isolated: bool| {
+        let mut args = vec![
+            "network".to_string(),
+            "create".to_string(),
+            "--internal".to_string(),
+        ];
+        if isolated {
+            args.extend(
+                ISOLATED_GATEWAY_OPTIONS
+                    .iter()
+                    .flat_map(|option| ["--opt".to_string(), option.to_string()]),
+            );
         }
-        args.push(format!("--label={CONTAINER_LABEL}={plugin}"));
-        args.push(network.clone());
-        let created = docker_command(program, env)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
+        args
+    };
+    let first = create_network(plugin, program, env, internal(true), &egress.network).await;
+    if let Err(isolated_error) = first {
+        create_network(plugin, program, env, internal(false), &egress.network)
             .await
-            .map_err(|e| format!("could not run `{program} network create`: {e}"))?;
-        if !created.status.success() {
-            return Err(format!(
-                "could not create the network '{}' for allowed_hosts: {}",
-                network,
-                truncate(String::from_utf8_lossy(&created.stderr).trim(), 300)
-            ));
-        }
+            .map_err(|_| isolated_error.clone())?;
+        warn!(
+            "Plugin '{}': this Docker does not support isolating the gateway of the internal network ({}). The plugin may reach services on the Docker host at the gateway address without the egress proxy. Docker 28 or later isolates it",
+            plugin, isolated_error
+        );
     }
+    // プロキシだけが外に出るネットワーク
+    let outside = vec!["network".to_string(), "create".to_string()];
+    create_network(plugin, program, env, outside, &egress.outside_network).await?;
     let mut proxy = docker_command(program, env)
         .args(&egress.proxy_args)
         .stdin(Stdio::null())
