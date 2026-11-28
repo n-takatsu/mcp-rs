@@ -88,7 +88,7 @@ See [Database Integration](docs/database/) for the settings.
 
 ## ✅ Recently Completed (v0.31.0)
 
-More databases. Library users: some changes are not backward compatible (for example, micro-segmentation table names are now compared in lower case); see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.31.0) before updating.
+More databases. Library users: some changes are not backward compatible (for example, micro-segmentation now lower-cases PostgreSQL table names written without quotes and all SQLite table names, while quoted PostgreSQL names and MySQL and MariaDB names keep their case, so permissions for mixed-case names may need rewriting); see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.31.0) before updating.
 
 - **🗄️ SQLite, Redis and MongoDB**: `[database]` takes `engine = "sqlite"` (the path of the database file), `"redis"` and `"mongodb"`, with the same safety as PostgreSQL and MySQL: read-only by default, limits on rows, bytes and time. Redis and MongoDB have their own tools (`redis_command`, `scan_keys`; `find`, `aggregate`, `count_documents`), and their write tools appear only with `allow_write = true`. See [Database Integration](docs/database/)
 - **🔍 `explain_query`**: The plan of a `SELECT` (PostgreSQL, MySQL, MariaDB, SQLite), without running it
