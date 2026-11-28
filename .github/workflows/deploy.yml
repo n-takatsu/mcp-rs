@@ -159,7 +159,7 @@ jobs:
       packages: read
     steps:
       - name: Generate SBOM
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-docker-image.outputs.image-digest }}
           registry-username: ${{ github.actor }}
@@ -196,6 +196,6 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           sarif_file: 'trivy-results.sarif'
