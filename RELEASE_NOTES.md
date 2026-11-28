@@ -29,12 +29,14 @@ mcp-rsの実行ファイル（`[database]`の設定）で使っていた設定�
   かける。書き込む表には`write`（`DELETE`は`delete`）、文の中で読む表には
   `read`が要る（`REPLACE INTO`等は`delete`も）。表の名前は、比べる前に
   そろえるので、**許可のリソースを大文字まじりで書いていた場合は、次の
-  ように書き直す**。許可のリソースの側は、書いたとおりに比べる
+  ように書き直す**。許可のリソースの側は、書いたとおりに比べる。小文字に
+  するのはASCIIの文字（A〜Z）だけで、ほかの文字はそのまま（SQLiteの
+  `ÄNotes`は`Änotes`。#825）
   - PostgreSQL: 引用符なしで使う表は小文字にする（`public.Users`は
     `public.users`。`database:pg:Users`は`database:pg:users`）。
     `"Users"`のように引用符で囲んで使う表は、そのまま（`public."Users"`は
     小文字にしない。リソースは`Users`）
-  - SQLite: 引用符で囲んだ名前も含めて、すべて小文字にする
+  - SQLite: 引用符で囲んだ名前も含めて、すべてのASCIIの文字を小文字にする
     （`database:sqlite:Notes`は`database:sqlite:notes`）
   - 書き直さないと、SQLに合わなくなり、断る側になる（読めるはずの表が
     読めない）
