@@ -6,7 +6,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 
 > **📖[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.30.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.30.0)
+[![Version](https://img.shields.io/badge/Version-v0.31.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.31.0)
 [![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FRedRing2020%2FRedRing%2Fdevelop%2Frust-toolchain.toml&query=%24.toolchain.channel&label=rust&logo=rust&color=orange)](rust-toolchain.toml)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
