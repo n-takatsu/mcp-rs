@@ -112,6 +112,7 @@ Before using it:
 
 - Pull the proxy image as well, the same as the plugin image: `docker pull ghcr.io/n-takatsu/mcp-rs:<version>` (the version of your mcp-rs, without the `v`), or set `egress_proxy_image`
 - It needs Docker 25 or later (the proxy is started with two `--network` options), and the `bridge` network
+- The plugin's `name` can be at most 36 characters, because the proxy's container name is used as a host name
 - The plugin must use the proxy settings in `HTTPS_PROXY`. Most HTTP libraries do; a plugin that ignores them cannot reach anything
 - Pin the plugin image by digest (`image@sha256:...`): an image name such as `:latest` can point to different contents later
 

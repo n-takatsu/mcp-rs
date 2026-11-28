@@ -148,7 +148,7 @@ impl Policy {
 fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
+            let [a, b, c, _] = v4.octets();
             !(v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
@@ -158,7 +158,9 @@ fn is_public(ip: IpAddr) -> bool {
                 || v4.is_multicast()
                 || a == 0
                 || (a == 100 && (64..128).contains(&b))
-                || (a == 192 && b == 0)
+                // 192.0.0.0/24（IETFの用途）だけ。192.0.64.0/18等は公開（PR #828の
+                // レビュー）
+                || (a == 192 && b == 0 && c == 0)
                 || (a == 198 && (18..20).contains(&b))
                 || a >= 240)
         }
@@ -422,10 +424,11 @@ mod tests {
             "fe80::1",
             "::ffff:127.0.0.1",
             "64:ff9b::7f00:1",
+            "192.0.0.1",
         ] {
             assert!(!is_public(private.parse().unwrap()), "{private}");
         }
-        for public in ["93.184.216.34", "1.1.1.1", "2606:4700::1111"] {
+        for public in ["93.184.216.34", "1.1.1.1", "192.0.64.1", "2606:4700::1111"] {
             assert!(is_public(public.parse().unwrap()), "{public}");
         }
     }

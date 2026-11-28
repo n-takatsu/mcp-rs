@@ -113,6 +113,11 @@ const EGRESS_NETWORK: &str = "bridge";
 const DEFAULT_EGRESS_PROXY_IMAGE: &str =
     concat!("ghcr.io/n-takatsu/mcp-rs:", env!("CARGO_PKG_VERSION"));
 
+/// `network = "allowlist"`のプラグインの名前の長さの上限。プロキシの
+/// コンテナの名前（`mcp-rs-`・`-`・12文字・`-egress`の27文字を足す）が、
+/// DNSのラベルの上限の63文字に収まるように
+const MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST: usize = 63 - 27;
+
 /// 中継のプロキシの使ってよいメモリ・プロセス数
 const EGRESS_PROXY_MEMORY: &str = "64m";
 const EGRESS_PROXY_PIDS_LIMIT: u32 = 64;
@@ -376,6 +381,16 @@ fn egress_launch(
     container: &PluginContainerConfig,
     container_name: &str,
 ) -> Result<EgressLaunch, String> {
+    // プロキシのコンテナの名前（`mcp-rs-<名前>-<12文字>-egress`）は、
+    // プラグインが`HTTPS_PROXY`で引くホスト名になる。DNSのラベルの上限
+    // （63文字）に収まる名前だけにする（PR #828のレビュー）。`mcp-rs check`
+    // （`instance`が短い）も同じ上限で確かめる
+    if config.name.len() > MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST {
+        return Err(format!(
+            "plugin name '{}' must be at most {} characters with network = \"{ALLOWLIST_NETWORK}\" (the proxy's container name is used as a host name)",
+            config.name, MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST
+        ));
+    }
     let hosts = container.allowed_hosts.as_deref().unwrap_or_default();
     crate::egress_proxy::parse_allowed_hosts(hosts).map_err(|e| {
         format!("container.{e} (network = \"{ALLOWLIST_NETWORK}\" needs allowed_hosts, such as [\"api.example.com:443\"])")
@@ -3171,6 +3186,15 @@ pub(crate) mod tests {
         let mut ok = allowlist.clone();
         ok.allowed_hosts = Some(vec!["api.example.com:443".to_string()]);
         check(ok, &["HTTPS_PROXY"], "sets it to its proxy");
+        // 名前が長いと、プロキシのホスト名がDNSのラベルの上限を超える
+        let mut long = allowlist.clone();
+        long.allowed_hosts = Some(vec!["api.example.com:443".to_string()]);
+        let config = container_plugin_config(&"a".repeat(37), long.clone());
+        let error = container_launch(&config, &long, &[], "x").unwrap_err();
+        assert!(error.contains("at most 36 characters"), "{error}");
+        let config = container_plugin_config(&"a".repeat(36), long.clone());
+        let launch = container_launch(&config, &long, &[], "abcdef123456").unwrap();
+        assert_eq!(launch.egress.unwrap().proxy_name.len(), 63);
         // `allowlist`でないのに`allowed_hosts`・`egress_proxy_image`
         let mut other = container_config("example/search:1.0");
         other.network = Some("bridge".to_string());
