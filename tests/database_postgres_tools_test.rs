@@ -105,7 +105,50 @@ async fn read_only_by_default() {
         .await
         .unwrap();
     let names = tool_names(&handler).await;
-    assert_eq!(names, vec!["execute_query", "get_schema"]);
+    assert_eq!(names, vec!["execute_query", "explain_query", "get_schema"]);
+
+    // 実行計画（#646）。SQLは実行しない。パラメーターも使える
+    let explained = call(
+        &handler,
+        "explain_query",
+        json!({ "sql": format!("SELECT name FROM {table} WHERE id = $1;"), "params": [1] }),
+    )
+    .await
+    .unwrap();
+    let plan = &explained["plan"][0]["Plan"];
+    assert!(plan["Node Type"].is_string(), "{explained}");
+    assert!(plan["Total Cost"].is_number(), "{explained}");
+    // 実行していないので、実際の時間・行数は無い
+    assert!(plan.get("Actual Total Time").is_none(), "{explained}");
+    // 文字列のパラメーターは、列の型に合わせる
+    let explained = call(
+        &handler,
+        "explain_query",
+        json!({ "sql": format!("SELECT id FROM {table} WHERE name = $1"), "params": ["one"] }),
+    )
+    .await
+    .unwrap();
+    assert!(explained["plan"][0]["Plan"].is_object(), "{explained}");
+    // 実行しないので、時間のかかるSQLでもすぐに返る
+    let started = std::time::Instant::now();
+    call(
+        &handler,
+        "explain_query",
+        json!({ "sql": "SELECT pg_sleep(30)" }),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    // SELECTでないもの・EXPLAINを付けたものは、断る
+    for sql in [
+        format!("DELETE FROM {table}"),
+        format!("EXPLAIN ANALYZE SELECT * FROM {table}"),
+    ] {
+        let err = call(&handler, "explain_query", json!({ "sql": sql }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("explain_query only supports SELECT"), "{err}");
+    }
     let tools = handler.list_tools().await.unwrap();
     assert!(tools
         .iter()

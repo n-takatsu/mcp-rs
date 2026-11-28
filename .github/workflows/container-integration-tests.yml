@@ -16,7 +16,9 @@ on:
       - 'tests/*mysql*'
       - 'tests/*mariadb*'
       - 'tests/database_handler_*'
-      - 'tests/column_encryption_rbac_test.rs'
+      # データベースのツールのテスト（Redis・MongoDB。#810）
+      - 'tests/*redis*'
+      - 'tests/*mongodb*'
       - 'migrations/**'
       - 'src/handlers/database/**'
       - 'src/transport/**'
@@ -39,7 +41,9 @@ on:
       - 'tests/*mysql*'
       - 'tests/*mariadb*'
       - 'tests/database_handler_*'
-      - 'tests/column_encryption_rbac_test.rs'
+      # データベースのツールのテスト（Redis・MongoDB。#810）
+      - 'tests/*redis*'
+      - 'tests/*mongodb*'
       - 'migrations/**'
       - 'src/handlers/database/**'
       - 'src/transport/**'
@@ -120,6 +124,17 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      # [database]のengine = "mongodb"（#530）
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27018:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping: 1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -175,6 +190,20 @@ jobs:
           cargo test --features database,mysql-backend --test database_mysql_tools_test -- --nocapture
           cargo test --features database,mysql-backend --test mod database::mysql_integration_tests -- --ignored --test-threads=1
 
+      # Redisのツール（#529）を、上のredisのサービスで確かめる（データベースの
+      # 番号9・10・11を使う）
+      - name: Run database tool tests (Redis)
+        env:
+          TEST_REDIS_URL: redis://localhost:6380/0
+        run: cargo test --features redis-backend --test database_redis_tools_test -- --nocapture --test-threads=1
+
+      # MongoDBのツール（#530）を、上のmongodbのサービスで確かめる（データベース
+      # mcp_rs_toolsを使う）
+      - name: Run database tool tests (MongoDB)
+        env:
+          TEST_MONGODB_URL: mongodb://localhost:27018
+        run: cargo test --features mongodb-backend --test database_mongodb_tools_test -- --nocapture --test-threads=1
+
       # サーバーが要る結合テスト（#[ignore]）を、上のpostgres・redisのサービスで
       # 実行する（#513）。同じデータベース・キーを使うテストがあるので、1つずつ
       # 実行する。対象と、ローカルで実行する方法は
@@ -186,9 +215,7 @@ jobs:
         run: >-
           cargo test --features redis-backend --no-fail-fast
           --test mod
-          --test database_handler_column_encryption_test
           --test database_handler_micro_segmentation_test
-          --test column_encryption_rbac_test
           -- --ignored --test-threads=1
 
       - name: Verify integration test compilation

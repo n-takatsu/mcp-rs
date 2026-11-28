@@ -3,17 +3,13 @@
 //! データベース操作のためのMCPハンドラー実装
 
 use crate::handlers::database::{
-    column_encryption::ColumnEncryptionManager,
     column_provenance::{
-        dialect_for, resolve_column_provenance, resolve_query_tables,
-        validate_single_query_statement, validate_single_write_statement, ColumnProvenance,
-        ProjectionResolution,
+        dialect_for, resolve_query_tables, resolve_write_tables, validate_single_query_statement,
+        validate_single_write_statement,
     },
     engine::{DatabaseEngineBuilder, EngineRegistry},
     pool::{ConnectionPool, PoolManager},
-    types::{
-        DatabaseConfig, DatabaseError, DatabaseType, QueryContext, QueryResult, QueryType, Value,
-    },
+    types::{DatabaseConfig, DatabaseError, DatabaseType, Value},
 };
 use crate::mcp::{
     InitializeParams, McpError, McpHandler, Resource, ResourceReadParams, Tool, ToolAnnotations,
@@ -28,15 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
-
-/// Placeholder returned in place of an encrypted column's raw value when the
-/// caller isn't authorized to see it decrypted.
-const ENCRYPTED_PLACEHOLDER: &str = "***ENCRYPTED***";
-
-/// Placeholder returned when a result column's source table/column can't be
-/// confidently determined, so it can't be checked against the encrypted-
-/// column configuration at all - see `column_provenance`.
-const UNKNOWN_PROVENANCE_PLACEHOLDER: &str = "***UNKNOWN_PROVENANCE***";
 
 /// Canonical string form of a `Role`, matching the lowercase role-name
 /// convention `MicroSegmentation::setup_default_policies()` uses (`"user"`,
@@ -61,9 +48,6 @@ pub struct DatabaseHandler {
     active_engine: Arc<RwLock<Option<String>>>,
     /// データベース設定
     configs: Arc<RwLock<HashMap<String, DatabaseConfig>>>,
-    /// カラムレベル暗号化マネージャー（未設定ならこのハンドラでは暗号化列の
-    /// 強制を一切行わない - 既存の呼び出し元には影響しないオプトイン機能）
-    column_encryption: Option<Arc<ColumnEncryptionManager>>,
     /// マイクロセグメンテーションエンジン（未設定ならこのハンドラでは
     /// テーブル単位のアクセス制御を一切行わない - 既存の呼び出し元には
     /// 影響しないオプトイン機能）。`src/zero_trust/micro_segmentation.rs`
@@ -192,6 +176,14 @@ fn redact_error_for_audit(message: &str) -> String {
     out
 }
 
+/// 検査を通った、読み取りのSQL（`execute_query`・`explain_query`）
+struct CheckedRead {
+    sql: String,
+    params: Vec<Value>,
+    engine_id: String,
+    config: DatabaseConfig,
+}
+
 /// 監査ログに記録するSQLの長さの上限（文字数）
 const MAX_AUDITED_SQL_CHARS: usize = 2000;
 
@@ -202,15 +194,13 @@ impl DatabaseHandler {
     /// SQLインジェクション検知等）・`SafetyManager`を作っていたが、クエリの
     /// 実行ではどれも使っていなかったため削除した（#499）。このハンドラーの
     /// 安全性は、読み取り専用のロール・文の種類の検査（SELECTだけ、
-    /// `allow_write`のときだけ書き込み）・カラム暗号化・マイクロ
-    /// セグメンテーションによる。
+    /// `allow_write`のときだけ書き込み）・マイクロセグメンテーションによる。
     pub async fn new() -> Result<Self, DatabaseError> {
         Ok(Self {
             engines: Arc::new(RwLock::new(EngineRegistry::new())),
             pool_manager: Arc::new(PoolManager::new()),
             active_engine: Arc::new(RwLock::new(None)),
             configs: Arc::new(RwLock::new(HashMap::new())),
-            column_encryption: None,
             micro_segmentation: None,
             tool_options: DatabaseToolOptions::default(),
             audit_logger: None,
@@ -243,6 +233,7 @@ impl DatabaseHandler {
         let engine_id = match database_type {
             DatabaseType::MySQL => "mysql",
             DatabaseType::MariaDB => "mariadb",
+            DatabaseType::SQLite => "sqlite",
             _ => "postgresql",
         };
         handler
@@ -272,11 +263,19 @@ impl DatabaseHandler {
         settings: &crate::config::DatabaseSettings,
     ) -> Result<(DatabaseType, DatabaseConfig), String> {
         use crate::handlers::database::engines::{
-            OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_SSL_ROOT_CERT,
+            OPTION_BYTE_LIMIT, OPTION_FETCH_LIMIT, OPTION_READ_ONLY, OPTION_SSL_ROOT_CERT,
         };
         use crate::handlers::database::types::{ConnectionConfig, FeatureConfig, PoolConfig};
 
         settings.validate()?;
+        // Redis（#529）は、SQLのツールでは使わない（`handler_from_settings`が
+        // Redisのハンドラーを作る）
+        if settings.is_redis() || settings.is_mongodb() {
+            return Err(format!(
+                "engine = \"{}\" is served by its own handler (handlers::database::handler_from_settings), not by the SQL tools",
+                settings.engine
+            ));
+        }
         // MySQL・MariaDB（#527）。`mysql-backend`無しでビルドしたmcp-rsでは
         // 使えない
         let database_type = if settings.is_mysql() {
@@ -291,6 +290,16 @@ impl DatabaseHandler {
             } else {
                 DatabaseType::MySQL
             }
+        } else if settings.is_sqlite() {
+            // SQLite（#528）。ファイルは作らないので、無ければ起動の前に知らせる
+            // （`mcp-rs check`でも）
+            let path = settings.database.trim();
+            if !std::path::Path::new(path).is_file() {
+                return Err(format!(
+                    "the SQLite database file {path} was not found (mcp-rs does not create it)"
+                ));
+            }
+            DatabaseType::SQLite
         } else {
             DatabaseType::PostgreSQL
         };
@@ -306,10 +315,20 @@ impl DatabaseHandler {
                 options.insert(OPTION_SSL_ROOT_CERT.to_string(), cert.to_string());
             }
         }
+        // 書き込みを許さなければ、書き込みの接続を作らない（#528。SQLiteは
+        // ファイルを読み取り専用でだけ開く）
+        if !settings.allow_write() {
+            options.insert(OPTION_READ_ONLY.to_string(), "true".to_string());
+        }
         let config = DatabaseConfig {
             database_type: database_type.clone(),
             connection: ConnectionConfig {
-                host: settings.host().to_string(),
+                // SQLiteは、ファイルのパスを`host`に入れる（エンジンの決まり）
+                host: if settings.is_sqlite() {
+                    settings.database.trim().to_string()
+                } else {
+                    settings.host().to_string()
+                },
                 port: settings.port(),
                 database: settings.database.clone(),
                 username: settings.username.clone(),
@@ -349,6 +368,8 @@ impl DatabaseHandler {
                 mysql::check_ssl_root_cert(&config.connection)?;
                 Ok(mysql::weak_tls_warning(&config.connection))
             }
+            // SQLiteは、通信しない（#528）
+            DatabaseType::SQLite => Ok(None),
             _ => {
                 // 環境変数（`PGSSLMODE`等）を反映した後の値で確かめる
                 use crate::handlers::database::engines::postgresql::pg_connection;
@@ -473,12 +494,6 @@ impl DatabaseHandler {
         }
     }
 
-    /// カラムレベル暗号化＋RBACを有効化する（ビルダースタイル）
-    pub fn with_column_encryption(mut self, manager: Arc<ColumnEncryptionManager>) -> Self {
-        self.column_encryption = Some(manager);
-        self
-    }
-
     /// マイクロセグメンテーション（テーブル単位のアクセス制御）を
     /// 有効化する（ビルダースタイル）
     pub fn with_micro_segmentation(mut self, engine: Arc<MicroSegmentation>) -> Self {
@@ -541,7 +556,7 @@ impl DatabaseHandler {
     }
 
     /// クエリ実行処理（`McpHandler::call_tool`経由 - 呼び出し元の識別子は
-    /// 得られないため、暗号化列は常にfail-closedで扱われる）
+    /// 得られないため、マイクロセグメンテーションは識別子なしで確かめる）
     async fn handle_execute_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
         self.execute_query_core(&args, None).await
     }
@@ -563,11 +578,60 @@ impl DatabaseHandler {
         self.execute_query_core(&args, Some(auth_user)).await
     }
 
-    async fn execute_query_core(
+    /// マイクロセグメンテーションで、表ごとに`action`（`"read"`・`"write"`・
+    /// `"delete"`）の許可を確かめる。1つでも許されなければ、文の全体を断る
+    /// （表への許可は、分けられないため）
+    fn check_table_access(
+        engine: &MicroSegmentation,
+        engine_id: &str,
+        tables: &[String],
+        action: &str,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<(), McpError> {
+        let user_roles: HashSet<String> = auth_user
+            .map(|u| u.roles.iter().map(role_name).collect())
+            .unwrap_or_default();
+        // device_verifier/network_analyzerが未配線のため、trust_scoreは
+        // 「識別子ありか」だけを表す暫定値。これらのエンジンが実配線
+        // された将来、device/network/behaviorの実測値に置き換えられる
+        // 前提の、正直な簡略化。
+        let trust_score: TrustScore = if auth_user.is_some() { 100 } else { 0 };
+
+        for table in tables {
+            let resource = format!("database:{engine_id}:{table}");
+            let request = AccessRequest::new(
+                auth_user.map(|u| u.id.clone()).unwrap_or_default(),
+                "unknown", // device_id: device_verifier未配線のため不明値
+                None,      // source_ip: トランスポート層のIPをDB層は知らない
+                resource,
+                action,
+            );
+            let result = engine.evaluate_access(&request, &user_roles, trust_score);
+            if !result.success {
+                warn!(
+                    "Micro-segmentation denied {} access to table '{}' for user {:?}: {}",
+                    action,
+                    table,
+                    auth_user.map(|u| &u.id),
+                    result.reason
+                );
+                return Err(McpError::InvalidRequest(format!(
+                    "access denied by micro-segmentation policy for table '{table}' ({action})"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 読み取りのSQLを検査する（`execute_query`・`explain_query`で同じ。
+    /// #646）: 1つのSELECTだけ。マイクロセグメンテーションがあれば、触れる
+    /// 表ごとに確かめる。`tool`は、エラーの文に書くツールの名前
+    async fn checked_read(
         &self,
         args: &JsonValue,
         auth_user: Option<&AuthUser>,
-    ) -> Result<JsonValue, McpError> {
+        tool: &str,
+    ) -> Result<CheckedRead, McpError> {
         let sql: String = args
             .get("sql")
             .and_then(|v| v.as_str())
@@ -614,22 +678,20 @@ impl DatabaseHandler {
         let dialect = dialect_for(config.database_type.clone());
 
         // execute_queryは「SELECT文のみ」を契約として公開しているツールで
-        // あり（list_toolsのdescription参照）、暗号化設定の有無に関わらず
-        // この契約自体を常に強制する。列暗号化が設定されている場合のみ
-        // 有効になる、より厳密な由来解決チェックとは別に、ここで無条件に
-        // 検証する。SQLの方言はアクティブなエンジンの`DatabaseType`に
+        // あり（list_toolsのdescription参照）、ここで無条件に検証する。
+        // SQLの方言はアクティブなエンジンの`DatabaseType`に
         // 合わせる - Postgres方言で固定すると、MySQL/SQLiteなど他エンジン
         // 向けの正当な構文を誤って拒否しかねない。
         validate_single_query_statement(&sql, dialect.as_ref())
-            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+            .map_err(|e| McpError::InvalidRequest(e.to_string().replace("execute_query", tool)))?;
 
         // マイクロセグメンテーションが設定されている場合、クエリが触れる
-        // すべてのテーブルについて事前にアクセスを検証する。列暗号化と同様、
+        // すべてのテーブルについて事前にアクセスを検証する。
         // クエリ実行前に検証する - 実行後にチェックすると、未対応のSQL形が
         // 拒否される前にクエリ（および副作用を持つ別ステートメント）が
         // 既にデータベースに対して実行されてしまう。1つでも拒否された
-        // テーブルがあればクエリ全体を拒否する（列レベルの部分マスクとは
-        // 異なり、テーブルへのアクセス可否は分割できないため）。
+        // テーブルがあればクエリ全体を拒否する（テーブルへのアクセス可否は
+        // 分割できないため）。
         if let Some(engine) = &self.micro_segmentation {
             let tables = resolve_query_tables(&sql, dialect.as_ref()).map_err(|e| {
                 McpError::InvalidRequest(format!(
@@ -638,38 +700,29 @@ impl DatabaseHandler {
                 ))
             })?;
 
-            let user_roles: HashSet<String> = auth_user
-                .map(|u| u.roles.iter().map(role_name).collect())
-                .unwrap_or_default();
-            // device_verifier/network_analyzerが未配線のため、trust_scoreは
-            // 「識別子ありか」だけを表す暫定値。これらのエンジンが実配線
-            // された将来、device/network/behaviorの実測値に置き換えられる
-            // 前提の、正直な簡略化。
-            let trust_score: TrustScore = if auth_user.is_some() { 100 } else { 0 };
-
-            for table in &tables {
-                let resource = format!("database:{engine_id}:{table}");
-                let request = AccessRequest::new(
-                    auth_user.map(|u| u.id.clone()).unwrap_or_default(),
-                    "unknown", // device_id: device_verifier未配線のため不明値
-                    None,      // source_ip: トランスポート層のIPをDB層は知らない
-                    resource,
-                    "read", // execute_queryはSELECTのみ（既存契約）
-                );
-                let result = engine.evaluate_access(&request, &user_roles, trust_score);
-                if !result.success {
-                    warn!(
-                        "Micro-segmentation denied access to table '{}' for user {:?}: {}",
-                        table,
-                        auth_user.map(|u| &u.id),
-                        result.reason
-                    );
-                    return Err(McpError::InvalidRequest(format!(
-                        "access denied by micro-segmentation policy for table '{table}'"
-                    )));
-                }
-            }
+            // execute_queryはSELECTのみ（既存契約）なので、どの表も"read"
+            Self::check_table_access(engine, &engine_id, &tables, "read", auth_user)?;
         }
+
+        Ok(CheckedRead {
+            sql,
+            params,
+            engine_id,
+            config,
+        })
+    }
+
+    async fn execute_query_core(
+        &self,
+        args: &JsonValue,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<JsonValue, McpError> {
+        let CheckedRead {
+            sql,
+            params,
+            engine_id,
+            config,
+        } = self.checked_read(args, auth_user, "execute_query").await?;
 
         // 接続プールから接続を取得。上で解決した`engine_id`をそのまま使う
         // (`get_active_pool()`は使わない) - `get_active_pool()`は
@@ -684,24 +737,6 @@ impl DatabaseHandler {
             .await
             .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {engine_id}")))?;
 
-        // 暗号化列が設定されている場合、クエリを実行する前にSQLの形が
-        // 安全に解析できるか確認する。実行後にチェックすると、CTE/UNION/
-        // 複数ステートメントのような未対応の形が拒否される前に、その
-        // クエリ（および仕込まれた副作用を持つ別ステートメント）が
-        // 既にデータベースに対して実行されてしまっているため、
-        // ここで事前に確認する必要がある。
-        let provenance = match &self.column_encryption {
-            Some(manager) if manager.has_encrypted_columns() => Some(
-                resolve_column_provenance(&sql, dialect.as_ref()).map_err(|e| {
-                    McpError::InvalidRequest(format!(
-                        "cannot safely determine which table this query's columns came from, \
-                             and column encryption is configured for this database: {e}"
-                    ))
-                })?,
-            ),
-            _ => None,
-        };
-
         let connection = pool
             .get_connection(&config)
             .await
@@ -715,22 +750,13 @@ impl DatabaseHandler {
             .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
 
         // 返すバイト数の上限（#539）。接続は上限を超えた行まで読んで止める
-        // ので、超えたかが分かる。暗号化の処理で値の大きさが変わる前に
-        // 確かめる
+        // ので、超えたかが分かる
         let max_result_bytes = self.tool_options.max_result_bytes;
         // 受け取った行が上限を超えていれば、接続はそこで読むのを止めたので、
         // 後の行を落としたかもしれない。1行だけ残る場合も、切り詰めたことに
         // する（#724。以前は、値を切らなければ`truncated: false`だった）
         let over_limit = rows_size(&result.rows) > max_result_bytes;
         let mut truncated = keep_rows_within(&mut result.rows, max_result_bytes) || over_limit;
-
-        if let Some(resolution) = provenance {
-            let manager = self
-                .column_encryption
-                .clone()
-                .expect("provenance is only Some when self.column_encryption was Some above");
-            Self::apply_column_encryption(&manager, resolution, &mut result, auth_user).await?;
-        }
 
         // 返す行数の上限（#453）。接続は上限より1行多く読むので、超えたかが
         // 分かる
@@ -764,123 +790,66 @@ impl DatabaseHandler {
         }))
     }
 
-    /// 事前に解決済みの列由来（`resolution`）を使って、`result`内の
-    /// 暗号化対象と設定された列を復号（許可時）またはマスク（拒否時・
-    /// 由来不明時）に置き換える。SQLの解析自体は`execute_query_core`側で
-    /// クエリ実行前に完了しているため、ここでは失敗しない
-    /// （`decrypt()`呼び出し自体の失敗を除く）。
-    async fn apply_column_encryption(
-        manager: &Arc<ColumnEncryptionManager>,
-        resolution: ProjectionResolution,
-        result: &mut QueryResult,
-        auth_user: Option<&AuthUser>,
-    ) -> Result<(), McpError> {
-        let context = QueryContext {
-            query_type: QueryType::Select,
-            user_id: auth_user.map(|u| u.id.clone()),
-            session_id: uuid::Uuid::new_v4().to_string(),
-            timestamp: chrono::Utc::now(),
-            source_ip: None,
-            client_info: None,
-        };
-
-        // Normalize both resolution shapes into one per-column-index list,
-        // so the rest of this function has a single code path.
-        let column_provenances: Vec<Option<ColumnProvenance>> = match resolution {
-            ProjectionResolution::WildcardTable(table) => result
-                .columns
-                .iter()
-                .map(|c| {
-                    Some(ColumnProvenance::Resolved {
-                        table: table.clone(),
-                        column: c.name.clone(),
-                    })
-                })
-                .collect(),
-            ProjectionResolution::PerColumn(provenances) => {
-                provenances.into_iter().map(Some).collect()
-            }
-        };
-
-        for (idx, provenance) in column_provenances.iter().enumerate() {
-            match provenance {
-                Some(ColumnProvenance::Resolved { table, column })
-                    if manager.is_encrypted_column(table, column) =>
-                {
-                    Self::apply_encrypted_column(
-                        manager, table, column, idx, result, &context, auth_user,
-                    )
-                    .await?;
-                }
-                Some(ColumnProvenance::Unknown) => {
-                    // NULL carries no ciphertext to hide - preserve it, same
-                    // as the encrypted-column path below does, instead of
-                    // changing result semantics for consumers expecting null.
-                    for row in result.rows.iter_mut() {
-                        if let Some(value) = row.get_mut(idx) {
-                            if !matches!(value, Value::Null) {
-                                *value = Value::String(UNKNOWN_PROVENANCE_PLACEHOLDER.to_string());
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+    /// SELECTの実行計画を返す（#646）。SQLは、`execute_query`と同じ検査を
+    /// 通す。実行はしない（`ANALYZE`を付けない）。データベースが計画を作る
+    /// ために、行を少し読むことはある。`max_rows`は当てはめない。計画が
+    /// `max_result_bytes`を超えるなら、切らずに断る（切るとJSONが壊れる）
+    async fn handle_explain_query(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        let CheckedRead {
+            sql,
+            params,
+            engine_id,
+            config,
+        } = self.checked_read(&args, None, "explain_query").await?;
+        let pool = self
+            .pool_manager
+            .get_pool(&engine_id)
+            .await
+            .ok_or_else(|| McpError::InvalidRequest(format!("Pool not found: {engine_id}")))?;
+        let connection = pool
+            .get_connection(&config)
+            .await
+            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+        let plan = connection
+            .inner()
+            .explain(&sql, &params)
+            .await
+            .map_err(|e| McpError::InvalidRequest(e.to_string()))?;
+        let result = json!({ "plan": plan });
+        let max_result_bytes = self.tool_options.max_result_bytes;
+        let size = serde_json::to_string_pretty(&result).map_or(usize::MAX, |text| text.len());
+        if size > max_result_bytes {
+            return Err(McpError::InvalidRequest(format!(
+                "the query plan is {size} bytes, more than max_result_bytes ({max_result_bytes}): explain a smaller part of the statement"
+            )));
         }
-
-        Ok(())
-    }
-
-    /// Decrypts or masks one encrypted column's worth of values across
-    /// every row of `result` at once, via [`ColumnEncryptionManager::decrypt_batch`]
-    /// so the permission check (and, on denial, the audit log entry) happens
-    /// once per query for this column rather than once per row.
-    async fn apply_encrypted_column(
-        manager: &Arc<ColumnEncryptionManager>,
-        table: &str,
-        column: &str,
-        idx: usize,
-        result: &mut QueryResult,
-        context: &QueryContext,
-        auth_user: Option<&AuthUser>,
-    ) -> Result<(), McpError> {
-        let mut row_indices = Vec::new();
-        let mut ciphertexts = Vec::new();
-        for (row_idx, row) in result.rows.iter().enumerate() {
-            if let Some(Value::String(s)) = row.get(idx) {
-                row_indices.push(row_idx);
-                ciphertexts.push(s.as_str());
-            }
-        }
-
-        if !ciphertexts.is_empty() {
-            let decrypted = manager
-                .decrypt_batch(table, column, &ciphertexts, context, auth_user)
-                .await
-                .map_err(|e| McpError::InvalidRequest(format!("decryption failed: {e}")))?;
-
-            for (row_idx, value) in row_indices.into_iter().zip(decrypted) {
-                result.rows[row_idx][idx] = Value::String(value);
-            }
-        }
-
-        // An encrypted column should only ever contain NULL or the base64
-        // ciphertext string produced by `encrypt()` - anything else is
-        // unexpected, so mask it defensively rather than assume it's safe.
-        for row in result.rows.iter_mut() {
-            if let Some(value) = row.get_mut(idx) {
-                if !matches!(value, Value::Null | Value::String(_)) {
-                    *value = Value::String(ENCRYPTED_PLACEHOLDER.to_string());
-                }
-            }
-        }
-
-        Ok(())
+        Ok(result)
     }
 
     /// コマンド実行処理（INSERT・UPDATE・DELETE）。`allow_write`のときだけ
-    /// ツールとして出す（#453）
+    /// ツールとして出す（#453）。`McpHandler::call_tool`からは、呼び出し元が
+    /// 分からないので、マイクロセグメンテーションは、識別子なしで確かめる
     async fn handle_execute_command(&self, args: JsonValue) -> Result<JsonValue, McpError> {
+        self.execute_command_core(&args, None).await
+    }
+
+    /// 検証済みの呼び出し元で`execute_command`を実行する（#609。
+    /// [`Self::execute_query_as`]の書き込み版）。マイクロセグメンテーションを
+    /// 設定しているとき、書き込む表には`"write"`（`DELETE`は`"delete"`）、
+    /// 文の中で読む表には`"read"`の許可を、この呼び出し元で確かめる
+    pub async fn execute_command_as(
+        &self,
+        args: JsonValue,
+        auth_user: &AuthUser,
+    ) -> Result<JsonValue, McpError> {
+        self.execute_command_core(&args, Some(auth_user)).await
+    }
+
+    async fn execute_command_core(
+        &self,
+        args: &JsonValue,
+        auth_user: Option<&AuthUser>,
+    ) -> Result<JsonValue, McpError> {
         if !self.tool_options.allow_write {
             return Err(McpError::InvalidRequest(
                 "execute_command is disabled: the database is read-only (set allow_write = true in [database] to allow INSERT, UPDATE, and DELETE)".to_string(),
@@ -898,7 +867,7 @@ impl DatabaseHandler {
             Vec::new()
         };
 
-        let (_, config, pool) = self
+        let (engine_id, config, pool) = self
             .resolve_engine(None)
             .await
             .map_err(|e| McpError::Internal(e.to_string()))?;
@@ -906,6 +875,30 @@ impl DatabaseHandler {
         let dialect = dialect_for(config.database_type.clone());
         validate_single_write_statement(&sql, dialect.as_ref())
             .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+        // マイクロセグメンテーションが設定されていれば、実行の前に、触れる
+        // 表のすべてを確かめる（#609。以前は`execute_query`だけで確かめて
+        // いたので、許していない表にも書けた）。書き込む表と読む表に
+        // 分けられない形の文は、断る
+        if let Some(engine) = &self.micro_segmentation {
+            let tables = resolve_write_tables(&sql, dialect.as_ref()).map_err(|e| {
+                McpError::InvalidRequest(format!(
+                    "cannot safely determine which tables this statement touches, \
+                     and micro-segmentation is configured for this database: {e}"
+                ))
+            })?;
+            Self::check_table_access(
+                engine,
+                &engine_id,
+                &tables.written,
+                tables.action,
+                auth_user,
+            )?;
+            if tables.also_deletes {
+                Self::check_table_access(engine, &engine_id, &tables.written, "delete", auth_user)?;
+            }
+            Self::check_table_access(engine, &engine_id, &tables.read, "read", auth_user)?;
+        }
 
         let connection = pool
             .get_connection(&config)
@@ -1070,12 +1063,16 @@ impl McpHandler for DatabaseHandler {
     async fn list_tools(&self) -> Result<Vec<Tool>, McpError> {
         let database_type = &self.tool_options.database_type;
         let mysql = matches!(database_type, DatabaseType::MySQL | DatabaseType::MariaDB);
+        let sqlite = *database_type == DatabaseType::SQLite;
         let engine_name = if *database_type == DatabaseType::MariaDB {
             "MariaDB"
         } else {
             "MySQL"
         };
-        let params_description = if mysql {
+        let params_description = if sqlite {
+            // SQLite（#528）は`?`。値は、渡した型（INTEGER・REAL・TEXT）のまま入る
+            "Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). Numbers are bound as INTEGER or REAL, booleans as 0 or 1, and strings as TEXT, so numbers, text and null returned by execute_query can be passed back as they are; infinite REAL values are returned as the strings \"Infinity\" and \"-Infinity\", which are bound as TEXT, so pass 9e999 or -9e999 in the SQL instead. Binary values (BLOB) are returned as base64; to pass one, pass it as hex text and use unhex(?) in the SQL".to_string()
+        } else if mysql {
             // MySQL・MariaDB（#527）は`?`。文字列は、データベースが列の型に
             // 変換する
             format!("Values for the ? placeholders in the SQL, in order (bound as parameters, never inserted into the SQL text). {engine_name} converts strings to the column type, so values returned by execute_query (dates as 'YYYY-MM-DD HH:MM:SS', DECIMAL as text, JSON as a JSON object or array on MySQL and as text on MariaDB) can be passed back as they are; a JSON object or array is sent as its JSON text. Binary values (BLOB, VARBINARY) are returned as base64; to pass one, use FROM_BASE64(?) in the SQL")
@@ -1097,11 +1094,15 @@ impl McpHandler for DatabaseHandler {
         });
         let cast_hint = if mysql {
             "cast such columns to text with CAST(column AS CHAR)"
+        } else if sqlite {
+            "cast such columns to text with CAST(column AS TEXT)"
         } else {
             "cast such columns to text"
         };
         let schema_scope = if mysql {
             "the configured database"
+        } else if sqlite {
+            "the configured database file, with its views"
         } else {
             "schema public"
         };
@@ -1110,6 +1111,23 @@ impl McpHandler for DatabaseHandler {
             " Quote identifiers with backticks (`name`): \"name\" is a string."
         } else {
             ""
+        };
+        // 実行計画（#646）の聞き方と、返す形
+        let (explain_statement, plan_shape) = if mysql {
+            (
+                "EXPLAIN FORMAT=JSON",
+                format!("plan is the JSON that {engine_name} returns."),
+            )
+        } else if sqlite {
+            (
+                "EXPLAIN QUERY PLAN",
+                "plan is a list of steps, each with id, parent (the id of the step it belongs to, 0 for the top) and detail.".to_string(),
+            )
+        } else {
+            (
+                "EXPLAIN (FORMAT JSON)",
+                "plan is the JSON that PostgreSQL returns (costs are estimates).".to_string(),
+            )
         };
         let max_rows = self.tool_options.max_rows;
         let max_result_bytes = self.tool_options.max_result_bytes;
@@ -1144,6 +1162,34 @@ impl McpHandler for DatabaseHandler {
                 ..Default::default()
             },
             Tool {
+                name: "explain_query".to_string(),
+                title: Some("Show the plan of a SQL query".to_string()),
+                description: format!(
+                    "Show how the configured database would run one SELECT statement, without running it \
+                     ({explain_statement}; never EXPLAIN ANALYZE; the database may still read a few rows to make the plan). \
+                     Use it to see why a query is slow and \
+                     whether it uses an index. The statement passes the same checks as execute_query, and \
+                     the plan is read in a read-only transaction that is rolled back. {plan_shape}"
+                ),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "One SELECT statement, as for execute_query, without EXPLAIN in front"
+                        },
+                        "params": params_schema.clone()
+                    },
+                    "required": ["sql"]
+                }),
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(true),
+                    open_world_hint: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Tool {
                 name: "get_schema".to_string(),
                 title: Some("Show the database schema".to_string()),
                 description: format!("List the tables of the configured database ({schema_scope}) with their columns, types, primary keys, foreign keys, and indexes."),
@@ -1165,7 +1211,13 @@ impl McpHandler for DatabaseHandler {
                 title: Some("Change data with SQL".to_string()),
                 description: format!(
                     "Run one INSERT, UPDATE, or DELETE statement on the configured database and commit it. Returns the number of affected rows{}. Other statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, ...) are refused.",
-                    if mysql { " and the AUTO_INCREMENT id of an inserted row (last_insert_id)" } else { "" }
+                    if mysql {
+                        " and the AUTO_INCREMENT id of an inserted row (last_insert_id)"
+                    } else if sqlite {
+                        " and the rowid of an inserted row (last_insert_id). last_insert_id is null when SQLite does not tell which row was inserted (for example a row with rowid 0 inserted first on a new connection); the write is still done, so do not send it again because of that"
+                    } else {
+                        ""
+                    }
                 ),
                 input_schema: json!({
                     "type": "object",
@@ -1209,6 +1261,13 @@ impl McpHandler for DatabaseHandler {
                     object.remove("engine");
                 }
                 self.handle_execute_query(args).await
+            }
+            "explain_query" => {
+                let mut args = args_json.clone();
+                if let Some(object) = args.as_object_mut() {
+                    object.remove("engine");
+                }
+                self.handle_explain_query(args).await
             }
             "execute_command" => self.handle_execute_command(args_json).await,
             "get_schema" => self.handle_get_schema(args_json).await,
@@ -1386,6 +1445,395 @@ mod tests {
         assert_eq!(message, r#"invalid input syntax for type integer: "…""#);
         let long = redact_error_for_audit(&"x".repeat(2000));
         assert_eq!(long.chars().count(), 501);
+    }
+
+    /// SQLiteのデータベースのファイル（表`notes`に3行）を作り、その
+    /// `[database]`を返す（#528）
+    async fn sqlite_settings(
+        allow_write: bool,
+    ) -> (tempfile::TempDir, crate::config::DatabaseSettings) {
+        use sqlx::Connection;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.db");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let mut conn = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .unwrap();
+        for sql in [
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)",
+            "INSERT INTO notes (body) VALUES ('a'), ('b'), ('c')",
+        ] {
+            sqlx::query(sql).execute(&mut conn).await.unwrap();
+        }
+        conn.close().await.unwrap();
+        let settings = crate::config::DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: path.to_string_lossy().into_owned(),
+            allow_write: Some(allow_write),
+            max_rows: Some(2),
+            ..Default::default()
+        };
+        (dir, settings)
+    }
+
+    async fn call(
+        handler: &DatabaseHandler,
+        name: &str,
+        args: JsonValue,
+    ) -> Result<JsonValue, McpError> {
+        let arguments = serde_json::from_value(args).unwrap();
+        let result = handler
+            .call_tool(ToolCallParams {
+                name: name.to_string(),
+                arguments: Some(arguments),
+            })
+            .await?;
+        Ok(serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap())
+    }
+
+    /// `engine = "sqlite"`の`[database]`で、読み取り・スキーマ・行数の上限を
+    /// 使える。書き込みのツールは出さない（#528）
+    #[tokio::test]
+    async fn test_sqlite_database_from_settings() {
+        let (_dir, settings) = sqlite_settings(false).await;
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        assert_eq!(
+            handler.status().await.unwrap(),
+            format!("sqlite {} (read-only)", settings.database)
+        );
+        let tools = handler.list_tools().await.unwrap();
+        assert!(tools.iter().all(|t| t.name != "execute_command"));
+
+        let result = call(
+            &handler,
+            "execute_query",
+            json!({"sql": "SELECT body FROM notes WHERE id >= ? ORDER BY id", "params": [1]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["rows"], json!([["a"], ["b"]]));
+        assert_eq!(result["truncated"], true);
+
+        let schema = call(&handler, "get_schema", json!({})).await.unwrap();
+        assert_eq!(schema["tables"][0]["name"], "notes", "{schema}");
+
+        // SELECTでないものは、ツールが断る
+        assert!(call(
+            &handler,
+            "execute_query",
+            json!({"sql": "DELETE FROM notes"})
+        )
+        .await
+        .is_err());
+        let count = call(
+            &handler,
+            "execute_query",
+            json!({"sql": "SELECT count(*) FROM notes"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count["rows"], json!([[3]]));
+    }
+
+    /// `explain_query`は、SQLを実行せずに、実行計画を返す（#646）。SQLは
+    /// `execute_query`と同じ検査を通す
+    #[tokio::test]
+    async fn test_sqlite_explain_query() {
+        let (_dir, settings) = sqlite_settings(false).await;
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        let tools = handler.list_tools().await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["execute_query", "explain_query", "get_schema"]);
+        let explain = &tools[1];
+        assert_eq!(
+            explain.annotations.as_ref().unwrap().read_only_hint,
+            Some(true)
+        );
+        assert!(explain.description.contains("EXPLAIN QUERY PLAN"));
+
+        let result = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT body FROM notes WHERE id = ?;", "params": [1]}),
+        )
+        .await
+        .unwrap();
+        let steps = result["plan"].as_array().unwrap();
+        assert_eq!(steps.len(), 1, "{result}");
+        assert_eq!(steps[0]["parent"], 0, "{result}");
+        // 主キーで探す（表を全部読まない）
+        let detail = steps[0]["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("SEARCH") && detail.contains("notes"),
+            "{detail}"
+        );
+
+        // SELECTでないもの・EXPLAINを付けたものは、断る
+        for sql in [
+            "DELETE FROM notes",
+            "EXPLAIN SELECT body FROM notes",
+            "SELECT 1; SELECT 2",
+        ] {
+            let error = call(&handler, "explain_query", json!({ "sql": sql }))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("execute_query"), "{error}");
+        }
+        let error = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "DELETE FROM notes"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("explain_query only supports SELECT"),
+            "{error}"
+        );
+        // 計画は、`max_rows`（2）で切らずに、全部返す（PR #801のレビュー）
+        let result = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT body FROM notes UNION SELECT body FROM notes UNION SELECT body FROM notes"}),
+        )
+        .await
+        .unwrap();
+        let steps = result["plan"].as_array().unwrap();
+        assert!(steps.len() > 3, "{result}");
+        assert!(
+            steps
+                .iter()
+                .filter(|s| s["detail"].as_str().unwrap().contains("SCAN"))
+                .count()
+                >= 3,
+            "{result}"
+        );
+
+        // 無い表は、データベースのエラー
+        assert!(call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT * FROM missing"})
+        )
+        .await
+        .is_err());
+    }
+
+    /// 計画が`max_result_bytes`を超えるなら、切らずに断る（#646）
+    #[tokio::test]
+    async fn test_sqlite_explain_query_refuses_a_plan_that_is_too_large() {
+        let (_dir, mut settings) = sqlite_settings(false).await;
+        settings.max_result_bytes = Some(40);
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        let error = call(
+            &handler,
+            "explain_query",
+            json!({"sql": "SELECT body FROM notes"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("more than max_result_bytes (40)"), "{error}");
+    }
+
+    /// `allow_write = true`なら、`execute_command`で書け、コミットする（#528）
+    #[tokio::test]
+    async fn test_sqlite_database_with_allow_write() {
+        let (_dir, settings) = sqlite_settings(true).await;
+        let handler = DatabaseHandler::from_settings(&settings).await.unwrap();
+        let done = call(
+            &handler,
+            "execute_command",
+            json!({"sql": "INSERT INTO notes (body) VALUES (?)", "params": ["d"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+        assert_eq!(done["last_insert_id"], 4, "{done}");
+        let count = call(
+            &handler,
+            "execute_query",
+            json!({"sql": "SELECT count(*) FROM notes"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(count["rows"], json!([[4]]));
+    }
+
+    /// マイクロセグメンテーションは、`execute_command`にもかかる（#609）。
+    /// 書き込む表には`write`（`DELETE`は`delete`）、文の中で読む表には`read`の
+    /// 許可が要る。確かめるのは実行の前なので、断った文は何も変えない
+    #[tokio::test]
+    async fn test_micro_segmentation_applies_to_execute_command() {
+        use crate::zero_trust::micro_segmentation::AccessPolicy;
+
+        let (_dir, settings) = sqlite_settings(true).await;
+        let mut engine = MicroSegmentation::new();
+        // editorは、notesに書ける（消せない・読めない）
+        engine.add_global_policy(
+            AccessPolicy::new("editor-writes-notes", "database:sqlite:notes", 0)
+                .with_action("write")
+                .with_role("editor"),
+        );
+        // ownerは、notesを読める・書ける・消せる
+        engine.add_global_policy(
+            AccessPolicy::new("owner-notes", "database:sqlite:notes", 0)
+                .with_action("read")
+                .with_action("write")
+                .with_action("delete")
+                .with_role("owner"),
+        );
+        let handler = DatabaseHandler::from_settings(&settings)
+            .await
+            .unwrap()
+            .with_micro_segmentation(Arc::new(engine));
+        let user = |role: &str| {
+            let mut user = AuthUser::new(role.to_string(), role.to_string());
+            user.roles.insert(Role::Custom(role.to_string()));
+            user
+        };
+        let (editor, owner) = (user("editor"), user("owner"));
+        let denied = |result: Result<JsonValue, McpError>| result.unwrap_err().to_string();
+
+        // 許された書き込み
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "INSERT INTO notes (body) VALUES (?)", "params": ["d"]}),
+                &editor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "UPDATE notes SET body = 'e' WHERE id = 4"}),
+                &editor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+
+        // 消す許可は無い
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "DELETE FROM notes"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'notes' (delete)"), "{error}");
+        // 許していない表には書けない
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "INSERT INTO secret (v) VALUES (1)"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'secret' (write)"), "{error}");
+        // 許していない表を、文の中で読めない（INSERT … SELECT・副問い合わせ）
+        for sql in [
+            "INSERT INTO notes (body) SELECT ssn FROM secret",
+            "UPDATE notes SET body = (SELECT ssn FROM secret LIMIT 1)",
+        ] {
+            let error = denied(
+                handler
+                    .execute_command_as(json!({ "sql": sql }), &owner)
+                    .await,
+            );
+            assert!(error.contains("table 'secret' (read)"), "{error}");
+        }
+        // 書ける表でも、文の中で読むには、読む許可が要る
+        let copy = json!({"sql": "INSERT INTO notes (body) SELECT body FROM notes WHERE id = 1"});
+        let error = denied(handler.execute_command_as(copy.clone(), &editor).await);
+        assert!(error.contains("table 'notes' (read)"), "{error}");
+        let done = handler.execute_command_as(copy, &owner).await.unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+
+        // 分けられない形は、断る
+        let error = denied(
+            handler
+                .execute_command_as(
+                    json!({"sql": "INSERT INTO notes (body) WITH t AS (SELECT body FROM notes) SELECT body FROM t"}),
+                    &owner,
+                )
+                .await,
+        );
+        assert!(
+            error.contains("cannot safely determine which tables"),
+            "{error}"
+        );
+
+        // MCPのツールとして呼ぶと、呼び出し元が分からないので、ロールの要る
+        // 許可は通らない
+        let error = call(
+            &handler,
+            "execute_command",
+            json!({"sql": "INSERT INTO notes (body) VALUES ('x')"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("table 'notes' (write)"), "{error}");
+
+        // ぶつかった行を消してから入れる書き方には、消す許可も要る
+        for sql in [
+            "REPLACE INTO notes (id, body) VALUES (1, 'x')",
+            "INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'x')",
+            "UPDATE OR REPLACE notes SET id = 1 WHERE id = 2",
+        ] {
+            let error = denied(
+                handler
+                    .execute_command_as(json!({ "sql": sql }), &editor)
+                    .await,
+            );
+            assert!(error.contains("table 'notes' (delete)"), "{sql}: {error}");
+        }
+        let done = handler
+            .execute_command_as(
+                json!({"sql": "INSERT OR REPLACE INTO notes (id, body) VALUES (1, 'a')"}),
+                &owner,
+            )
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 1, "{done}");
+
+        // SQLiteは、表の名前の大文字・小文字を区別しない。許可のリソースは
+        // 小文字で書く（`database:sqlite:notes`）。SQLの名前は、小文字に
+        // そろえてから比べるので、どう書いても同じ許可で確かめる
+        let error = denied(
+            handler
+                .execute_command_as(json!({"sql": "DELETE FROM NOTES"}), &editor)
+                .await,
+        );
+        assert!(error.contains("table 'notes' (delete)"), "{error}");
+
+        // 断った文は、何も変えていない（3行 + 挿入2行）
+        let done = handler
+            .execute_command_as(json!({"sql": "DELETE FROM \"Notes\""}), &owner)
+            .await
+            .unwrap();
+        assert_eq!(done["rows_affected"], 5, "{done}");
+    }
+
+    /// 無いファイルは作らず、起動の前（`mcp-rs check`でも）に知らせる（#528）
+    #[tokio::test]
+    async fn test_sqlite_missing_file_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.db");
+        let settings = crate::config::DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let err = DatabaseHandler::check_settings(&settings).unwrap_err();
+        assert!(err.contains("was not found"), "{err}");
+        let err = DatabaseHandler::from_settings(&settings)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.contains("was not found"), "{err}");
+        assert!(!path.exists());
     }
 
     /// MySQL・MariaDBでは、`params`にJSONのオブジェクト・配列も渡せる

@@ -270,7 +270,10 @@ async fn build_server(
             for (name, site_config) in site_list {
                 let wp_handler = WordPressHandler::try_new(site_config.clone())
                     .map_err(|e| format!("WordPress handler creation failed ({}): {}", name, e))?
-                    .with_audit_logger(audit_logger.clone());
+                    .with_audit_logger(audit_logger.clone())
+                    // 許可フォルダの一覧は、stdioのときだけエラーに出す（#819。
+                    // HTTP・WebSocketの相手に、このサーバーのフォルダを見せない）
+                    .with_upload_dirs_in_errors(!http_mode);
 
                 // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
                 // ことがある。その場合、file_pathで読まれるのはクライアントの
@@ -423,10 +426,9 @@ async fn register_database(
     settings: &mcp_rs::config::DatabaseSettings,
     audit_logger: Arc<mcp_rs::security::AuditLogger>,
 ) -> Result<(), String> {
-    let handler = mcp_rs::handlers::database::handler::DatabaseHandler::from_settings(settings)
-        .await?
-        .with_audit_logger(audit_logger);
-    server.add_handler("database".to_string(), Arc::new(handler));
+    // Redis（#529）は、Redisのツールのハンドラーにする
+    let handler = mcp_rs::handlers::database::handler_from_settings(settings, audit_logger).await?;
+    server.add_handler("database".to_string(), handler);
     Ok(())
 }
 

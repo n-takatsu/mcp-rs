@@ -23,8 +23,10 @@ impl MySqlParamConverter {
             Value::String(s) => Ok(mysql_async::Value::Bytes(s.as_bytes().to_vec())),
             Value::Binary(b) => Ok(mysql_async::Value::Bytes(b.clone())),
             Value::Json(j) => Ok(mysql_async::Value::Bytes(j.to_string().into_bytes())),
+            // マイクロ秒まで渡す（#768。以前は`%.3f`で、ミリ秒より下を切り
+            // 捨てた）。MySQLのDATETIMEは時差を持たないので、UTCの時刻
             Value::DateTime(dt) => {
-                let formatted = dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+                let formatted = dt.naive_utc().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
                 Ok(mysql_async::Value::Bytes(formatted.into_bytes()))
             }
         }
@@ -45,8 +47,17 @@ impl MySqlParamConverter {
     ///
     /// Ensures the number of provided parameters matches the number of
     /// placeholders in the SQL query to prevent parameter injection attacks.
+    ///
+    /// This is an early check made without the server: the placeholders are
+    /// counted by [`Self::extract_parameter_positions`], with the
+    /// assumptions written there. The count can differ from the server's
+    /// when the SQL has an executable comment (`/*! … */`, `/*M! … */`) that
+    /// the server skips, so a statement this refuses may still be valid on
+    /// that server. To check against the server's own count, prepare the
+    /// statement (`MySqlPreparedStatement::new`) and use its
+    /// `parameter_count()`.
     pub fn validate_param_count(sql: &str, param_count: usize) -> Result<(), DatabaseError> {
-        let expected_count = sql.matches('?').count();
+        let expected_count = Self::extract_parameter_positions(sql).len();
         if expected_count != param_count {
             return Err(DatabaseError::ValidationError(format!(
                 "Parameter count mismatch: expected {}, provided {}",
@@ -65,7 +76,12 @@ impl MySqlParamConverter {
         match mysql_value {
             mysql_async::Value::NULL => Ok(Value::Null),
             mysql_async::Value::Int(i) => Ok(Value::Int(i)),
-            mysql_async::Value::UInt(u) => Ok(Value::Int(u as i64)),
+            // i64に入らない符号なしの値は、桁を落とさないよう文字列にする
+            // （#768。以前は`as i64`で、`u64::MAX`が-1になった）
+            mysql_async::Value::UInt(u) => Ok(match i64::try_from(u) {
+                Ok(i) => Value::Int(i),
+                Err(_) => Value::String(u.to_string()),
+            }),
             mysql_async::Value::Float(f) => Ok(Value::Float(f as f64)),
             mysql_async::Value::Double(d) => Ok(Value::Float(d)),
             mysql_async::Value::Bytes(b) => match String::from_utf8(b.clone()) {
@@ -124,9 +140,105 @@ impl MySqlParamConverter {
 
     /// Extract parameter placeholders from SQL
     ///
-    /// Identifies parameter positions in SQL for validation and debugging
+    /// Identifies parameter positions (byte offsets) in SQL for validation
+    /// and debugging. A `?` inside a string, a quoted identifier, or a
+    /// comment is not a placeholder (#768: it used to be counted).
+    ///
+    /// This reads the SQL without asking the server, so it assumes what the
+    /// connections of this engine set up:
+    ///
+    /// - `\` escapes the next character inside `'…'` and `"…"`. The engine
+    ///   removes `NO_BACKSLASH_ESCAPES` and `ANSI_QUOTES` from the session's
+    ///   `sql_mode` (`session_setup_sql`), so this holds on its connections
+    /// - Executable comments (`/*! … */`, `/*!80000 … */`, and MariaDB's
+    ///   `/*M! … */`) are read as SQL, so a `?` inside one is counted. A
+    ///   server that skips the comment (a version condition it does not
+    ///   meet, or `/*M!` on MySQL) has fewer placeholders
+    ///
+    /// The server's own count is the one that decides:
+    /// `MySqlPreparedStatement` uses it (`Statement::num_params`)
     pub fn extract_parameter_positions(sql: &str) -> Vec<usize> {
-        sql.match_indices('?').map(|(pos, _)| pos).collect()
+        let mut positions = Vec::new();
+        // 実行されるコメント（`/*! … */`）の中にいるか
+        let mut in_executable_comment = false;
+        let mut chars = sql.char_indices().peekable();
+        while let Some((position, c)) = chars.next() {
+            match c {
+                '?' => positions.push(position),
+                // 文字列・引用符で囲んだ名前。`\`の次の文字と、重ねた引用符は
+                // 終わりにしない（バッククォートの中では、`\`は普通の文字）
+                '\'' | '"' | '`' => {
+                    while let Some((_, inner)) = chars.next() {
+                        if inner == '\\' && c != '`' {
+                            chars.next();
+                        } else if inner == c {
+                            if chars.peek().is_some_and(|(_, next)| *next == c) {
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // `#`と、`-- `（`--`の次が空白か終わり）は、行の終わりまでコメント
+                '#' => {
+                    for (_, inner) in chars.by_ref() {
+                        if inner == '\n' {
+                            break;
+                        }
+                    }
+                }
+                '-' if sql[position..].starts_with("--")
+                    && sql[position + 2..]
+                        .chars()
+                        .next()
+                        .is_none_or(char::is_whitespace) =>
+                {
+                    for (_, inner) in chars.by_ref() {
+                        if inner == '\n' {
+                            break;
+                        }
+                    }
+                }
+                // 実行されるコメントの終わりの`*/`。まとめて飛ばす（PR #804の
+                // レビュー。飛ばさないと、`/*! ? */* ?`の`/`と次の`*`を、
+                // 普通のコメントの始まりと読んでしまう）
+                '*' if in_executable_comment
+                    && chars.peek().is_some_and(|(_, next)| *next == '/') =>
+                {
+                    chars.next();
+                    in_executable_comment = false;
+                }
+                // 実行されるコメント（`/*! … */`・`/*M! … */`）は、中身がSQL。
+                // 始まりの印だけを飛ばし、中身は読む
+                '/' if sql[position..].starts_with("/*!")
+                    || sql[position..].starts_with("/*M!") =>
+                {
+                    let opener = if sql[position..].starts_with("/*!") {
+                        2
+                    } else {
+                        3
+                    };
+                    for _ in 0..opener {
+                        chars.next();
+                    }
+                    in_executable_comment = true;
+                }
+                // `/* … */`
+                '/' if chars.peek().is_some_and(|(_, next)| *next == '*') => {
+                    chars.next();
+                    let mut previous = ' ';
+                    for (_, inner) in chars.by_ref() {
+                        if previous == '*' && inner == '/' {
+                            break;
+                        }
+                        previous = inner;
+                    }
+                }
+                _ => {}
+            }
+        }
+        positions
     }
 
     /// Generate safe parameter summary for logging
@@ -200,6 +312,61 @@ mod tests {
             let result = MySqlParamConverter::convert_value(&value);
             assert!(result.is_ok(), "Failed to convert value: {:?}", value);
         }
+    }
+
+    /// 文字列・引用符で囲んだ名前・コメントの中の`?`は、数えない（#768）
+    #[test]
+    fn test_placeholders_in_strings_and_comments_are_not_counted() {
+        for (sql, count) in [
+            ("SELECT * FROM t WHERE a = ? AND b = '?'", 1),
+            ("SELECT '?', \"?\", `a?b` FROM t WHERE a = ?", 1),
+            ("SELECT 'it''s ?', 'a\\'?' FROM t WHERE a = ?", 1),
+            ("SELECT 1 /* ? */ FROM t WHERE a = ? -- ?", 1),
+            ("SELECT 1 # ?\nFROM t WHERE a = ? AND b = ?", 2),
+            ("SELECT a--? FROM t", 1),
+            ("SELECT 'unclosed ?", 0),
+            // 実行されるコメントの中身は、SQLとして読む
+            ("SELECT 1 /*! + ? */", 1),
+            ("SELECT 1 /*!80000 + ? */ + ?", 2),
+            ("SELECT 1 /*M! + ? */ /* ? */", 1),
+            ("SELECT 1 /*! + '?' */", 0),
+            // 終わりの`*/`の後の`*`は、掛け算
+            ("SELECT /*! ? */* ?", 2),
+            ("SELECT /*! 2 */* ? /* ? */", 1),
+            ("SELECT 2 */ 1 + ?", 1),
+            ("SELECT ?, ?", 2),
+        ] {
+            assert_eq!(
+                MySqlParamConverter::extract_parameter_positions(sql).len(),
+                count,
+                "{sql}"
+            );
+            assert!(MySqlParamConverter::validate_param_count(sql, count).is_ok());
+        }
+        assert_eq!(
+            MySqlParamConverter::extract_parameter_positions("SELECT '?' WHERE a = ?"),
+            vec![21]
+        );
+    }
+
+    /// マイクロ秒まで渡す。i64に入らない符号なしの値は、文字列にする（#768）
+    #[test]
+    fn test_values_keep_their_precision() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-27T01:02:03.123456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let converted = MySqlParamConverter::convert_value(&Value::DateTime(at)).unwrap();
+        assert_eq!(
+            converted,
+            mysql_async::Value::Bytes(b"2026-11-27 01:02:03.123456".to_vec())
+        );
+
+        let big = MySqlParamConverter::convert_from_mysql_value(mysql_async::Value::UInt(u64::MAX))
+            .unwrap();
+        assert!(matches!(big, Value::String(text) if text == u64::MAX.to_string()));
+        let small =
+            MySqlParamConverter::convert_from_mysql_value(mysql_async::Value::UInt(7)).unwrap();
+        assert!(matches!(small, Value::Int(7)));
     }
 
     #[test]

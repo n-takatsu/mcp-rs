@@ -8,10 +8,10 @@ permalink: /docs/database/
 
 **[Home]({{ site.baseurl }}/) > [Documentation]({{ site.baseurl }}/docs/) > Database Guide**
 
-mcp-rs can connect to one PostgreSQL, MySQL, or MariaDB database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
+mcp-rs can connect to one PostgreSQL, MySQL, MariaDB, SQLite, Redis, or MongoDB database and give MCP clients tools to read its schema and run SQL. By default it only reads: queries run in a read-only transaction, and the tool that changes data is not offered.
 
-- **Engines**: PostgreSQL, and MySQL and MariaDB from v0.25.0 (see [MySQL](#mysql) and [MariaDB](#mariadb)). Other engines (SQLite, Redis, MongoDB) exist as library code but cannot be configured yet. Redis and MongoDB are planned for v0.31.0
-- **Build**: all three are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
+- **Engines**: PostgreSQL, MySQL and MariaDB from v0.25.0, and SQLite, Redis and MongoDB from v0.31.0 (see [MySQL](#mysql), [MariaDB](#mariadb), [SQLite](#sqlite), [Redis](#redis), and [MongoDB](#mongodb)). Redis and MongoDB are not SQL, so they have their own tools
+- **Build**: all six are included in the default build, the [ready-built files](https://github.com/n-takatsu/mcp-rs/releases), and the Docker image. A build made with `--no-default-features` leaves them out, and reports that in `mcp_rs_status`
 - **Step-by-step setup**: [PostgreSQL Integration Guide]({{ site.baseurl }}/docs/guides/postgres-integration/)
 
 ## Configuration
@@ -40,11 +40,12 @@ ssl_mode = "prefer"               # disable, allow, prefer, require, verify-full
 
 | Key | Required | Default | Notes |
 |-----|----------|---------|-------|
-| `engine` | yes | | `"postgresql"`, `"mysql"`, or `"mariadb"` |
+| `engine` | yes | | `"postgresql"`, `"mysql"`, `"mariadb"`, `"sqlite"`, `"redis"`, or `"mongodb"` (the last three v0.31.0 and later). For SQLite, see [SQLite](#sqlite): only `database` and the keys from `allow_write` on are used. For Redis and MongoDB, see [Redis](#redis) and [MongoDB](#mongodb) |
 | `host` | | `localhost` | `${VAR}` allowed |
-| `port` | | `5432` (MySQL, MariaDB: `3306`) | |
-| `database` | yes | | `${VAR}` allowed |
-| `username` | yes | | `${VAR}` allowed |
+| `port` | | `5432` (MySQL, MariaDB: `3306`; Redis: `6379`; MongoDB: `27017`) | |
+| `database` | yes (not for Redis) | | `${VAR}` allowed. SQLite: the path of the database file. Redis: the database number, as a string (`"0"` when left out) |
+| `username` | yes (not for SQLite; optional for Redis and MongoDB) | | `${VAR}` allowed |
+| `auth_source` | | `admin` | MongoDB only: the database where `username` was created |
 | `password` | | none | `${VAR}` allowed. Never written to logs, `mcp_rs_status`, or error messages |
 | `keyring` | | none | Name of the entry in the OS credential store that holds the password, instead of `password` (v0.29.0 and later). `mcp-rs init` or `mcp-rs database-keyring set <name>` stores it (see [Keeping the password in the OS credential store](#keyring)). The entry is tied to `host`, `port` and `username`: with other values in `[database]`, mcp-rs does not use it, so a config file someone else wrote cannot send the password to another server. Cannot be combined with `password` |
 | `ssl_mode` | when `host` is not local | `prefer` | Same meaning as libpq's `sslmode`. See [TLS](#tls). MySQL and MariaDB have no `allow`. From v0.30.0, it can be left out only when `host` is `localhost`, `127.0.0.1`, or `::1` (PostgreSQL: also a Unix socket path, or when `PGSSLMODE` is set to a valid mode) |
@@ -104,6 +105,7 @@ mcp-rs connects once at startup. If the settings are invalid, an environment var
 | Tool | Offered | Annotations |
 |------|---------|-------------|
 | `execute_query` | always | `readOnlyHint` |
+| `explain_query` | always (v0.31.0 and later) | `readOnlyHint` |
 | `get_schema` | always | `readOnlyHint` |
 | `execute_command` | only with `allow_write = true` | `destructiveHint` |
 
@@ -143,6 +145,31 @@ The result is JSON text:
 - When the first row alone is larger than `max_result_bytes`, its large values are cut: a string keeps its beginning and ends with `… [cut: N bytes in total; …]`, and `bytea` and `json` values are replaced by a note with their size. Select a part of such a value, for example `substring(column from 1 for 1000)`. mcp-rs still receives that one row whole, so a row can use as much memory as PostgreSQL allows for one row (up to about 1 GB per value)
 - A result without rows still has its `columns`
 - Values are returned by type: integers, floats, and booleans as JSON values (`NaN`, `Infinity`, and `-Infinity`, which JSON numbers cannot hold, as those strings; up to v0.23.0, as `0`); `numeric` as a string (no digits are lost); `uuid`, `date`, `time`, and `timestamp` as strings; `timestamptz` as RFC 3339; `json`/`jsonb` as JSON; `bytea` as base64; `text[]`, `varchar[]`, `int4[]`, and `int8[]` as JSON arrays. Other types are replaced by a note: cast such columns to text, for example `column::text`
+
+### `explain_query`
+
+From v0.31.0. Shows how the database would run one `SELECT` statement, without running it. Use it to see why a query is slow, and whether it uses an index.
+
+```json
+{
+  "sql": "SELECT id, name FROM customers WHERE country = $1",
+  "params": ["JP"]
+}
+```
+
+Write the statement as for `execute_query`, without `EXPLAIN` in front: mcp-rs adds it. The result is `{"plan": …}`:
+
+| Engine | What mcp-rs sends | `plan` |
+|--------|-------------------|--------|
+| PostgreSQL | `EXPLAIN (FORMAT JSON)` | The JSON that PostgreSQL returns: a list with one object that has `Plan` |
+| MySQL, MariaDB | `EXPLAIN FORMAT=JSON` | The JSON that the server returns (`query_block`, …). MySQL and MariaDB name some fields differently. To explain a statement that reads a view, the user also needs the `SHOW VIEW` privilege on it |
+| SQLite | `EXPLAIN QUERY PLAN` | A list of steps, each with `id`, `parent` (the `id` of the step it belongs to, `0` for the top) and `detail` |
+
+- mcp-rs never sends `EXPLAIN ANALYZE`, so the statement is not run. The database may still read some rows to make the plan (MySQL, for example, reads the row when a primary key is compared with a constant), so a call is not always free of reads. Costs and row counts in the plan are the estimates of the database
+- The statement passes the same checks as for `execute_query` (a single `SELECT`, no writes inside `WITH`, no row locks, none of the refused functions), and the plan is read in a read-only transaction that is rolled back
+- The plan is not cut: when it is larger than `max_result_bytes`, the call fails. `max_rows` does not apply
+- The call is recorded in the audit log like `execute_query`
+- Redis and MongoDB do not have this tool
 
 ### `get_schema`
 
@@ -258,6 +285,98 @@ ssl_mode = "verify-full"
 - **Values**: MariaDB's `JSON` type is text (`LONGTEXT`), so `JSON` values are returned as strings, not as JSON
 - **Which server**: mcp-rs reads the server version when it connects, and uses MariaDB's time limit when the server is MariaDB. A configuration that says `engine = "mysql"` but points at MariaDB also works
 - **TLS**: MariaDB 11.4 and later offer TLS with a certificate they generate themselves. Such a certificate is not signed by a CA, so `verify-ca` and `verify-full` need a certificate from your own CA (`ssl_root_cert`)
+
+## SQLite
+
+From v0.31.0, `engine = "sqlite"` reads a SQLite database file. There is no server: `database` is the path of the file, and the settings for connecting to a server are not used.
+
+```toml
+[database]
+engine = "sqlite"
+database = "data/app.db"          # relative to the config file's folder
+# allow_write = false             # true offers execute_command
+```
+
+- **The file**: a relative path is relative to the folder of the configuration file (a path given with `${VAR}` is used as the variable says). mcp-rs does not create the file: when it does not exist, mcp-rs starts without the database tools and `mcp_rs_status` (and `mcp-rs check`) says the file was not found. `:memory:` and `file:` URIs are refused
+- **Settings that are not used**: `host`, `port`, `username`, `password`, `keyring`, `ssl_mode`, and `ssl_root_cert`. When one of them is set, mcp-rs starts without the database tools and shows the reason in `mcp_rs_status` (and `mcp-rs check`), so a setting meant for another database is not ignored silently. The OS credential store is not read
+- **Read-only**: the file is opened read-only, so SQLite itself refuses any write, and each query runs in a transaction that is rolled back. With `allow_write = true`, mcp-rs also opens the file for writing, for `execute_command` only: `execute_query` still reads through the read-only connection. `ATTACH`, `PRAGMA`, `VACUUM` and the other statements that are not `SELECT`, `INSERT`, `UPDATE`, or `DELETE` are refused, so a query cannot open or write another file. The functions `load_extension()` and `fts3_tokenizer()` are refused too (SQLite does not offer them by default)
+- **Connections**: with `allow_write = true`, the read-only connections and the connections for writing are two pools, each with up to `max_connections` connections
+- **Other programs**: other programs can keep using the file. A database in WAL mode can be read while another program writes to it. When another program holds a lock, mcp-rs waits up to `query_timeout_seconds`
+- **Time limit**: SQLite has no server to stop a statement, so mcp-rs checks the time while SQLite runs it, and stops it after `query_timeout_seconds` (the error says it was stopped). The wait for another program's lock is capped at about 24 days, the longest SQLite accepts
+- **Parameters**: write `?` in the SQL, in the order of `params`. Numbers are bound as `INTEGER` or `REAL`, booleans as 0 or 1, and strings as `TEXT`. To pass a binary value, pass it as hex text and use `unhex(?)`
+- **Values**: SQLite stores a type with each value, so values are returned by that type, not by the column's declared type: integers and floats as JSON numbers, text as strings, `BLOB` as base64, and `NULL` as `null`. Dates are whatever the application stored (usually text). The `type` of a column is its declared type (empty for an expression)
+- **`get_schema`**: lists the tables and views of the file (not SQLite's own `sqlite_` tables) with their columns (generated columns too), primary keys, foreign keys (a foreign key that does not name the column refers to the primary key of the other table), and indexes. Views are listed under `views` with the SQL that created them. Indexes on expressions are left out
+- **`execute_command`**: also returns `last_insert_id` (the `rowid` of an inserted row)
+- **Trusted files only**: the SQLite that mcp-rs bundles has a known flaw ([RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html)) that a specially made database file (with its `-wal` file) can use. It is fixed in a newer SQLite, which mcp-rs cannot use yet ([#449](https://github.com/n-takatsu/mcp-rs/issues/449)). Open only files that you or a program you trust wrote, not files received from others
+
+## Redis
+
+From v0.31.0, `engine = "redis"` connects to Redis (6 or later; tested with 7) and Redis-compatible servers such as Valkey. Redis is not SQL, so instead of `execute_query`, `get_schema` and `execute_command`, mcp-rs offers these tools:
+
+| Tool | Offered | What it does |
+|------|---------|--------------|
+| `redis_command` | always | Runs one read-only command from a fixed list (`GET`, `MGET`, `HGETALL`, `HSCAN`, `LRANGE`, `SMEMBERS`, `ZRANGE`, `XRANGE`, `TTL`, `TYPE`, ...) |
+| `scan_keys` | always | Lists keys with `SCAN` (a glob `pattern`, an optional `type`, and a `cursor` to continue) |
+| `get_schema` | always | The server version, the database number, how many keys it has (`DBSIZE`), and `INFO keyspace` |
+| `redis_write_command` | only with `allow_write = true` | Runs one command that changes data, from a fixed list (`SET`, `DEL`, `EXPIRE`, `HSET`, `LPUSH`, `SADD`, `ZADD`, `XADD`, ...) |
+
+```toml
+[database]
+engine = "redis"
+host = "cache.example.com"
+# port = 6379                     # default for Redis
+database = "0"                    # the database number (default 0)
+username = "mcp_reader"           # ACL user; leave out for the default user
+password = "${MCP_REDIS_PASSWORD}"
+ssl_mode = "verify-full"          # disable, require, verify-full
+```
+
+- **Commands**: only the commands in the two lists can be run; the tool descriptions list them. `KEYS`, `FLUSHALL`, `FLUSHDB`, `CONFIG`, `EVAL`, `SCRIPT`, `FUNCTION`, `MODULE`, `SHUTDOWN`, `DEBUG`, `MIGRATE`, `SELECT`, `CLIENT`, `ACL`, `MONITOR`, `SUBSCRIBE`, `MULTI`, `RENAME`, `SORT`, and the blocking commands (`BLPOP`, ...) are not available, also with `allow_write = true`. The lists cannot be changed in the configuration file
+- **Size limits**: `max_rows` is the number of items (list elements, hash fields, set members, keys, stream entries) a call returns at most. Before sending a command that returns a whole hash or set (`HGETALL`, `HKEYS`, `HVALS`, `SMEMBERS`) or a range (`LRANGE`, `ZRANGE` by index), mcp-rs checks how many items it would return (`HLEN`, `SCARD`, `LLEN`, `ZCARD`) and refuses it above `max_rows`, so Redis does not send them: use `HSCAN`, `SSCAN` or a narrower range. `ZRANGE ... BYSCORE` and `BYLEX` need `LIMIT offset count`. `XRANGE` and `XREVRANGE` get `COUNT` added when it is left out. `GET`, `GETRANGE`, `HGET`, `MGET` and `HMGET` check the lengths first and refuse values longer than `max_result_bytes` in total (use `GETRANGE` for a part). The other commands are limited by the number of items only, and `max_result_bytes` cuts their result after it is read. After reading, the number of items is checked again (a hash can grow between the check and the read). `HSCAN`, `SSCAN` and `ZSCAN` results are not cut (a cut item would not come back with the next cursor): their `COUNT` is only a hint, so a reply can have more than `max_rows` items, for example a small hash or set returned whole at once, and more bytes than `max_result_bytes` (for example, one value longer than it). `scan_keys` stops at about `max_rows` keys or `max_result_bytes` and does not cut a batch either, so it can return more keys than `max_rows`, and more bytes than `max_result_bytes` by one batch, which can be far more than the limit (for example, one key name longer than `max_result_bytes`). For these, the limits are a guide, not a strict cap. An option that sets a count (`COUNT`, `LIMIT`) can be given only once
+- **Time limit**: `query_timeout_seconds` is the time to wait for the reply to one command. Redis runs one command at a time, so a slow command can make other clients wait: the size limits keep commands small
+- **Values**: strings as JSON strings, or `{"base64": "..."}` when they are not UTF-8; integers as numbers; `nil` as `null`; `HGETALL` as an object; other replies (`ZRANGE ... WITHSCORES`, `SCAN`) as arrays as Redis returns them. `args` take strings and numbers (binary values cannot be sent)
+- **Users**: connect with an ACL user that can only read the keys the AI client should see, for example `ACL SETUSER mcp_reader on >... ~app:* +@read -@dangerous +ping +select` (mcp-rs sends `PING` when it connects, and `SELECT` for a database other than 0). With this example, `get_schema` returns `null` for `version` and `keyspace`, as they come from `INFO`: add `+info` if the AI client may see them. `username` needs a password (`password` or `keyring`): without one, Redis would connect as the default user. To keep the password in the OS credential store (`keyring`), write `username` (for the default user, `username = "default"`)
+- **Key names**: a key pattern such as `~app:*` limits the keys that commands like `GET` read, but not `SCAN`, which has no key argument: `scan_keys` lists the names of all keys in the database. Keep only keys the AI client may see in that database (or use a Redis of its own), or leave out `SCAN` (`-scan`), so that `scan_keys` fails
+- **TLS**: `ssl_mode` takes `disable`, `require` (TLS without checking the certificate), and `verify-full` (TLS, checking the certificate and the host name against the public CAs, or only `ssl_root_cert` when it is set). As for the other engines, it must be set when `host` is not local. `ssl_root_cert` is used only with `verify-full`
+- **Audit log**: each call is recorded with the command name and the number of arguments, not the keys or values
+- **Not supported**: Redis Cluster, Sentinel, and Unix sockets
+
+## MongoDB
+
+From v0.31.0, `engine = "mongodb"` connects to MongoDB (6 or later; tested with 7). MongoDB is not SQL, so mcp-rs offers these tools instead of the SQL tools:
+
+| Tool | Offered | What it does |
+|------|---------|--------------|
+| `find` | always | Reads documents of a collection with a `filter`, `projection`, `sort`, `limit` (up to `max_rows`) and `skip` |
+| `aggregate` | always | Runs an aggregation `pipeline` on a collection |
+| `count_documents` | always | Counts the documents that match a `filter` |
+| `get_schema` | always | The collections, their estimated document counts, and the top-level field names and types read from up to 20 documents of each (no values) |
+| `insert_documents` | only with `allow_write = true` | Inserts documents into an existing collection (up to `max_rows` at a time) |
+| `update_documents` | only with `allow_write = true` | Updates the first, or every (`many = true`), document that matches a non-empty `filter` |
+| `delete_documents` | only with `allow_write = true` | Deletes the first, or every (`many = true`), document that matches a non-empty `filter` |
+
+```toml
+[database]
+engine = "mongodb"
+host = "db.example.com"
+# port = 27017                    # default for MongoDB
+database = "app"                  # the database name
+username = "mcp_reader"           # leave out to connect without signing in
+password = "${MCP_MONGODB_PASSWORD}"
+# auth_source = "admin"           # where the user was created (default admin)
+ssl_mode = "verify-full"          # disable, require, verify-full
+```
+
+- **Refused**: the aggregation stages that write (`$out`, `$merge`) and the operators that run JavaScript on the server (`$where`, `$function`, `$accumulator`) are refused in every tool, also inside filters, projections, sort orders and updates. `system.` collections are not available. mcp-rs has no tool that creates or drops collections or indexes
+- **Writes**: `update_documents` and `delete_documents` refuse an empty `filter` (every document). `update_documents` takes update operators (`{"$set": {...}}`) or a pipeline: a plain document, which would replace the whole document, is refused. `insert_documents` inserts only into a collection that exists: MongoDB creates a missing collection on insert, so mcp-rs checks first and refuses a name that does not exist (for example a typing mistake). If someone else drops the collection between that check and the insert, MongoDB still creates it, when the user has the permission. Documents are inserted in order: when one fails (for example a duplicate key), the ones before it are already inserted, and the error says how many, so that they are not sent again
+- **Size limits**: `find` returns at most `max_rows` documents (`limit` cannot be larger), and `aggregate` gets a `$limit` stage added. Documents are read in batches: when the result reaches `max_result_bytes`, mcp-rs stops reading and closes the cursor, and `truncated` is true. A single document larger than `max_result_bytes` is not returned. `get_schema` lists at most `max_rows` collections, and leaves out collections and fields so that its result stays within `max_result_bytes` (`truncated` is true, and a collection whose fields did not all fit has `fields_truncated`). The fixed part of a result (about 500 bytes for `get_schema`) is always returned, also when `max_result_bytes` is smaller than that. A collection whose documents could not all be read (for example no permission to read it) has `fields_unread`: its fields may be missing
+- **Time limit (reads)**: for `find`, `aggregate` and `count_documents`, `query_timeout_seconds` is sent as `maxTimeMS`, so the server stops the operation, and mcp-rs also stops waiting 2 seconds later. The limit covers the whole call, from the first answer to the last document read. `get_schema` uses one limit for all collections: when the time runs out after the collection names are listed, it returns the collections read so far, with `truncated` and `timed_out` true. When the names are not listed in time, it returns an error
+- **Time limit (writes)**: `insert_documents`, `update_documents` and `delete_documents` have no `maxTimeMS` (the driver cannot send it for writes). After `query_timeout_seconds` plus 2 seconds, mcp-rs only stops waiting: the write keeps running, and the server may apply it then or later, so the outcome is unknown and the error says so. A read that does not show the write does not prove that it failed: it may be applied after the read. mcp-rs cannot tell when the write has ended, or that it will not be applied any more: the write may still be waiting for a connection inside mcp-rs, where `db.currentOp()` on the server does not show it. Do not send the write again unless applying it twice is sure to leave the data as intended. The kind of write alone does not tell: a second delete without `many` deletes another matching document, a second `$set` can change another document when the first one made its document stop matching the filter, and a second insert is refused only when the collection has a unique index on a key of the documents (`_id` is not unique in a time series collection). When you cannot be sure, compare the data by hand later instead of sending the write again
+- **Values**: documents are returned as relaxed Extended JSON (`{"$oid": "…"}`, `{"$date": "…"}`, numbers as JSON numbers). Filters and documents take Extended JSON too, so an `_id` returned by `find` can be passed back as it is
+- **Users**: connect with a user that can only read the collections the AI client should see, for example a user with the `read` role on the database. A user with privileges on some collections only also works: `get_schema` then lists those collections (`authorizedCollections`). With `username`, a password (`password` or `keyring`) is needed. `auth_source` is the database where the user was created (default `admin`)
+- **TLS**: `ssl_mode` takes `disable`, `require` (TLS without checking the certificate), and `verify-full` (TLS, checking the certificate and the host name against the public CAs, or only `ssl_root_cert` when it is set). It must be set when `host` is not local. Unlike PostgreSQL and MySQL, there is no `prefer`: without `ssl_mode` (local hosts only), TLS is not used, so a local server that requires TLS needs `require` or `verify-full`
+- **Audit log**: each call is recorded with the tool and the collection name, not the filters or documents
+- **Not supported**: `mongodb+srv://` addresses (DNS seed lists), replica sets given as several hosts, and sharded clusters through more than one `mongos`. mcp-rs talks only to the configured host (`directConnection`): it does not look for the other members of a replica set, because they would not have passed the `ssl_mode` check. For writes to a replica set, `host` must be the primary
 
 ## Library API
 

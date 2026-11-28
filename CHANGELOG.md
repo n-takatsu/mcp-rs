@@ -7,6 +7,316 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-28
+
+### Added
+
+- 公式のMCP Registry（`registry.modelcontextprotocol.io`）に、リリースの
+  `.mcpb`を`io.github.n-takatsu/mcp-rs`の名前で登録する（#668）。リポジトリの
+  ルートに`server.json`を置き、新しいワークフロー`mcp-registry.yml`が、
+  リリースのタグで`.mcpb`をリリースに付けた後に、その版・URL・SHA256を
+  書き込んで登録する。認証はGitHub ActionsのOIDCで行い、鍵やトークンは
+  持たない。`server.json`を変えたPRでは、登録せずに中身を確かめるだけ
+  v0.30.0は、マージの後に手で実行して登録した。README・導入ガイドに、
+  公式のMCP Registryに載っていることを書いた
+- `[database]`で、MongoDBを使えるようにした（`engine = "mongodb"`、#530）。MongoDBは
+  SQLではないので、操作ごとのツールを出す: `find`・`aggregate`・`count_documents`・
+  `get_schema`（コレクションの一覧・おおよその数・数件から読んだフィールドの
+  名前と型）。`allow_write = true`のときだけ`insert_documents`・`update_documents`・
+  `delete_documents`
+  - 書き込みの段（`$out`・`$merge`）と、JavaScriptを動かす演算子（`$where`・
+    `$function`・`$accumulator`）は、どのツールでも断る（フィルター等の中も見る）。
+    `system.`のコレクションは使えない。コレクション・インデックスを作る・消す
+    ツールは無い
+  - `update_documents`・`delete_documents`は、空のフィルターを断る。置き換えの更新
+    （演算子の無いドキュメント）も断る。`insert_documents`は`max_rows`件まで
+  - `insert_documents`は、あるコレクションにだけ挿入する。MongoDBは、無い
+    コレクションへの挿入でコレクションを作るので、先に確かめて、無い名前
+    （打ち間違い等）は断る。確かめたあとに他の誰かが消した場合は、ユーザーに
+    権限があれば作られる。順に挿入し、途中で失敗したら、何件が入ったかを
+    エラーに書く（送り直すと二重に入るため）
+  - 返す量の上限: `find`は`max_rows`件まで、`aggregate`には`$limit`を足す。
+    少しずつ受け取り、`max_result_bytes`に達したら残りを読まずにカーソルを閉じる。
+    `get_schema`も、結果が`max_result_bytes`に収まるように、コレクションと
+    フィールドを省く。ドキュメントを読み切れなかったコレクションには
+    `fields_unread`を付ける
+  - 読み取りの時間の上限は`maxTimeMS`で送り、こちらも2秒後に待つのをやめる。
+    初めの応答から読み終えるまでの全体で、1つの上限。`get_schema`は全部の
+    コレクションで1つの上限で、時間が尽きたらそこまでを返す（名前の一覧も
+    読めていなければ、エラー）
+  - 書き込みには`maxTimeMS`を送れない（ドライバーに無い）。時間が過ぎたら
+    待つのをやめるだけで、サーバーは続けることがある。結果は分からないと
+    エラーに書く。あとから当たることもあるので、読んで確かめるだけでは
+    足りない。二重に当たっても結果が同じだと言い切れるときだけ、送り直せる
+    （削除・`$set`・`_id`のある挿入でも、言い切れるとは限らない）。通信の
+    エラー（切断等）で終わったときも、同じく結果は分からないと書く。サーバーが
+    断ったエラーは、1つのドキュメントの書き込みなら、そのまま返す（#808）。
+    `update_documents`・`delete_documents`の`many`では、サーバーが途中で
+    止めても、それまでのドキュメントは変わっているので、確かめてから送り直す
+    よう書く。ドライバーは書き込みを送り直さない（`retryWrites`を切った。
+    送り直すと、返るエラーから、1回目が当たったかが分からなくなるため。
+    1つのホストにだけつなぐので、送り直しても同じホストに行く）。mongosが、
+    シャードから結果を受け取れなかったことを書き込みのエラーで返したもの
+    （`Write results unavailable`）も、成否が分からない側にする
+  - 待つのをやめても、ドライバーの操作は別のタスクで最後まで動かす（途中で
+    落とすと、ドライバーの内部の状態が壊れることがある）。そのタスクは接続を
+    持ち続けるので、動いているタスクが接続のプールの大きさ（`max_connections`）
+    に達したら、新しい操作を始めずに断る（#808）。枠が空くのは、サーバーが
+    答えるか接続が切れたとき。TCPのkeepaliveが切るのは相手が消えた接続だけで、
+    サーバーが生きていて答えない操作は切らない。枠が埋まったままなら、
+    サーバーで操作を止める（`killOp`）か、mcp-rsを起動し直す
+  - コレクションの名前の前後の空白は削らない（#808。`users `を指定すると、
+    `users`を読み書きしていた）
+  - 書いたホストにだけつなぐ（`directConnection`）。レプリカセットの他の
+    メンバーは探さない（`ssl_mode`の確認を通っていないホストに、認証の情報を
+    送らないため）。書き込むなら、`host`はプライマリー
+  - 値はExtended JSON（relaxed）で返し、フィルターでもExtended JSONを受け付ける
+  - `database`はデータベースの名前、`username`は省略できる（認証しない。書いたら
+    パスワードが要る）、`auth_source`（新しい項目。既定は`admin`）。
+    `ssl_mode`は`disable`・`require`・`verify-full`（ループバック以外では必須。
+    省略したら、TLSを使わない）。`auth_source`は、MongoDB以外では断る。
+    データベースの名前は、どのOSのサーバーにも共通する制限だけを確かめる
+    （#808。Windowsのサーバーでだけ使えない`*<>:|?`は、サーバーに任せる）
+  - 監査ログには、ツールとコレクションの名前だけを書く
+  - 既定のビルドに含めた。`mongodb`クレートは、`mongodb+srv://`のためのDNSを
+    読む機能を外した（1つのホストにつなぐ）
+  - 設定の例: `configs/database/mongodb.toml`。CIに、MongoDBのサービスと、実際の
+    MongoDBでツールを確かめるテスト（`tests/database_mongodb_tools_test.rs`）を足した
+- `[database]`で、Redisを使えるようにした（`engine = "redis"`、#529）。RedisはSQLでは
+  ないので、Redis専用のツールを出す: `redis_command`（読み取りのコマンドを1つ）・
+  `scan_keys`（`SCAN`で鍵を一覧）・`get_schema`（版・鍵の数・`INFO keyspace`）。
+  `allow_write = true`のときだけ`redis_write_command`（`SET`・`DEL`・`HSET`等）
+  - 使えるのは、mcp-rsが決めた一覧のコマンドだけ。`KEYS`・`FLUSHALL`・`FLUSHDB`・
+    `CONFIG`・`EVAL`・`SCRIPT`・`SELECT`・`CLIENT`・`ACL`・`MULTI`・`RENAME`等は、
+    `allow_write`でも使えない。一覧は設定で変えられない
+  - 返す量の上限: まるごと返すコマンド（`HGETALL`・`SMEMBERS`等）と範囲
+    （`LRANGE`・`ZRANGE`）は、送る前に数を確かめ、`max_rows`を超えるなら断る。
+    `XRANGE`には`COUNT`を足す。大きな値（`GET`等）は、長さを確かめ、
+    `max_result_bytes`を超えるなら断る
+  - `database`はデータベースの番号（省略時は0）、`username`はACLのユーザー
+    （省略時は既定のユーザー）。`ssl_mode`は`disable`・`require`・`verify-full`
+    （ループバック以外では必須）。`ssl_root_cert`は`verify-full`のときだけ
+  - `redis_write_command`で、Redisが断ったのではない失敗（応答の時間切れ・
+    切断等）では、コマンドが実行されたか分からないと書く（#808。送ったコマンドは
+    取り消されないので、送り直すと`INCR`等が二重に当たる）
+  - オブジェクトにできない`HGETALL`の結果（フィールドの名前がUTF-8でない）は、
+    フィールドと値の組で数えて切る（#808。1つずつ数えると、値が落ちた）
+  - 監査ログには、一覧にあるコマンドの名前と引数の数、失敗の種類だけを書く
+    （鍵・値・Redisのエラーの文は書かない）
+  - `username`を書いたら、パスワード（`password`か`keyring`）が要る（無いと、
+    既定のユーザーとしてつながるため）
+  - 既定のビルド（リリースの実行ファイル・Dockerイメージ）に含めた。`redis`
+    クレートを0.26から1.8に上げた（TLSはrustls）
+  - 設定の例: `configs/database/redis.toml`。CIで、実際のRedisでツールを確かめる
+    （`tests/database_redis_tools_test.rs`）
+- `[database]`で、SQLiteを使えるようにした（`engine = "sqlite"`、#528）。
+  `database`にデータベースのファイルのパスを書く（相対パスは設定ファイルの
+  フォルダが基準）。`host`・`port`・`username`・`password`・`keyring`・
+  `ssl_mode`・`ssl_root_cert`は使わないので、書いてあれば、データベースの
+  ツールを出さずに起動し、`mcp_rs_status`で理由を知らせる（資格情報ストアは
+  読まない）。
+  PostgreSQL・MySQLと同じ安全性にそろえた
+  - ファイルは作らない。無ければ、データベースのツールを出さずに起動し、
+    `mcp_rs_status`・`mcp-rs check`で知らせる
+  - ファイルは読み取り専用で開き、`execute_query`・`get_schema`は、
+    トランザクションの中で読んでロールバックする。`allow_write = true`の
+    ときだけ、書き込みの接続も開き、`execute_command`を出す
+  - 1つのSQLの時間の上限（`query_timeout_seconds`）。SQLiteの進み具合の
+    コールバックで止める。ほかのプログラムのロックも、同じ時間まで待つ
+  - 行数・結果のバイト数の上限。値は、列で宣言した型ではなく、値の型で返す
+  - `get_schema`は、表・ビューの列（生成列も）・主キー・外部キー・インデックスを
+    返す（表の名前はSQLに埋め込まない）。参照する列を書かない外部キーは、
+    参照する表の主キーの列にする
+  - 起動のときに、ファイルの中身を読み、SQLiteのファイルかを確かめる
+  - `execute_command`の`last_insert_id`は、INSERTで行を足したときだけ返す
+  - SQLの関数`load_extension()`・`fts3_tokenizer()`を断る
+  - 同梱のSQLiteの脆弱性（RUSTSEC-2026-0459、#449）は、細工したデータベースの
+    ファイルを開くと当たる。信頼できるファイルだけを開くよう、文書と設定の
+    例（`configs/database/sqlite.toml`）に書き、`.cargo/audit.toml`の無視の
+    理由を書き直した
+  - ライブラリとして使う場合: `SqliteEngine`は、プール（読み取りと書き込み）を
+    1つ持ち、接続の間で共有する（以前は接続ごとにプールを作っていた）。
+    `SqliteConnection::query`は、読み取り専用の接続で読む。`:memory:`は、
+    1つの接続を共有し、使わない時間・接続の寿命（sqlxの既定は10分・30分）で
+    閉じない（#808。閉じると、データベースが消えていた）
+- データベースのツールに、SELECTの実行計画を返す`explain_query`を足した
+  （#646。PostgreSQL・MySQL・MariaDB・SQLite）。遅いSQLの原因や、インデックスが
+  使われるかを調べられる。PostgreSQLは`EXPLAIN (FORMAT JSON)`、MySQL・MariaDBは
+  `EXPLAIN FORMAT=JSON`、SQLiteは`EXPLAIN QUERY PLAN`の結果を返す
+  - SQLは実行しない（`EXPLAIN ANALYZE`は送らない。データベースが、計画を
+    作るために行を少し読むことはある）。SQLは`EXPLAIN`を付けずに
+    渡す。`execute_query`と同じ検査（1つのSELECTだけ等）を通し、読み取り専用の
+    トランザクションの中で聞いて、ロールバックする
+  - 読み取りだけのツールの印（`readOnlyHint`）を付け、`allow_write`に関わらず
+    出す。呼び出しは、`execute_query`と同じく監査ログに記録する
+  - 計画は切らない（`max_rows`は当てはめない）。`max_result_bytes`を超える
+    なら、エラーにする
+
+### Removed
+
+- ライブラリとして使う場合: 列の暗号化を外した（#768）。mcp-rsの実行ファイル
+  （`[database]`の設定）は使っていなかった機能で、実行ファイルの動きは変わら
+  ない。ライブラリとして使う場合には互換性の無い変更。レビューで、鍵の管理に
+  13件の指摘があった（`Local`の鍵をメモリにだけ持ち、再起動すると保存した
+  値を復号できない。ローテーション・キャッシュ・排他の不具合。`AwsKms`・
+  `Vault`を選んでもメモリの鍵で動く等）。直すには鍵の管理の作り直しが要る
+  ので、不具合のあるAPIを公開したままにせず、外した。指摘は、外したので直さない
+  - `handlers::database::column_encryption`（`ColumnEncryptionManager`・
+    `ColumnEncryptionConfig`・`KeyManager`・`KeyManagerConfig`・`KeyProvider`・
+    `KeyMetadata`・`EncryptionAlgorithm`・`CacheStats`）
+  - `handlers::database::column_encryption_rbac`（`ColumnEncryptionRbac`・
+    `ColumnEncryptionPermission`・`EncryptionAuditLog`・`EncryptionOperation`）と、
+    その表を作るマイグレーション（`migrations/20260201_column_encryption_rbac.sql`）
+  - `DatabaseHandler::with_column_encryption`と、`execute_query`の結果の列を
+    復号する・伏せる処理。`DatabaseHandler::execute_query_as`は残る
+    （マイクロセグメンテーションが使う）
+  - `handlers::database::column_provenance`の`resolve_column_provenance`・
+    `ColumnProvenance`・`ProjectionResolution`（列の暗号化だけが使った）
+  - HSM（PKCS#11）との連携: `security::hsm`、Cargoの機能`hsm`、依存クレートの
+    `cryptoki`（列の暗号化の鍵だけが使った）
+  - 例の`column_encryption_demo`と、結合テスト
+    （`database_handler_column_encryption_test`・`column_encryption_rbac_test`・
+    `hsm_pkcs11_integration_test`）
+
+### Fixed
+
+- `upload_media`の`file_path`が許可フォルダ（`upload_allowed_dirs`）の外を
+  指したときのエラーに、使える許可フォルダの一覧と、ファイルをそこへ写して
+  やり直すよう書く（#819）。今までは、どのフォルダなら使えるかが書かれて
+  いないので、AIは`file_data`（base64）に切り替えるしかなく、画像1枚に数分
+  かかり、大きなファイルは送れなかった。一覧を出すのはstdioのときだけで、
+  HTTP・WebSocketでは出さない（サーバーのフォルダを、つないできた相手に
+  見せない）。外のファイルと無いファイルは、今までどおり同じエラー。
+  `file_data`の説明に、小さなファイル向けで、使えるなら`file_path`を使うことを
+  書いた
+- データベースの設定例・ツールの説明・結合テストの文書を、実際の動きに
+  合わせた（#810。v0.30.0からの変更のレビュー、#806）
+  - `configs/database/sqlite.toml`: `max_connections`はプールごとの上限で、
+    `allow_write = true`では読むプールと書くプールがあるので、合わせて2倍まで
+    開く。`max_result_bytes`は目安の上限
+  - `configs/database/redis.toml`: `SCAN`・`HSCAN`・`SSCAN`・`ZSCAN`の結果は
+    切らないので、`max_rows`・`max_result_bytes`を超えることがある。
+    `scan_keys`も、最後のまとまりは切らない
+  - `configs/database/mongodb.toml`: `max_result_bytes`が数えるのは、
+    ドキュメント（コンパクトなJSON）だけ。`get_schema`のコレクションの一覧には
+    `maxTimeMS`が付かない（ドライバーに無い）。`insert_documents`の
+    「既存のコレクションだけ」は、呼んだときに確かめるもの
+  - `username`の説明に、MongoDBでも省けること（認証せずにつなぐ）を書いた
+  - `execute_command`の説明（SQLite）: `last_insert_id`が`null`でも、書き込みは
+    済んでいるので、送り直さない
+  - `docs/development/integration-tests.md`: データベースのツールのテスト
+    （MySQL・MariaDB・Redis・MongoDB）の変数と実行のしかたを書いた。Redis・
+    MongoDBのテストは、決まった番号・名前のデータベースを消すので、使い捨ての
+    サーバーを指すこと（テストのコメントにも書いた）
+  - CI（`container-integration-tests.yml`）: Redis・MongoDBのツールのテストの
+    ファイルだけを変えたときも動くようにした
+- リリースのワークフロー（`release-binaries.yml`）: タグの実行をやり直すと、
+  作り直したファイルで、リリースのファイルを`--clobber`で置き換えていた。
+  作り直した`.mcpb`・`.zip`は、中身が同じでも時刻が変わるのでハッシュが変わり、
+  MCP Registryに登録した`.mcpb`の`fileSha256`と合わなくなる（同じ版は
+  登録し直せない）。今は、リリースにすでにあるファイルは置き換えず、無い
+  ファイルだけを足す（#809）。`SHA256SUMS`は、リリースのファイルの
+  `.sha256`から作り直す。出所の証明は、足すファイルだけに作る。リリースの
+  `.sha256`がリリースのファイルと合わなければ、止める
+- `mcp-rs check`が、`[database]`につなぐのを10秒で打ち切っていた。起動では、
+  つないだ後の最初のコマンド（Redisの`PING`等）を`query_timeout_seconds`まで
+  待つので、起動はできるのに`check`は失敗と言うことがあった。今は、起動と
+  同じだけ（12秒と`query_timeout_seconds`）待つ（#808）
+- ライブラリとして使う場合: ゼロトラスト（`zero_trust`。
+  `DatabaseHandler::with_micro_segmentation`が使う）の、レビューの指摘を直した
+  （#768）。mcp-rsの実行ファイルは、この機能を使わない
+  - `MicroSegmentation::default()`・`setup_default_policies()`の既定のポリシーで、
+    `AccessPolicy::new`の引数の順（名前、リソース、スコア）を取り違えていた。
+    `user`のポリシーのリソースが`*`になり、信頼スコア30以上の`user`が、
+    すべてのリソースを読めた。今は`/api/public/*`だけ。**既定のポリシーに
+    頼って`user`にほかのリソースを読ませていた場合は、ポリシーを足すこと**
+  - 既定のデータベースのセグメント（`db_admin`）が、どのリソースにも当たら
+    なかった（セグメントの所属が`/api/database/*`との完全一致、ポリシーの
+    リソースが`database`との完全一致）。今は、データベースのハンドラーが
+    確かめるリソース（`database:<エンジンのID>:<表>`）と`/api/database/*`に当たる
+  - `ResourceSegment`のリソースを、ポリシーと同じパターン（`…*`は前方一致）で
+    比べる。以前は完全一致だった
+  - `ZeroTrustContext::is_valid`が、`verified_at`が未来のとき、引き算があふれた
+    （デバッグビルドではpanic）。今は無効とする
+  - 信頼スコアの範囲（0〜100）を確かめる。`ZeroTrustContext`は、100を超える
+    スコアを100に丸めてから平均する。`MicroSegmentation::evaluate_access`は、
+    100を超えるスコアを断る
+- ライブラリとして使う場合: マイクロセグメンテーション（`with_micro_segmentation`、
+  表ごとの許可）が、`execute_command`にかかっていなかった。許可を確かめるのは
+  `execute_query`だけだったので、許していない表にも書け、`INSERT … SELECT`や
+  副問い合わせで読めた。今は、実行の前に、書き込む表には`write`（`DELETE`は
+  `delete`）、文の中で読む表には`read`の許可を確かめる（#609）。`[database]`の
+  設定からは使えない機能なので、mcp-rsの実行ファイルには影響しない
+  - ぶつかった今の行を消してから入れる書き方（`REPLACE INTO`、SQLiteの
+    `INSERT OR REPLACE`・`UPDATE OR REPLACE`）には、`write`に加えて`delete`の
+    許可も要る。SQLに書いた分だけを見る: 表の定義で`UNIQUE … ON CONFLICT
+    REPLACE`と決めたSQLiteの表では、普通の`INSERT`・`UPDATE`でも、ぶつかった
+    同じ表の行が消えるが、これは`write`の許可だけで通る
+  - MySQLの複数の表の`UPDATE`・`DELETE`は、`SET`の代入先（`u.note`の`u`）・
+    `DELETE`の直後に書いた表（`DELETE o FROM …`の`o`）だけを書き込む表とし、
+    ほかの`JOIN`した表には`read`を求める（#807。`JOIN`しただけの表の値を、
+    `read`の許可なしに書き込みに使えた）。`SET note = …`のように代入先の表を
+    見分けられないときは、`JOIN`した表のすべてに、書き込みと`read`の両方を
+    求める。消す表を見分けられない`DELETE`と、表を分けられない形（`WITH`等）は
+    断る
+  - 検証済みの呼び出し元で書き込む`DatabaseHandler::execute_command_as`を足した
+    （`execute_query_as`の書き込み版）。MCPのツールとして呼ぶと、呼び出し元が
+    分からないので、ロールや信頼度の要る許可は通らない（`execute_query`と同じ）
+  - 断るときのエラーに、足りない許可を書く（`… for table 'notes' (read)`）
+  - 表の名前を確かに拾えない書き方は、`execute_query`でも断る: `TABLE name`
+    （`SELECT * FROM name`と同じ意味。`UNION`の中でも）と、引用符の中に
+    `.`のある名前（`"public.users"`は、`public.users`とは別の表）、文字列の
+    SQL・表の名前で表を読むPostgreSQLの関数（`query_to_xml`・`table_to_xml`・
+    `ts_stat`・`crosstab`・`connectby`等）。ユーザーが作った関数までは見分けられないので、
+    本来の守りは、データベースのロールの権限
+  - PostgreSQLでは、表の名前を許可と比べる前に、引用符で囲まない名前を
+    小文字にそろえる（PostgreSQLと同じ。`Users`は`users`、`"Users"`は別の表）。
+    SQLiteでは、引用符で囲んだ名前も小文字にそろえる（SQLiteは、表の名前の
+    大文字・小文字を区別しない）。
+    以前は書いたとおりに比べたので、`"Users"`への許可で、`Users`と書いて
+    `users`に触れられた。**許可のリソースを大文字まじりで書いていた場合**
+    （`database:pg:Users`・`database:sqlite:Notes`）は、SQLに合わなくなる
+    （断る側）。許可のリソースの側は、そろえずに、書いたとおりに比べるので、
+    次のように書き直すこと: PostgreSQLは、引用符なしで使う表を小文字で
+    （`"Users"`と引用符で囲んで使う表は、そのまま`Users`）、SQLiteは、
+    すべて小文字で
+  - 確かめるのは、SQLに書いた表の名前だけ。その先でデータベースがすること
+    （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
+    `ON DELETE CASCADE`）は見ない。親の表・ビューへの許可は、それを通して
+    届く行への許可になる
+- ライブラリとして使う場合: MySQL・MariaDBのエンジンの、レビューの指摘を直した
+  （#768）。どれも、mcp-rsの実行ファイル（`[database]`のツール）が通らない経路
+  - `MySqlEngine::connect`が、最初の設定で作ったプールを、別の接続先の設定を
+    渡されても使っていた。今は断る（接続先ごとにエンジンを作ること）
+  - `MySqlEngine::connect`は、ループバック以外のホストで`ssl_mode`を省略したら
+    断る（本体はハンドラーで断っていた。#722）。最初の接続で`SELECT VERSION()`を
+    待つ時間も、接続の時間の上限に入れた
+  - `MySqlEngine::health_check`が、確かめずに、いつも`Healthy`・
+    `connection_count = 1`を返していた。今は、接続を受け取って`PING`を送る
+    （まだつないでいなければ、エンジンの設定でつなぐ。つながらない・失敗・
+    時間切れは`Critical`。`connection_count`は分からないので0）
+  - `begin_transaction`の`START TRANSACTION`に、時間の上限を付けた
+  - `MySqlParamConverter`: 日時をマイクロ秒まで渡す（以前はミリ秒まで）。
+    文字列・コメントの中の`?`を、パラメーターとして数えない（実行される
+    コメント`/*! … */`の中は数える）。i64に入らない符号なしの整数を、-1等に
+    せず、文字列で返す
+  - `MySqlPreparedStatement`は、パラメーターの数をサーバーから受け取る。
+    `MySqlPreparedStatement`・`MySqlTransaction`の`last_insert_id`は、i64に
+    入らないとき、負の数にせず、文字列で返す
+  - ベンチマークとテストの`ssl_mode = "disabled"`（正しくは`"disable"`）を直した
+- カスタム投稿タイプの`categories`・`tags`・`terms`が、`/wp/v2`の外の
+  タクソノミー（`shop/v1`等）のとき、項目のIDを確かめずに送っていた。無い
+  IDがあると、WordPressはそのIDを飛ばし、今の項目を外して成功と返しうる。
+  今は、その名前空間の一覧（`/<名前空間>/<rest_base>?include=`）で確かめ、
+  無いIDや、確かめられないとき（一覧が読めない、同じ`rest_base`の
+  タクソノミーが2つ以上ある等）は送らずに断る。空の
+  配列での全部外しは、今までどおり確かめずに送る（#785）
+- `mcp-rs init`で、既にある設定ファイルを新しいものに置き換えると答えた
+  後、質問の間に別のところで設定ファイルが編集されても、確かめずに置き
+  換えていた（編集は控えには残る）。ファイルが無かったときに、質問の間に
+  作られたファイルも同じ。今は、質問の前の中身（か、無かったこと）と書く
+  直前の中身を比べ、変わっていれば書かずに止める（#785）
+
 ## [0.30.0] - 2026-11-26
 
 ### Added

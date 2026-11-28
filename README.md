@@ -1,12 +1,12 @@
 # <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
-A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, databases (PostgreSQL, MySQL, MariaDB), and external MCP plugins.
+A Rust implementation of a Model Context Protocol (MCP) server that gives AI clients tools for WordPress, databases (PostgreSQL, MySQL, MariaDB, SQLite, Redis, MongoDB), and external MCP plugins.
 
 Ask Claude to draft, schedule, and publish WordPress posts, upload media, or moderate comments. Install it with Scoop or Homebrew, answer a few questions in `mcp-rs init`, and it is registered with Claude Desktop, Claude Code, and GitHub Copilot.
 
 > 📖 **[English](README.md)** | **[日本語](README.ja.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.30.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.30.0)
+[![Version](https://img.shields.io/badge/Version-v0.31.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.31.0)
 [![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FRedRing2020%2FRedRing%2Fdevelop%2Frust-toolchain.toml&query=%24.toolchain.channel&label=rust&logo=rust&color=orange)](rust-toolchain.toml)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -16,7 +16,7 @@ Ask Claude to draft, schedule, and publish WordPress posts, upload media, or mod
 `mcp-rs` is an MCP server written in Rust. MCP clients such as Claude Desktop and Claude Code connect to it over STDIO, and other clients over HTTP. It offers:
 
 - 41 WordPress tools (posts, pages, custom post types, media, categories, tags and other taxonomies, comments, site settings) through the WordPress REST API
-- Read-only SQL tools for one PostgreSQL, MySQL, or MariaDB database (writes only when allowed)
+- Read-only tools for one PostgreSQL, MySQL, MariaDB, SQLite, Redis, or MongoDB database (writes only when allowed)
 - The tools of external MCP servers, started as plugins (child process, Docker container, or Kubernetes Job)
 - For HTTP mode: API key or OAuth 2.1 authentication, per-caller tool limits, TLS/mTLS, rate limiting, and an audit log
 
@@ -41,7 +41,7 @@ Ask Claude to draft, schedule, and publish WordPress posts, upload media, or mod
 - **Health Check**: Verify connectivity, authentication, permissions, and media upload capability
 - **Custom Post Types**: Products, events and other post types that the site exposes in the REST API, when allowed in `post_types`, with their own taxonomies ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types))
 - **Prompts**: Ready-made requests in the client's menu: draft a post, review a post's SEO, moderate comments (and summarize a database table)
-- **Claude Desktop Extension**: Install `mcp-rs-<version>.mcpb` from a release and enter the site in Claude Desktop's settings ([docs](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension))
+- **Claude Desktop Extension**: Install `mcp-rs-<version>.mcpb` from a release and enter the site in Claude Desktop's settings ([docs](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension)). Listed in the [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.n-takatsu/mcp-rs) as `io.github.n-takatsu/mcp-rs`
 - **Multiple Sites**: Use several WordPress sites from one mcp-rs; each tool takes a `site` argument ([docs](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites))
 
 ### Live Demo Site
@@ -58,12 +58,12 @@ The `examples/wordpress_site_builder_demo.rs` example builds and updates the pub
 - **Rate Limiting** of tool calls
 - **Audit Logging**: Who called which tool, and the result
 
-## **Database Integration (PostgreSQL, MySQL, MariaDB)**
+## **Database Integration (PostgreSQL, MySQL, MariaDB, SQLite, Redis, MongoDB)**
 
-- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, or `"mysql"` or `"mariadb"` (v0.25.0 and later), host, database, user, and `password = "${VAR}"`)
-- **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back) and `get_schema`
+- **One Section to Connect**: Add `[database]` to the configuration file (`engine = "postgresql"`, or `"mysql"` or `"mariadb"` (v0.25.0 and later), host, database, user, and `password = "${VAR}"`; for SQLite (v0.31.0 and later), `engine = "sqlite"` and the path of the database file; for Redis and MongoDB (v0.31.0 and later), `engine = "redis"` or `"mongodb"`, each with its own read-only tools)
+- **Read-Only by Default**: `execute_query` (one SELECT, run in a read-only transaction that is rolled back), `explain_query` (the plan of a SELECT, without running it; v0.31.0 and later), and `get_schema`
 - **Writes Only When Allowed**: `execute_command` (one INSERT, UPDATE, or DELETE) is offered only with `allow_write = true`
-- **Bound Parameters**: `$1`, `$2`, … (PostgreSQL) or `?` (MySQL, MariaDB) are bound, never inserted into the SQL text, and strings are converted to the column's type
+- **Bound Parameters**: `$1`, `$2`, … (PostgreSQL) or `?` (MySQL, MariaDB, SQLite) are bound, never inserted into the SQL text, and strings are converted to the column's type
 - **Limits**: Rows per result (1,000), time per statement (30 s), and connections (5) by default
 - **Audit Logging**: Each call is recorded with its SQL; parameter values are not
 
@@ -122,7 +122,7 @@ The documentation site is at [n-takatsu.github.io/mcp-rs](https://n-takatsu.gith
 
 - [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/) (installing, setting up each client, log files)
 - [WordPress](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
-- [Database (PostgreSQL, MySQL, MariaDB)](https://n-takatsu.github.io/mcp-rs/docs/database/)
+- [Database (PostgreSQL, MySQL, MariaDB, SQLite, Redis, MongoDB)](https://n-takatsu.github.io/mcp-rs/docs/database/)
 - [Plugins](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
 - [Security](https://n-takatsu.github.io/mcp-rs/docs/security/) (HTTP authentication, tool limits, TLS, audit log)
 - [API Reference](https://n-takatsu.github.io/mcp-rs/docs/api/) (`mcp_rs_status` and the MCP methods)

@@ -1,12 +1,12 @@
 # <img src="website/assets/favicon.svg" alt="" width="36" height="36"> mcp-rs
 
-AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
+AIのクライアントに、WordPress・データベース（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）・外部のMCPプラグインのツールを提供する、Model Context Protocol（MCP）のサーバーのRust実装です。
 
 Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、メディアのアップロード、コメントの承認ができます。ScoopかHomebrewで入れて、`mcp-rs init`の質問に答えれば、Claude Desktop・Claude Code・GitHub Copilotに登録されます。
 
 > **📖[日本語](README.ja.md)** | **[English](README.md)**
 
-[![Version](https://img.shields.io/badge/Version-v0.30.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.30.0)
+[![Version](https://img.shields.io/badge/Version-v0.31.0-blue)](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.31.0)
 [![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FRedRing2020%2FRedRing%2Fdevelop%2Frust-toolchain.toml&query=%24.toolchain.channel&label=rust&logo=rust&color=orange)](rust-toolchain.toml)
 ![Implementation](https://img.shields.io/badge/WordPress_Tools-41_Available-green)
 ![License](https://img.shields.io/badge/License-MIT%2FApache--2.0-green)
@@ -16,7 +16,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 `mcp-rs`はRustで書かれたMCPのサーバーです。Claude Desktop・Claude Code等のMCPのクライアントはSTDIOで、それ以外のクライアントはHTTPでつなぎます。次の機能があります。
 
 - WordPress REST APIを使う41のツール（投稿・固定ページ・カスタム投稿タイプ・メディア・カテゴリ・タグ等のタクソノミー・コメント・サイト設定）
-- 1つのPostgreSQL・MySQL・MariaDBのデータベースを読むSQLのツール（書き込みは許したときだけ）
+- 1つのPostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDBのデータベースを読むツール（書き込みは許したときだけ）
 - プラグインとして起動した外部のMCPサーバーのツール（子プロセス・Dockerのコンテナ・KubernetesのJob）
 - HTTPモード向け: APIキー・OAuth 2.1の認証、呼び出し元ごとのツールの制限、TLS・mTLS、レート制限、監査ログ
 
@@ -41,7 +41,7 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 - **ヘルスチェック**: 接続・認証・権限・メディアアップロード可否の確認
 - **カスタム投稿タイプ**: 商品・イベント等、サイトが REST API に出している投稿タイプを、`post_types` で許したときに使う。独自のタクソノミーの項目も付けられる（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#custom-post-types)）
 - **プロンプト**: クライアントのメニューから選べる定型の頼み方（記事の下書き・SEOの見直し・コメントの処理、データベースの表の要約）
-- **Claude Desktop の拡張機能**: リリースの `mcp-rs-<版>.mcpb` を開いて入れ、サイトは Claude Desktop の設定画面で入力する（[文書](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension)）
+- **Claude Desktop の拡張機能**: リリースの `mcp-rs-<版>.mcpb` を開いて入れ、サイトは Claude Desktop の設定画面で入力する（[文書](https://n-takatsu.github.io/mcp-rs/docs/guides/#claude-desktop-extension)）。[公式の MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.n-takatsu/mcp-rs) に `io.github.n-takatsu/mcp-rs` として載っている
 - **複数のサイト**: 1つの mcp-rs で複数の WordPress サイトを使う。各ツールの `site` の引数で選ぶ（[文書](https://n-takatsu.github.io/mcp-rs/docs/wordpress/#sites)）
 
 ### ライブデモサイト
@@ -58,12 +58,12 @@ Claudeに頼んで、WordPressの記事の下書き・予約投稿・公開、�
 - **レート制限**（ツールの呼び出し）
 - **監査ログ**: 誰がどのツールを呼び、結果がどうだったか
 
-## **データベース連携（PostgreSQL・MySQL・MariaDB）**
+## **データベース連携（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）**
 
-- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、または`"mysql"`・`"mariadb"`（v0.25.0以降）、ホスト・データベース・ユーザー、`password = "${VAR}"`）
-- **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）と`get_schema`
+- **設定は1つの節**: 設定ファイルに`[database]`を書く（`engine = "postgresql"`、または`"mysql"`・`"mariadb"`（v0.25.0以降）、ホスト・データベース・ユーザー、`password = "${VAR}"`。SQLite（v0.31.0以降）は、`engine = "sqlite"`とデータベースのファイルのパス。Redis・MongoDB（v0.31.0以降）は`engine = "redis"`・`"mongodb"`で、それぞれ専用の読み取りのツールを出す）
+- **既定は読み取りだけ**: `execute_query`（1つのSELECT。読み取り専用のトランザクションで実行してロールバック）、`explain_query`（SELECTの実行計画。SQLは実行しない。v0.31.0以降）、`get_schema`
 - **書き込みは許したときだけ**: `allow_write = true`のときだけ`execute_command`（1つのINSERT・UPDATE・DELETE）を出す
-- **バインドするパラメーター**: `$1`・`$2`…（PostgreSQL）や`?`（MySQL・MariaDB）はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
+- **バインドするパラメーター**: `$1`・`$2`…（PostgreSQL）や`?`（MySQL・MariaDB・SQLite）はバインドし、SQLの文字列には埋め込まない。文字列は列の型に変換する
 - **上限**: 既定で、結果は1000行、1つのSQLは30秒、接続は5つまで
 - **監査ログ**: 呼び出しをSQLとともに記録する（パラメーターの値は記録しない）
 
@@ -122,7 +122,7 @@ mcp-rs init
 
 - [Getting Started](https://n-takatsu.github.io/mcp-rs/docs/guides/)（入れ方、クライアントごとの設定、ログファイル）
 - [WordPress](https://n-takatsu.github.io/mcp-rs/docs/wordpress/)
-- [データベース（PostgreSQL・MySQL・MariaDB）](https://n-takatsu.github.io/mcp-rs/docs/database/)
+- [データベース（PostgreSQL・MySQL・MariaDB・SQLite・Redis・MongoDB）](https://n-takatsu.github.io/mcp-rs/docs/database/)
 - [プラグイン](https://n-takatsu.github.io/mcp-rs/docs/plugins/)
 - [セキュリティ](https://n-takatsu.github.io/mcp-rs/docs/security/)（HTTPの認証・ツールの制限・TLS・監査ログ）
 - [APIリファレンス](https://n-takatsu.github.io/mcp-rs/docs/api/)（`mcp_rs_status`とMCPのメソッド）

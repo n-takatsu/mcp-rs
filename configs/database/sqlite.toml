@@ -1,0 +1,35 @@
+# mcp-rs: read a SQLite database file (#528, v0.31.0 and later)
+#
+# Copy this section into your mcp-rs configuration file. MCP clients then get
+# the tools execute_query, explain_query and get_schema (read-only). Write ? for parameters.
+# See https://n-takatsu.github.io/mcp-rs/docs/database/#sqlite
+#
+# mcp-rs opens the file read-only and does not create it. Open only database
+# files that you or another trusted program wrote: the SQLite that mcp-rs
+# bundles has a known flaw (RUSTSEC-2026-0459) that a specially made database
+# file can use.
+
+[database]
+engine = "sqlite"
+# The path of the database file (relative to this file's folder).
+# host, port, username, password, keyring, ssl_mode and ssl_root_cert are not
+# used with SQLite: when one of them is set, mcp-rs starts without the
+# database tools and shows the reason in mcp_rs_status
+database = "data/app.db"
+
+# true also offers execute_command (one INSERT, UPDATE, or DELETE at a time),
+# and opens the file for writing too
+allow_write = false
+# Rows returned by execute_query at most
+max_rows = 1000
+# Size of the execute_query result, roughly (bytes, about 10 MB). Rows past
+# it are left out, and long values are cut, so the result is about this size;
+# a single small row is always returned
+max_result_bytes = 10485760
+# Time limit of one SQL statement, and of waiting for a lock held by another
+# program
+query_timeout_seconds = 30
+# Connections in each pool at most. With allow_write = true, mcp-rs keeps
+# a pool for reading and another for writing, so up to twice this number of
+# connections are open
+max_connections = 5

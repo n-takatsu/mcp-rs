@@ -475,6 +475,14 @@ fn not_found_as_resource(error: McpError, uri: &str) -> McpError {
     }
 }
 
+/// RESTの名前空間（`wp/v2`・`wc/v3`等）の形か（#785）。WordPressが返した
+/// 値をURLに入れるので、`is_slug`の形の部分を`/`でつないだもの（3つまで）
+/// だけを受ける
+fn is_rest_namespace(namespace: &str) -> bool {
+    let parts: Vec<&str> = namespace.split('/').collect();
+    parts.len() <= 3 && parts.iter().all(|part| is_slug(part))
+}
+
 /// WordPressの投稿タイプ・タクソノミーの名前の形か（#642）。URLに入れるので、
 /// 英小文字・数字・`_`・`-`だけを受ける
 fn is_slug(name: &str) -> bool {
@@ -1099,6 +1107,30 @@ fn canonicalize_upload_dirs(dirs: &[String]) -> Result<Vec<PathBuf>, String> {
         .collect()
 }
 
+/// `file_path`が許可フォルダの外か、無いファイルを指したときのエラー
+const UPLOAD_PATH_NOT_ALLOWED: &str =
+    "file_path must be an existing file inside one of upload_allowed_dirs";
+
+/// [`UPLOAD_PATH_NOT_ALLOWED`]に、使える許可フォルダと次の手を足した文（#819）。
+/// フォルダの名前を出しても、外のファイルの有無は分からない（同じ文のまま）
+fn upload_path_not_allowed_with_dirs(allowed_dirs: &[PathBuf]) -> String {
+    let dirs: Vec<String> = allowed_dirs.iter().map(|dir| display_dir(dir)).collect();
+    format!(
+        "{UPLOAD_PATH_NOT_ALLOWED} ({}). Copy the file into one of these folders and retry with its new path. Avoid file_data for anything but small files: it is slow, and large files cannot be sent with it",
+        dirs.join("; ")
+    )
+}
+
+/// 正規化したフォルダを、設定に書く形で表す。Windowsの正規化が付ける
+/// `\\?\`（`\\?\C:\…`）を外す。`\\?\UNC\…`等は、そのまま
+fn display_dir(dir: &Path) -> String {
+    let text = dir.display().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => text,
+    }
+}
+
 /// `upload_media`の`file_path`を、許可フォルダ内の実在するファイルの
 /// 正規化済みパスに解決する。
 ///
@@ -1140,11 +1172,7 @@ fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<Path
         .filter(|canonical| {
             canonical.is_file() && allowed_dirs.iter().any(|dir| canonical.starts_with(dir))
         })
-        .ok_or_else(|| {
-            McpError::InvalidParams(
-                "file_path must be an existing file inside one of upload_allowed_dirs".to_string(),
-            )
-        })
+        .ok_or_else(|| McpError::InvalidParams(UPLOAD_PATH_NOT_ALLOWED.to_string()))
 }
 
 /// ファイル名の拡張子から、`upload_media`で許可するMIMEタイプを決める
@@ -1862,6 +1890,10 @@ pub struct WordPressHandler {
     /// `upload_media`の`file_path`で読み込みを許可するフォルダ（起動時に
     /// 正規化済み）。空なら`file_path`は使えない。
     upload_allowed_dirs: Arc<Vec<PathBuf>>,
+    /// `file_path`を断るエラーに、許可フォルダの一覧を出すか（#819）。stdioの
+    /// ときだけ出す。HTTP・WebSocketでは、サーバーのフォルダ構成を、つないで
+    /// きた相手に見せることになるので出さない（既定は出さない）
+    show_upload_dirs: bool,
     /// `post`・`page`のほかに使ってよいカスタム投稿タイプ（#642）
     allowed_post_types: Arc<Vec<String>>,
     /// カスタム投稿タイプのREST APIの場所（`rest_base`）。サイトに1回だけ聞く
@@ -1881,6 +1913,7 @@ impl std::fmt::Debug for WordPressHandler {
             .field("rate_limiter", &self.rate_limiter)
             .field("audit_logger", &self.audit_logger)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
+            .field("show_upload_dirs", &self.show_upload_dirs)
             .finish()
     }
 }
@@ -2483,6 +2516,15 @@ impl WordPressHandler {
         self
     }
 
+    /// `upload_media`の`file_path`を断るエラーに、許可フォルダの一覧を出す
+    /// （#819。既定は出さない）。stdioで動くときだけ`true`にする。
+    /// HTTP・WebSocketでは、サーバーのフォルダ構成を、つないできた相手に
+    /// 見せることになる
+    pub fn with_upload_dirs_in_errors(mut self, show: bool) -> Self {
+        self.show_upload_dirs = show;
+        self
+    }
+
     pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
         // URLにユーザー名・パスワード（`https://user:pass@…`）を書くと、状態の
         // 表示・エラーにそのまま出るので断る（#746。`mcp-rs init`と同じ）。
@@ -2568,6 +2610,7 @@ impl WordPressHandler {
             rate_limiter,
             audit_logger,
             upload_allowed_dirs: Arc::new(upload_allowed_dirs),
+            show_upload_dirs: false,
             allowed_post_types: Arc::new(allowed_post_types),
             type_endpoints: Default::default(),
         })
@@ -3402,7 +3445,8 @@ impl WordPressHandler {
     /// 固定ページ等、その分類の無い投稿タイプに送ると、WordPressは黙って
     /// 無視し、成功と返してしまうため。空の配列は、無視されても結果が同じ
     /// なので断らない（クライアントが空の配列を送ることがある）。投稿
-    /// （`post`）はいつも両方を持つので、タクソノミーの一覧は読まない。
+    /// （`post`）はいつも両方を持つので、IDを確かめないときは、タクソノミーの
+    /// 一覧は読まない。
     ///
     /// `check_ids`なら、`terms`・`categories`・`tags`の項目IDが、サイトに
     /// あるかも確かめる（#774、#779）。WordPressは無いIDを黙って飛ばし、
@@ -3426,14 +3470,15 @@ impl WordPressHandler {
         // ほかの投稿タイプでは、一覧で名前空間を確かめてから調べる（PR #781の
         // レビュー）
         if post_type == "post" {
-            if terms.is_some() {
-                self.check_taxonomies_of_type(post_type, terms, &[], check_ids)
+            // IDを確かめるときは、投稿でもタクソノミーの一覧を読み、同じ
+            // `rest_base`のタクソノミー（プラグインが足したもの）が無いかを
+            // 確かめる（PR #797のレビュー）
+            if check_ids && (terms.is_some() || !builtin.is_empty()) {
+                self.check_taxonomies_of_type(post_type, terms, &builtin, true)
                     .await?;
-            }
-            if check_ids {
-                for (name, ids) in builtin {
-                    self.check_term_ids(name, name, ids).await?;
-                }
+            } else if terms.is_some() {
+                self.check_taxonomies_of_type(post_type, terms, &[], false)
+                    .await?;
             }
         } else if terms.is_some() || !builtin.is_empty() {
             self.check_taxonomies_of_type(post_type, terms, &builtin, check_ids)
@@ -3499,42 +3544,69 @@ impl WordPressHandler {
         }
         // 項目のIDが、そのタクソノミーにあるかを確かめる（#774）。WordPressは
         // 無いIDを黙って飛ばし、ほかの項目を外して成功と返すため。空の配列
-        // （全部外す）は調べない。`/wp/v2`の外のタクソノミーは、一覧の形が
-        // 違いうるので調べない（`categories`・`tags`も同じ。PR #781のレビュー）
-        let in_wp_v2 = |rest_base: &str| {
-            taxonomies.values().any(|info| {
-                info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base)
-                    && info
-                        .get("rest_namespace")
+        // （全部外す）は調べない。`/wp/v2`の外のタクソノミー（`shop/v1`等）も、
+        // その名前空間の一覧で確かめる（#785）。同じ`rest_base`のタクソノミーが
+        // 2つ以上あると、WordPressはどれにも同じIDを付けるが、確かめられるのは
+        // 1つの一覧だけなので断る（PR #797のレビュー）
+        let namespace_of = |field: &str, rest_base: &str| {
+            let namespaces: Vec<&str> = taxonomies
+                .values()
+                .filter(|info| info.get("rest_base").and_then(|b| b.as_str()) == Some(rest_base))
+                .map(|info| {
+                    info.get("rest_namespace")
                         .and_then(|n| n.as_str())
                         .unwrap_or("wp/v2")
-                        == "wp/v2"
-            })
+                })
+                .collect();
+            match namespaces.as_slice() {
+                [namespace] => Ok(*namespace),
+                [] => Ok("wp/v2"),
+                _ => Err(McpError::InvalidParams(format!(
+                    "{field}: {} taxonomies of post type '{post_type}' share the REST base '{rest_base}', so mcp-rs cannot check the IDs for each of them and does not send them. Pass [] to remove all of them",
+                    namespaces.len()
+                ))),
+            }
         };
         for (rest_base, ids) in terms.into_iter().flatten() {
-            if in_wp_v2(rest_base) && !ids.is_empty() {
-                self.check_term_ids(&format!("terms.{rest_base}"), rest_base, ids)
+            if !ids.is_empty() {
+                let field = format!("terms.{rest_base}");
+                let namespace = namespace_of(&field, rest_base)?;
+                self.check_term_ids(&field, namespace, rest_base, ids)
                     .await?;
             }
         }
         for (name, ids) in builtin {
-            if in_wp_v2(name) {
-                self.check_term_ids(name, name, ids).await?;
-            }
+            let namespace = namespace_of(name, name)?;
+            self.check_term_ids(name, namespace, name, ids).await?;
         }
         Ok(())
     }
 
     /// 1つのタクソノミーの項目IDが、サイトにあるかを確かめる（#774）。
-    /// `/wp/v2/<rest_base>?include=<ID>`で読み、返らなかったIDは断る。1回に
-    /// 読めるのは100件なので、100件ずつ読む。`field`は、エラーに出す引数の
-    /// 名前（`terms.<rest_base>`・`categories`・`tags`。#779）
+    /// `/<namespace>/<rest_base>?include=<ID>`で読み、返らなかったIDは断る。
+    /// 1回に読めるのは100件なので、100件ずつ読む。`field`は、エラーに出す
+    /// 引数の名前（`terms.<rest_base>`・`categories`・`tags`。#779）
+    ///
+    /// `namespace`は、タクソノミーの`rest_namespace`（`wp/v2`・`shop/v1`等）。
+    /// `/wp/v2`の外のタクソノミーは、その名前空間の一覧で確かめる（#785）。
+    /// 名前空間やその一覧の形が読めなければ、確かめられないので断る（空の
+    /// 配列での全部外しは、ここまで来ない）。`include`に対応しない一覧は、
+    /// 渡したIDが返らないので断る側に倒れる
     async fn check_term_ids(
         &self,
         field: &str,
+        namespace: &str,
         rest_base: &str,
         ids: &[u64],
     ) -> Result<(), McpError> {
+        let outside_wp_v2 = namespace != "wp/v2";
+        if !is_rest_namespace(namespace) || !is_slug(rest_base) {
+            return Err(McpError::InvalidParams(format!(
+                "{field}: mcp-rs cannot check the IDs in '{}' (REST namespace '{}'), so it does not send them: WordPress would skip a missing ID and still remove the other terms. Pass [] to remove all of them",
+                truncate_chars_with_ellipsis(rest_base, MAX_ECHOED_INPUT_CHARS),
+                truncate_chars_with_ellipsis(namespace, MAX_ECHOED_INPUT_CHARS)
+            )));
+        }
         let ids: Vec<u64> = ids
             .iter()
             .copied()
@@ -3549,11 +3621,17 @@ impl WordPressHandler {
                 .collect::<Vec<_>>()
                 .join(",");
             let url = format!(
-                "{}/wp-json/wp/v2/{}?include={}&per_page=100&_fields=id",
-                self.base_url, rest_base, include
+                "{}/wp-json/{}/{}?include={}&per_page=100&_fields=id",
+                self.base_url, namespace, rest_base, include
             );
             let found: Vec<serde_json::Value> = self.fetch_json(&url, None).await.map_err(|e| {
-                McpError::ExternalApi(format!("could not check the IDs in {field}: {e}"))
+                if outside_wp_v2 {
+                    McpError::ExternalApi(format!(
+                        "could not check the IDs in {field} under /{namespace}/{rest_base}, so mcp-rs does not send them: WordPress would skip a missing ID and still remove the other terms. Pass [] to remove all of them: {e}"
+                    ))
+                } else {
+                    McpError::ExternalApi(format!("could not check the IDs in {field}: {e}"))
+                }
             })?;
             let found: std::collections::HashSet<u64> = found
                 .iter()
@@ -3564,13 +3642,19 @@ impl WordPressHandler {
         if missing.is_empty() {
             return Ok(());
         }
-        let list_tool = match field {
-            "categories" => "get_categories",
-            "tags" => "get_tags",
-            _ => "get_terms",
+        // `get_categories`・`get_tags`・`get_terms`は`/wp/v2`の一覧だけを読む
+        let see = if outside_wp_v2 {
+            format!("The terms are listed at /wp-json/{namespace}/{rest_base}")
+        } else {
+            let list_tool = match field {
+                "categories" => "get_categories",
+                "tags" => "get_tags",
+                _ => "get_terms",
+            };
+            format!("See {list_tool}")
         };
         Err(McpError::InvalidParams(format!(
-            "{field}: no term with ID {} in '{rest_base}'. WordPress would skip it and still remove the other terms. See {list_tool}",
+            "{field}: no term with ID {} in '{rest_base}'. WordPress would skip it and still remove the other terms. {see}",
             missing
                 .iter()
                 .map(u64::to_string)
@@ -5511,7 +5595,18 @@ impl WordPressHandler {
                         (file_data, filename.to_string(), mime_type.to_string())
                     }
                     (None, Some(file_path)) => {
-                        let path = resolve_upload_path(file_path, &self.upload_allowed_dirs)?;
+                        let path = resolve_upload_path(file_path, &self.upload_allowed_dirs)
+                            .map_err(|e| match e {
+                                McpError::InvalidParams(message)
+                                    if self.show_upload_dirs
+                                        && message == UPLOAD_PATH_NOT_ALLOWED =>
+                                {
+                                    McpError::InvalidParams(upload_path_not_allowed_with_dirs(
+                                        &self.upload_allowed_dirs,
+                                    ))
+                                }
+                                other => other,
+                            })?;
                         let file_data = read_upload_file(&path).await?;
                         // 省略時はファイル名・拡張子から決める。中身は
                         // いずれの場合もvalidate_uploadで検証する
@@ -7194,7 +7289,7 @@ impl McpHandler for WordPressHandler {
                 name: "upload_media".to_string(),
                 title: Some("Upload a media file".to_string()),
                 description: format!(
-                    "Upload an image, PDF, video or audio file to the WordPress media library. Pass either file_data (base64, with filename and mime_type) or file_path (a file on the machine where mcp-rs runs, when allowed by upload_allowed_dirs). The filename extension and the file's content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first. Returns the new media ID and URL; use the ID with set_featured_image or featured_media_id.",
+                    "Upload an image, PDF, video or audio file to the WordPress media library. Pass either file_path (a file on the machine where mcp-rs runs, when allowed by upload_allowed_dirs; preferred) or file_data (base64, with filename and mime_type; only for small files, as it is slow). The filename extension and the file's content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first. Returns the new media ID and URL; use the ID with set_featured_image or featured_media_id.",
                     MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
                 ),
                 input_schema: serde_json::json!({
@@ -7202,7 +7297,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {
                         "file_data": {
                             "type": "string",
-                            "description": "Base64 encoded file data. Requires filename and mime_type. Use file_path instead for files on this machine when it is enabled"
+                            "description": "Base64 encoded file data. Requires filename and mime_type. Only for small files: the AI client writes out every character, so it is slow, and large files (such as videos) cannot be sent this way. Use file_path instead when it is enabled (copy the file into one of the allowed folders first)"
                         },
                         "file_path": {
                             "type": "string",
@@ -9506,6 +9601,65 @@ mod tests {
         assert_eq!(read_upload_file(&path).await.unwrap(), PNG_HEADER);
     }
 
+    /// 許可フォルダの外を指したエラーに、stdioのときだけ許可フォルダを出す
+    /// （#819）。既定（HTTP・WebSocket）では出さない
+    #[tokio::test]
+    async fn test_upload_media_file_path_error_lists_dirs_only_when_asked() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("photo.png"), PNG_HEADER).unwrap();
+        let outside_arg = serde_json::json!(outside.join("photo.png").to_string_lossy());
+        let shown = display_dir(&std::fs::canonicalize(&allowed).unwrap());
+
+        // 既定: フォルダを出さない
+        let handler = handler_with_upload_dirs(&[allowed.as_path()]);
+        let msg = invalid_params_message(
+            call_upload(&handler, &[("file_path", outside_arg.clone())]).await,
+        );
+        assert_eq!(msg, UPLOAD_PATH_NOT_ALLOWED);
+
+        // stdio: 許可フォルダと次の手を出す。無いファイルでも同じ文
+        let handler =
+            handler_with_upload_dirs(&[allowed.as_path()]).with_upload_dirs_in_errors(true);
+        for path in [outside.join("photo.png"), allowed.join("missing.png")] {
+            let msg = invalid_params_message(
+                call_upload(
+                    &handler,
+                    &[("file_path", serde_json::json!(path.to_string_lossy()))],
+                )
+                .await,
+            );
+            assert!(msg.starts_with(UPLOAD_PATH_NOT_ALLOWED), "got: {msg}");
+            assert!(msg.contains(&shown), "got: {msg}");
+            assert!(
+                msg.contains("Copy the file into one of these folders"),
+                "got: {msg}"
+            );
+        }
+        // 相対パス等、ほかのエラーは変えない
+        let msg = invalid_params_message(
+            call_upload(&handler, &[("file_path", serde_json::json!("photo.png"))]).await,
+        );
+        assert_eq!(msg, "file_path must be an absolute path");
+    }
+
+    /// Windowsの正規化が付ける`\\?\`を、表示では外す（#819）
+    #[test]
+    fn test_display_dir() {
+        assert_eq!(
+            display_dir(Path::new(r"\\?\C:\Users\me\upload")),
+            r"C:\Users\me\upload"
+        );
+        assert_eq!(
+            display_dir(Path::new(r"\\?\UNC\host\share")),
+            r"\\?\UNC\host\share"
+        );
+        assert_eq!(display_dir(Path::new("/home/me/upload")), "/home/me/upload");
+    }
+
     #[tokio::test]
     async fn test_upload_media_file_path_argument_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -9834,6 +9988,7 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig::default())),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             upload_allowed_dirs: Arc::new(Vec::new()),
+            show_upload_dirs: false,
             allowed_post_types: Arc::new(vec!["product".to_string()]),
             type_endpoints: Default::default(),
         }
@@ -12742,12 +12897,19 @@ X-WP-TotalPages: 1",
         );
     }
 
+    /// 投稿（`post`）のタクソノミーの一覧（`/wp/v2/taxonomies?type=post`）
+    const POST_TAXONOMIES_JSON: &str = r#"{"category":{"rest_base":"categories","rest_namespace":"wp/v2"},"post_tag":{"rest_base":"tags","rest_namespace":"wp/v2"}}"#;
+
     /// `categories`・`tags`の項目IDも、無ければ送らずに断る（#779）。投稿
     /// （`post`）でも確かめる。空の配列（全部外す）は調べない
     #[tokio::test]
     async fn test_categories_and_tags_with_unknown_ids_are_refused() {
         let routes = || {
             vec![
+                (
+                    "/wp-json/wp/v2/taxonomies?type=post",
+                    POST_TAXONOMIES_JSON.to_string(),
+                ),
                 (
                     "/wp-json/wp/v2/categories?include=",
                     r#"[{"id":3}]"#.to_string(),
@@ -12795,11 +12957,12 @@ X-WP-TotalPages: 1",
                     == "GET /wp-json/wp/v2/tags?include=5,99&per_page=100&_fields=id"),
                 "{requests:?}"
             );
-            // 投稿（`post`）では、タクソノミーの一覧は読まない
+            // 投稿（`post`）でも、同じ`rest_base`のタクソノミーが無いかを、
+            // タクソノミーの一覧で確かめる（PR #797のレビュー）
             assert!(
-                !requests
+                requests
                     .iter()
-                    .any(|(request, _)| request.contains("/taxonomies")),
+                    .any(|(request, _)| request == "GET /wp-json/wp/v2/taxonomies?type=post"),
                 "{requests:?}"
             );
         }
@@ -12822,23 +12985,52 @@ X-WP-TotalPages: 1",
         assert_eq!(sent, serde_json::json!({"tags": []}));
     }
 
-    /// カスタム投稿タイプの`categories`・`tags`が`/wp/v2`の外のタクソノミー
-    /// なら、`terms`と同じくIDを調べずに送る（PR #781のレビュー）
-    #[tokio::test]
-    async fn test_categories_outside_wp_v2_are_not_checked() {
+    /// 断られた呼び出しの文。エラーか、`isError`の結果のどちらでもよい
+    fn refused_text(result: Result<serde_json::Value, McpError>) -> String {
+        match result {
+            Ok(result) => {
+                assert_eq!(result["isError"], true, "{}", tool_text(&result));
+                tool_text(&result).to_string()
+            }
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// `/wp/v2`の外のタクソノミーで`categories`を渡したときのルート。
+    /// `shop/v1`の一覧を、`ids`があれば返す
+    fn outside_wp_v2_routes(ids: Option<&str>) -> Vec<(&'static str, String)> {
         let mut routes = product_routes();
         routes[1].1 =
             r#"{"genre":{"rest_base":"categories","rest_namespace":"shop/v1"}}"#.to_string();
-        let (base_url, captured) = spawn_routing_capturing_server(routes).await;
+        if let Some(ids) = ids {
+            routes.insert(0, ("/wp-json/shop/v1/categories?include=", ids.to_string()));
+        }
+        routes
+    }
+
+    /// カスタム投稿タイプの`categories`・`tags`・`terms`が`/wp/v2`の外の
+    /// タクソノミーなら、その名前空間の一覧でIDを確かめる（#785）。無い
+    /// IDと、確かめられないときは送らずに断る。空の配列は調べずに送る
+    #[tokio::test]
+    async fn test_ids_outside_wp_v2_are_checked_in_their_namespace() {
+        // あるIDは、`/shop/v1/categories`で確かめて送る
+        let (base_url, captured) =
+            spawn_routing_capturing_server(outside_wp_v2_routes(Some(r#"[{"id":99}]"#))).await;
         let handler = handler_for_local_server(base_url);
-        call_tool_with(
+        let result = call_tool_with(
             &handler,
             "update_post",
             serde_json::json!({"post_id": 21, "post_type": "product", "categories": [99]}),
         )
         .await
         .unwrap();
+        assert_ne!(result["isError"], true, "{}", tool_text(&result));
         let requests = captured.lock().await;
+        assert!(
+            requests.iter().any(|(request, _)| request
+                == "GET /wp-json/shop/v1/categories?include=99&per_page=100&_fields=id"),
+            "{requests:?}"
+        );
         assert!(
             !requests
                 .iter()
@@ -12851,6 +13043,179 @@ X-WP-TotalPages: 1",
                 .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),
             "{requests:?}"
         );
+        drop(requests);
+
+        // 無いIDと、一覧が読めないとき（404）は、送らずに断る
+        for ids in [Some(r#"[{"id":99}]"#), None] {
+            let (base_url, captured) =
+                spawn_routing_capturing_server(outside_wp_v2_routes(ids)).await;
+            let handler = handler_for_local_server(base_url);
+            let text = refused_text(
+                call_tool_with(
+                    &handler,
+                    "update_post",
+                    serde_json::json!({
+                        "post_id": 21,
+                        "post_type": "product",
+                        "categories": [99, 100]
+                    }),
+                )
+                .await,
+            );
+            assert!(text.contains("categories"), "{text}");
+            if ids.is_some() {
+                assert!(text.contains("100"), "{text}");
+                assert!(text.contains("/wp-json/shop/v1/categories"), "{text}");
+            } else {
+                assert!(text.contains("Pass []"), "{text}");
+            }
+            let requests = captured.lock().await;
+            assert!(
+                !requests
+                    .iter()
+                    .any(|(request, _)| request.starts_with("PUT ")),
+                "{ids:?}: {requests:?}"
+            );
+        }
+
+        // `terms`も同じ名前空間で確かめる
+        let (base_url, captured) = spawn_routing_capturing_server(outside_wp_v2_routes(None)).await;
+        let handler = handler_for_local_server(base_url);
+        let text = refused_text(
+            call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({
+                    "post_id": 21,
+                    "post_type": "product",
+                    "terms": {"categories": [5]}
+                }),
+            )
+            .await,
+        );
+        assert!(text.contains("terms.categories"), "{text}");
+        assert!(!captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request.starts_with("PUT ")),);
+
+        // 空の配列（全部外す）は、調べずに送る
+        let (base_url, captured) = spawn_routing_capturing_server(outside_wp_v2_routes(None)).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({
+                "post_id": 21,
+                "post_type": "product",
+                "terms": {"categories": []}
+            }),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result["isError"], true, "{}", tool_text(&result));
+        let requests = captured.lock().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(request, _)| request.contains("/shop/v1/")),
+            "{requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),
+            "{requests:?}"
+        );
+    }
+
+    /// 同じ`rest_base`のタクソノミーが2つあれば、空でない配列は送らずに断る。
+    /// 空の配列（全部外す）は送る（PR #797のレビュー）
+    #[tokio::test]
+    async fn test_ids_for_a_shared_rest_base_are_refused() {
+        let routes = || {
+            let mut routes = outside_wp_v2_routes(Some(r#"[{"id":99}]"#));
+            let taxonomies = routes
+                .iter_mut()
+                .find(|(path, _)| path.starts_with("/wp-json/wp/v2/taxonomies"))
+                .unwrap();
+            taxonomies.1 = r#"{"genre":{"rest_base":"categories","rest_namespace":"shop/v1"},"style":{"rest_base":"categories","rest_namespace":"wp/v2"}}"#.to_string();
+            routes
+        };
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let text = refused_text(
+            call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({"post_id": 21, "post_type": "product", "categories": [99]}),
+            )
+            .await,
+        );
+        assert!(text.contains("share the REST base 'categories'"), "{text}");
+        assert!(!captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request.starts_with("PUT ")),);
+
+        // 投稿（`post`）でも、プラグインが同じ`rest_base`のタクソノミーを足して
+        // いれば断る
+        let (base_url, captured) = spawn_routing_capturing_server(vec![
+            (
+                "/wp-json/wp/v2/taxonomies?type=post",
+                r#"{"category":{"rest_base":"categories","rest_namespace":"wp/v2"},"post_tag":{"rest_base":"tags","rest_namespace":"wp/v2"},"genre":{"rest_base":"tags","rest_namespace":"shop/v1"}}"#.to_string(),
+            ),
+            ("/wp-json/wp/v2/tags?include=", r#"[{"id":5}]"#.to_string()),
+            ("/wp-json/wp/v2/posts", post_response_json("x")),
+        ])
+        .await;
+        let handler = handler_for_local_server(base_url);
+        let text = refused_text(
+            call_tool_with(
+                &handler,
+                "update_post",
+                serde_json::json!({"post_id": 7, "tags": [5]}),
+            )
+            .await,
+        );
+        assert!(text.contains("share the REST base 'tags'"), "{text}");
+        assert!(!captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request.starts_with("PUT ")),);
+
+        let (base_url, captured) = spawn_routing_capturing_server(routes()).await;
+        let handler = handler_for_local_server(base_url);
+        let result = call_tool_with(
+            &handler,
+            "update_post",
+            serde_json::json!({"post_id": 21, "post_type": "product", "categories": []}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result["isError"], true, "{}", tool_text(&result));
+        assert!(captured
+            .lock()
+            .await
+            .iter()
+            .any(|(request, _)| request == "PUT /wp-json/wp/v2/products/21"),);
+    }
+
+    /// WordPressが返した名前空間が、URLに入れてよい形かを確かめる（#785）
+    #[test]
+    fn test_is_rest_namespace() {
+        assert!(is_rest_namespace("wp/v2"));
+        assert!(is_rest_namespace("shop/v1"));
+        assert!(is_rest_namespace("wc/store/v1"));
+        assert!(!is_rest_namespace(""));
+        assert!(!is_rest_namespace("wp//v2"));
+        assert!(!is_rest_namespace("../wp/v2"));
+        assert!(!is_rest_namespace("a/b/c/d"));
+        assert!(!is_rest_namespace("shop/v1?x=1"));
+        assert!(!is_rest_namespace("Shop/v1"));
     }
 
     /// 抜粋とタグに対応しない投稿タイプに、抜粋と空の`tags`だけを渡したら、

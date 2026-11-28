@@ -87,7 +87,12 @@ pub struct AuditLogSettings {
     pub max_files: Option<u32>,
 }
 
-/// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）。
+/// データベースの設定（`[database]`、#453）。PostgreSQLと、MySQL・MariaDB（#527）、
+/// SQLite（#528）、Redis（#529）。SQLiteは、`database`にファイルのパスを書き、
+/// `host`・`port`・`username`・`password`・`keyring`・`ssl_mode`・`ssl_root_cert`は
+/// 書かない。Redisは、`database`がデータベースの番号（省略時は0）で、
+/// `username`は省略できる（既定のユーザー）。MongoDB（#530）は、`database`が
+/// データベースの名前で、`username`は省略できる（認証しない）。
 ///
 /// 既定では読み取りだけ: `execute_query`は読み取り専用のトランザクションで
 /// 実行し、書き込みのツール（`execute_command`）は出さない。
@@ -97,13 +102,22 @@ pub struct AuditLogSettings {
 pub struct DatabaseSettings {
     /// `false`で使わない。省略時は`true`（`[database]`を書けば使う）
     pub enabled: Option<bool>,
-    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）
+    /// エンジン: `"postgresql"`・`"mysql"`・`"mariadb"`（#527）・`"sqlite"`（#528）・
+    /// `"redis"`（#529）・`"mongodb"`（#530）
     pub engine: String,
     /// 省略時は`localhost`
     pub host: Option<String>,
     /// 省略時は、PostgreSQLは5432、MySQL・MariaDBは3306
     pub port: Option<u16>,
+    /// データベースの名前。SQLiteは、データベースのファイルのパス（#528）。
+    /// 相対パスは設定ファイルのフォルダを基準にする。Redisは、データベースの
+    /// 番号（#529。省略時は0）
+    #[serde(default)]
     pub database: String,
+    /// SQLiteでは書かない（#528）。Redisでは省略できる（#529。既定の
+    /// ユーザー）。MongoDBでも省略できる（#530。認証せずにつなぐ。#810）。
+    /// ほかのエンジンでは必須
+    #[serde(default)]
     pub username: String,
     /// 省略時は空（パスワード無し）。`${PGPASSWORD}`のように環境変数で渡せる
     pub password: Option<String>,
@@ -112,6 +126,10 @@ pub struct DatabaseSettings {
     /// `[database]`の値が違えば使わない。`password`とは一緒に書けない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyring: Option<String>,
+    /// MongoDBの、ユーザーを作ったデータベース（認証のデータベース、#530）。
+    /// 省略時は`admin`。`username`を書いたときだけ使う
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
     /// TLS: `disable`・`prefer`・`require`・`verify-full`。省略時は`prefer`だが、
     /// ループバック（PostgreSQLはUnixソケットも）以外では省略できない
     /// （#722。PostgreSQLは`PGSSLMODE`でもよい）。
@@ -148,6 +166,7 @@ impl std::fmt::Debug for DatabaseSettings {
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("keyring", &self.keyring)
+            .field("auth_source", &self.auth_source)
             .field("ssl_mode", &self.ssl_mode)
             .field("ssl_root_cert", &self.ssl_root_cert)
             .field("allow_write", &self.allow_write)
@@ -175,8 +194,15 @@ impl DatabaseSettings {
     }
 
     pub fn port(&self) -> u16 {
-        self.port
-            .unwrap_or(if self.is_mysql() { 3306 } else { 5432 })
+        self.port.unwrap_or(if self.is_mysql() {
+            3306
+        } else if self.is_redis() {
+            6379
+        } else if self.is_mongodb() {
+            27017
+        } else {
+            5432
+        })
     }
 
     /// `engine = "mysql"`か`"mariadb"`か（#527）。どちらも同じ実装・
@@ -188,6 +214,32 @@ impl DatabaseSettings {
     /// `engine = "mariadb"`か（#527）
     pub fn is_mariadb(&self) -> bool {
         self.engine.eq_ignore_ascii_case("mariadb")
+    }
+
+    /// `engine = "sqlite"`か（#528）。`database`はファイルのパス
+    pub fn is_sqlite(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("sqlite")
+    }
+
+    /// `engine = "redis"`か（#529）。`database`はデータベースの番号
+    pub fn is_redis(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("redis")
+    }
+
+    /// `engine = "mongodb"`か（#530）。`database`はデータベースの名前
+    pub fn is_mongodb(&self) -> bool {
+        self.engine.eq_ignore_ascii_case("mongodb")
+    }
+
+    /// Redisのデータベースの番号（#529）。`database`を省略すれば0。
+    /// 数でなければ`None`
+    pub fn redis_database(&self) -> Option<u16> {
+        let database = self.database.trim();
+        if database.is_empty() {
+            Some(0)
+        } else {
+            database.parse().ok()
+        }
     }
 
     pub fn allow_write(&self) -> bool {
@@ -207,13 +259,29 @@ impl DatabaseSettings {
     }
 
     /// `ssl_root_cert`の相対パスを、`base`（設定ファイルのフォルダ）を基準に
-    /// する（#539）
+    /// する（#539）。SQLiteの`database`（ファイルのパス）も（#528）。
+    /// `${VAR}`で始まるパスは、環境変数の値をそのまま使う（展開の前なので）
     pub fn resolve_paths(&mut self, base: Option<&std::path::Path>) {
-        if let (Some(cert), Some(base)) = (self.ssl_root_cert.as_mut(), base) {
-            let path = std::path::Path::new(cert.trim());
-            if path.is_relative() {
-                *cert = base.join(path).to_string_lossy().into_owned();
+        let Some(base) = base else {
+            return;
+        };
+        let resolve = |value: &mut String| {
+            // 空白だけの値は、書いていないのと同じ（PR #799のレビュー）
+            if value.trim().is_empty() {
+                return;
             }
+            let path = std::path::Path::new(value.trim());
+            if path.is_relative() && !value.trim().starts_with("${") {
+                *value = base.join(path).to_string_lossy().into_owned();
+            }
+        };
+        if let Some(cert) = self.ssl_root_cert.as_mut() {
+            resolve(cert);
+        }
+        // `:memory:`・`file:`のURIは、パスにつなぐと、検証で断れなくなる
+        // （PR #798のレビュー）。そのまま残し、`validate`で断る
+        if self.is_sqlite() && !self.database.trim().is_empty() && !is_sqlite_uri(&self.database) {
+            resolve(&mut self.database);
         }
     }
 
@@ -231,6 +299,34 @@ impl DatabaseSettings {
 
     /// `mcp_rs_status`・ログに出す説明（パスワードは含めない）
     pub fn describe(&self) -> String {
+        let access = if self.allow_write() {
+            "read-write"
+        } else {
+            "read-only"
+        };
+        if self.is_sqlite() {
+            return format!("{} {} ({})", self.engine, self.database, access);
+        }
+        if self.is_redis() || self.is_mongodb() {
+            let user = if self.username.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{}@", self.username)
+            };
+            return format!(
+                "{} {}{}:{}/{} ({})",
+                self.engine,
+                user,
+                self.host(),
+                self.port(),
+                if self.is_redis() {
+                    self.redis_database().unwrap_or(0).to_string()
+                } else {
+                    self.database.clone()
+                },
+                access
+            );
+        }
         format!(
             "{} {}@{}:{}/{} ({})",
             self.engine,
@@ -238,21 +334,38 @@ impl DatabaseSettings {
             self.host(),
             self.port(),
             self.database,
-            if self.allow_write() {
-                "read-write"
-            } else {
-                "read-only"
-            }
+            access
         )
     }
 
     /// 書いた値を確かめる。起動しない理由を返す
     pub fn validate(&self) -> Result<(), String> {
-        if !self.engine.eq_ignore_ascii_case("postgresql") && !self.is_mysql() {
+        if !self.engine.eq_ignore_ascii_case("postgresql")
+            && !self.is_mysql()
+            && !self.is_sqlite()
+            && !self.is_redis()
+            && !self.is_mongodb()
+        {
             return Err(format!(
-                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\")",
+                "database.engine = \"{}\" is not supported (supported: \"postgresql\", \"mysql\", \"mariadb\", \"sqlite\", \"redis\", \"mongodb\")",
                 self.engine
             ));
+        }
+        // SQLite・Redisは、下で専用の検証に入って戻るので、その前に見る
+        if !self.is_mongodb() && self.auth_source.is_some() {
+            return Err(
+                "database.auth_source is used only with engine = \"mongodb\". Remove auth_source"
+                    .to_string(),
+            );
+        }
+        if self.is_sqlite() {
+            return self.validate_sqlite();
+        }
+        if self.is_redis() {
+            return self.validate_redis();
+        }
+        if self.is_mongodb() {
+            return self.validate_mongodb();
         }
         if self.database.trim().is_empty() {
             return Err("database.database is empty".to_string());
@@ -297,6 +410,108 @@ impl DatabaseSettings {
         }
         Ok(())
     }
+
+    /// MongoDBの`[database]`を確かめる（#530）。`database`はデータベースの名前、
+    /// `ssl_mode`は`disable`・`require`・`verify-full`。`ssl_root_cert`は
+    /// `verify-full`のときだけ使う
+    fn validate_mongodb(&self) -> Result<(), String> {
+        let name = self.database.trim();
+        if name.is_empty() {
+            return Err(
+                "database.database is empty: for engine = \"mongodb\", write the name of the database"
+                    .to_string(),
+            );
+        }
+        // どのOSのサーバーにも共通する制限だけを確かめる（#808）。Windowsの
+        // サーバーでだけ使えない`*<>:|?`は、サーバーに任せる
+        if name.len() > 63 || name.chars().any(|c| "/\\. \"$\0".contains(c)) {
+            return Err(format!(
+                "database.database = \"{name}\" is not a MongoDB database name"
+            ));
+        }
+        if self.auth_source.is_some() && self.username.trim().is_empty() {
+            return Err(
+                "database.auth_source is used only with username. Remove auth_source".to_string(),
+            );
+        }
+        self.validate_tls_modes("MongoDB")
+    }
+
+    /// Redis・MongoDBの`ssl_mode`（`disable`・`require`・`verify-full`）と、
+    /// `ssl_root_cert`（`verify-full`のときだけ）を確かめる
+    fn validate_tls_modes(&self, engine: &str) -> Result<(), String> {
+        const MODES: &[&str] = &["disable", "require", "verify-full"];
+        if let Some(mode) = &self.ssl_mode {
+            if !MODES.contains(&mode.as_str()) {
+                return Err(format!(
+                    "database.ssl_mode = \"{mode}\" is not valid for {engine} (use one of: {})",
+                    MODES.join(", ")
+                ));
+            }
+        }
+        let has_root_cert = self
+            .ssl_root_cert
+            .as_deref()
+            .is_some_and(|cert| !cert.trim().is_empty());
+        if has_root_cert && self.ssl_mode.as_deref() != Some("verify-full") {
+            return Err(format!(
+                "database.ssl_root_cert is used only with ssl_mode = \"verify-full\" for {engine}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Redisの`[database]`を確かめる（#529）。`database`はデータベースの番号、
+    /// `ssl_mode`は`disable`・`require`・`verify-full`。`ssl_root_cert`は
+    /// `verify-full`のときだけ使う
+    fn validate_redis(&self) -> Result<(), String> {
+        if self.redis_database().is_none() {
+            return Err(format!(
+                "database.database = \"{}\" is not a Redis database number (for engine = \"redis\", write it as a string, such as database = \"0\", or leave it out)",
+                self.database.trim()
+            ));
+        }
+        self.validate_tls_modes("Redis")
+    }
+
+    /// SQLiteの`[database]`を確かめる（#528）。`database`はファイルのパス。
+    /// サーバーにつなぐための項目は使わないので、書いてあれば断る（黙って
+    /// 無視すると、別のデータベースのつもりで書いた設定に気付けない）
+    fn validate_sqlite(&self) -> Result<(), String> {
+        let path = self.database.trim();
+        if path.is_empty() {
+            return Err(
+                "database.database is empty: for engine = \"sqlite\", write the path of the database file"
+                    .to_string(),
+            );
+        }
+        if is_sqlite_uri(path) {
+            return Err(format!(
+                "database.database = \"{path}\" is not a file path: for engine = \"sqlite\", write the path of an existing database file"
+            ));
+        }
+        let unused = [
+            ("host", self.host.is_some()),
+            ("port", self.port.is_some()),
+            ("username", !self.username.trim().is_empty()),
+            ("password", self.password.is_some()),
+            ("keyring", self.keyring.is_some()),
+            ("ssl_mode", self.ssl_mode.is_some()),
+            ("ssl_root_cert", self.ssl_root_cert.is_some()),
+        ];
+        if let Some((name, _)) = unused.iter().find(|(_, given)| *given) {
+            return Err(format!(
+                "database.{name} is not used with engine = \"sqlite\" (database is the path of the database file). Remove {name}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// SQLiteの、ファイルのパスではない書き方（`:memory:`・`file:`・`sqlite:`のURI）か
+fn is_sqlite_uri(value: &str) -> bool {
+    let value = value.trim();
+    value == ":memory:" || value.starts_with("file:") || value.starts_with("sqlite:")
 }
 
 impl PluginConfig {
@@ -1910,6 +2125,11 @@ impl McpConfig {
             return Ok(());
         }
         Self::expand_database_config(config).map_err(|e| e.to_string())?;
+        // SQLiteは資格情報を使わないので、書いてはいけない項目（`keyring`等）を、
+        // 資格情報ストアを読む前に断る（PR #798のレビュー）
+        if config.is_sqlite() {
+            return config.validate();
+        }
         let Some(name) = config.keyring.clone() else {
             return Ok(());
         };
@@ -3066,6 +3286,295 @@ start_timeout_seconds = 300
         assert_eq!(db.ssl_root_cert.as_deref(), Some(absolute.as_str()));
     }
 
+    /// SQLiteの`[database]`（#528）。`database`はファイルのパスで、サーバーに
+    /// つなぐための項目は書かない。相対パスは設定ファイルのフォルダを基準にする
+    #[test]
+    fn test_sqlite_database_settings() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[database]\nengine = \"sqlite\"\ndatabase = \"data/app.db\"\n",
+        )
+        .unwrap();
+        let mut db = config.database.unwrap();
+        assert!(db.is_sqlite());
+        assert!(db.validate().is_ok());
+        let base = std::path::Path::new("configs");
+        db.resolve_paths(Some(base));
+        assert_eq!(
+            std::path::PathBuf::from(&db.database),
+            base.join("data/app.db")
+        );
+        assert_eq!(db.describe(), format!("sqlite {} (read-only)", db.database));
+
+        // 配っている設定の例（`configs/database/sqlite.toml`）も、そのまま読めて
+        // 検証を通る
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/sqlite.toml");
+        if let Ok(example) = std::fs::read_to_string(&path) {
+            let config: McpConfig =
+                toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
+            let example = config.database.unwrap();
+            assert!(example.is_sqlite());
+            assert!(example.validate().is_ok());
+            assert!(!example.allow_write());
+        }
+
+        // `:memory:`・URIは、パスにつながずに断る（PR #798のレビュー）
+        for uri in [":memory:", "file:app.db?mode=rwc"] {
+            let mut memory = DatabaseSettings {
+                engine: "sqlite".to_string(),
+                database: uri.to_string(),
+                ..Default::default()
+            };
+            memory.resolve_paths(Some(base));
+            assert_eq!(memory.database, uri);
+            assert!(memory
+                .validate()
+                .unwrap_err()
+                .contains("is not a file path"));
+        }
+
+        // `keyring`は、資格情報ストアを読む前に断る（PR #798のレビュー）
+        let mut with_keyring = DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: "/srv/app.db".to_string(),
+            keyring: Some("app".to_string()),
+            ..Default::default()
+        };
+        let store = crate::security::keyring_store::MemoryStore::default();
+        let err =
+            McpConfig::resolve_database_credentials_with(&mut with_keyring, &store).unwrap_err();
+        assert!(err.contains("database.keyring is not used"), "{err}");
+
+        // 環境変数で渡すパスは、展開の後の値をそのまま使う
+        let mut from_env = DatabaseSettings {
+            engine: "sqlite".to_string(),
+            database: "${APP_DB}".to_string(),
+            ..Default::default()
+        };
+        from_env.resolve_paths(Some(base));
+        assert_eq!(from_env.database, "${APP_DB}");
+
+        let valid = DatabaseSettings {
+            engine: "SQLite".to_string(),
+            database: "/srv/app.db".to_string(),
+            ..Default::default()
+        };
+        assert!(valid.validate().is_ok());
+        for (invalid, expected) in [
+            (
+                DatabaseSettings {
+                    database: " ".to_string(),
+                    ..valid.clone()
+                },
+                "database.database is empty",
+            ),
+            (
+                DatabaseSettings {
+                    database: ":memory:".to_string(),
+                    ..valid.clone()
+                },
+                "is not a file path",
+            ),
+            (
+                DatabaseSettings {
+                    database: "file:app.db?mode=rwc".to_string(),
+                    ..valid.clone()
+                },
+                "is not a file path",
+            ),
+            (
+                DatabaseSettings {
+                    host: Some("db.example.com".to_string()),
+                    ..valid.clone()
+                },
+                "database.host is not used",
+            ),
+            (
+                DatabaseSettings {
+                    username: "reader".to_string(),
+                    ..valid.clone()
+                },
+                "database.username is not used",
+            ),
+            (
+                DatabaseSettings {
+                    password: Some("x".to_string()),
+                    ..valid.clone()
+                },
+                "database.password is not used",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("require".to_string()),
+                    ..valid.clone()
+                },
+                "database.ssl_mode is not used",
+            ),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    /// Redisの`[database]`（#529）。`database`はデータベースの番号（省略時は0）、
+    /// `username`は省略できる。`ssl_mode`は`disable`・`require`・`verify-full`
+    #[test]
+    fn test_redis_database_settings() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[database]\nengine = \"redis\"\nhost = \"localhost\"\n",
+        )
+        .unwrap();
+        let db = config.database.unwrap();
+        assert!(db.is_redis());
+        assert!(db.validate().is_ok());
+        assert_eq!(db.port(), 6379);
+        assert_eq!(db.redis_database(), Some(0));
+        assert_eq!(db.describe(), "redis localhost:6379/0 (read-only)");
+        let with_user = DatabaseSettings {
+            engine: "redis".to_string(),
+            database: "3".to_string(),
+            username: "reader".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            with_user.describe(),
+            "redis reader@localhost:6379/3 (read-only)"
+        );
+        for (invalid, expected) in [
+            (
+                DatabaseSettings {
+                    database: "app".to_string(),
+                    ..with_user.clone()
+                },
+                "not a Redis database number",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("prefer".to_string()),
+                    ..with_user.clone()
+                },
+                "not valid for Redis",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("require".to_string()),
+                    ssl_root_cert: Some("ca.pem".to_string()),
+                    ..with_user.clone()
+                },
+                "only with ssl_mode",
+            ),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/redis.toml");
+        if let Ok(example) = std::fs::read_to_string(&path) {
+            let config: McpConfig =
+                toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
+            let example = config.database.unwrap();
+            assert!(example.is_redis());
+            assert!(example.validate().is_ok());
+        }
+    }
+
+    /// MongoDBの`[database]`（#530）。`database`はデータベースの名前、`auth_source`は
+    /// `username`があるときだけ。`ssl_mode`は`disable`・`require`・`verify-full`
+    #[test]
+    fn test_mongodb_database_settings() {
+        let config: McpConfig = toml::from_str(
+            "[transport]\n[server]\n[handlers]\n[database]\nengine = \"mongodb\"\ndatabase = \"app\"\n",
+        )
+        .unwrap();
+        let db = config.database.unwrap();
+        assert!(db.is_mongodb());
+        assert!(db.validate().is_ok());
+        assert_eq!(db.port(), 27017);
+        assert_eq!(db.describe(), "mongodb localhost:27017/app (read-only)");
+        let with_user = DatabaseSettings {
+            engine: "mongodb".to_string(),
+            database: "app".to_string(),
+            username: "reader".to_string(),
+            auth_source: Some("app".to_string()),
+            ..Default::default()
+        };
+        assert!(with_user.validate().is_ok());
+        assert_eq!(
+            with_user.describe(),
+            "mongodb reader@localhost:27017/app (read-only)"
+        );
+        // Windowsのサーバーでだけ使えない文字は、サーバーに任せる（#808）
+        assert!(DatabaseSettings {
+            database: "sales:2026".to_string(),
+            ..with_user.clone()
+        }
+        .validate()
+        .is_ok());
+        for (invalid, expected) in [
+            (
+                DatabaseSettings {
+                    database: String::new(),
+                    ..with_user.clone()
+                },
+                "database.database is empty",
+            ),
+            (
+                DatabaseSettings {
+                    database: "a.b".to_string(),
+                    ..with_user.clone()
+                },
+                "not a MongoDB database name",
+            ),
+            (
+                DatabaseSettings {
+                    username: String::new(),
+                    ..with_user.clone()
+                },
+                "auth_source is used only with username",
+            ),
+            (
+                DatabaseSettings {
+                    ssl_mode: Some("prefer".to_string()),
+                    ..with_user.clone()
+                },
+                "not valid for MongoDB",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "postgresql".to_string(),
+                    ..with_user.clone()
+                },
+                "auth_source is used only with engine = \"mongodb\"",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "redis".to_string(),
+                    ..with_user.clone()
+                },
+                "auth_source is used only with engine = \"mongodb\"",
+            ),
+            (
+                DatabaseSettings {
+                    engine: "sqlite".to_string(),
+                    ..with_user.clone()
+                },
+                "auth_source is used only with engine = \"mongodb\"",
+            ),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(expected), "{err}");
+        }
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/database/mongodb.toml");
+        if let Ok(example) = std::fs::read_to_string(&path) {
+            let config: McpConfig =
+                toml::from_str(&format!("[transport]\n[server]\n[handlers]\n{example}")).unwrap();
+            let example = config.database.unwrap();
+            assert!(example.is_mongodb());
+            assert!(example.validate().is_ok());
+        }
+    }
+
     #[test]
     fn test_database_settings_validate() {
         let valid = DatabaseSettings {
@@ -3078,7 +3587,7 @@ start_timeout_seconds = 300
         for (invalid, expected) in [
             (
                 DatabaseSettings {
-                    engine: "sqlite".to_string(),
+                    engine: "sqlite3".to_string(),
                     ..valid.clone()
                 },
                 "not supported",

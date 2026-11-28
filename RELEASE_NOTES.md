@@ -4,6 +4,171 @@
 
 Our project follows a detailed 0.01 increment versioning strategy to provide granular tracking of development progress and feature implementation.
 
+## 🗄️ v0.31.0 - データベース
+
+**Release Date:** 2026-11-28
+**Focus:** `[database]`で、SQLite・Redis・MongoDBを使えるようにし、SELECTの実行計画を返す`explain_query`を足す。ライブラリとして使う場合の、データベースのコード（列の暗号化・ゼロトラスト・マイクロセグメンテーション・MySQL）のレビューの指摘を直す（列の暗号化は外した）。v0.30.0からの変更のレビューの指摘と、`upload_media`のエラーの案内（WordPress）も直す。ライブラリとして使う場合は、互換性の無い変更があるので、更新の前に「互換性」を確かめる
+
+### ⚠️ 互換性（更新の前に確かめる）
+
+mcp-rsの実行ファイル（`[database]`の設定）で使っていた設定は、そのまま
+使える。次のうち、「ライブラリとして使う場合」と書いたものは、mcp-rsの
+実行ファイルの動きを変えない。
+
+- **カスタム投稿タイプの`/wp/v2`の外のタクソノミー**（#785）:
+  `categories`・`tags`・`terms`の項目のIDを、その名前空間の一覧で確かめて
+  から送る。無いIDがあるとき、確かめられないとき（一覧が読めない、同じ
+  `rest_base`のタクソノミーが2つ以上ある等）は、送らずに断る（以前は
+  確かめずに送り、WordPressがそのIDを飛ばして、今の項目を外しえた）。
+  空の配列での全部外しは、今までどおり送る
+- **`mcp-rs init`**（#785）: 今の設定ファイルを置き換えると答えた後、
+  質問の間に別のところで設定ファイルが変わった（か、無かったファイルが
+  作られた）ら、書かずに止める。もう一度`init`を実行する
+- **ライブラリとして使う場合: マイクロセグメンテーションの許可のリソース**
+  （#609）: `with_micro_segmentation`の許可を、`execute_command`にも
+  かける。書き込む表には`write`（`DELETE`は`delete`）、文の中で読む表には
+  `read`が要る（`REPLACE INTO`等は`delete`も）。表の名前は、比べる前に
+  そろえるので、**許可のリソースを大文字まじりで書いていた場合は、次の
+  ように書き直す**。許可のリソースの側は、書いたとおりに比べる
+  - PostgreSQL: 引用符なしで使う表は小文字にする（`public.Users`は
+    `public.users`。`database:pg:Users`は`database:pg:users`）。
+    `"Users"`のように引用符で囲んで使う表は、そのまま（`public."Users"`は
+    小文字にしない。リソースは`Users`）
+  - SQLite: 引用符で囲んだ名前も含めて、すべて小文字にする
+    （`database:sqlite:Notes`は`database:sqlite:notes`）
+  - 書き直さないと、SQLに合わなくなり、断る側になる（読めるはずの表が
+    読めない）
+  - 表の名前を確かに拾えない書き方は、`execute_query`でも断る:
+    `TABLE name`、引用符の中に`.`のある名前（`"public.users"`）、表を
+    文字列で読むPostgreSQLの関数（`query_to_xml`・`crosstab`等）
+- **ライブラリとして使う場合: ゼロトラストの既定のポリシー**（#768）:
+  `MicroSegmentation::default()`・`setup_default_policies()`の`user`の
+  ポリシーが、引数の取り違えで、すべてのリソース（`*`）を読めた。今は
+  `/api/public/*`だけ。既定のポリシーに頼って`user`にほかのリソースを
+  読ませていた場合は、ポリシーを足す
+- **ライブラリとして使う場合: 列の暗号化を外した**（#768）:
+  `handlers::database::column_encryption`・`column_encryption_rbac`、
+  `DatabaseHandler::with_column_encryption`、`column_provenance`の
+  `resolve_column_provenance`等、HSM（`security::hsm`、Cargoの機能`hsm`、
+  `cryptoki`）、その表のマイグレーションを外した。鍵の管理に13件の指摘が
+  あり、直すには作り直しが要るため。`DatabaseHandler::execute_query_as`は
+  残る
+- **ライブラリとして使う場合: MySQL・MariaDBのエンジン**（#768）:
+  `MySqlEngine::connect`は、最初の設定と違う接続先の設定を断る（接続先ごとに
+  エンジンを作る）。ループバック以外のホストで`ssl_mode`を省略したら断る。
+  i64に入らない符号なしの整数・`last_insert_id`は、文字列で返す
+- **ライブラリとして使う場合: SQLiteのエンジン**（#528）: `SqliteEngine`は、
+  プールを1つ持ち、接続の間で共有する（以前は接続ごとにプールを作った）。
+  `SqliteConnection::query`は、読み取り専用の接続で読む
+- **ライブラリとして使う場合: `redis`クレート**（#529）: 0.26から1.8に
+  上げた（TLSはrustls）
+
+### 🗄️ SQLite（#528）
+
+- `engine = "sqlite"`と、`database`にデータベースのファイルのパスを書く
+  （相対パスは設定ファイルのフォルダが基準）。ファイルは作らない。
+  `host`・`username`・`ssl_mode`等を書いてあれば、データベースのツールを
+  出さずに起動し、`mcp_rs_status`で理由を知らせる
+- PostgreSQL・MySQLと同じ安全性にそろえた: 読み取り専用で開き、読み取りは
+  ロールバックするトランザクションの中で行う。`allow_write = true`のとき
+  だけ`execute_command`を出す。1つのSQLの時間の上限・行数とバイト数の上限
+- `get_schema`は、表・ビューの列・主キー・外部キー・インデックスを返す
+- SQLの関数`load_extension()`・`fts3_tokenizer()`を断る
+- 同梱のSQLiteの脆弱性（RUSTSEC-2026-0459、#449）は、細工したファイルを
+  開くと当たる。信頼できるファイルだけを開く
+- 設定の例: `configs/database/sqlite.toml`
+
+### 🟥 Redis（#529）
+
+- `engine = "redis"`。Redis専用のツールを出す: `redis_command`（読み取りの
+  コマンドを1つ）・`scan_keys`・`get_schema`。`allow_write = true`のときだけ
+  `redis_write_command`
+- 使えるのは、mcp-rsが決めた一覧のコマンドだけ（`KEYS`・`FLUSHALL`・
+  `CONFIG`・`EVAL`・`MULTI`等は、`allow_write`でも使えない）
+- まるごと返すコマンド・範囲は、送る前に数を確かめて`max_rows`を超えるなら
+  断る。大きな値も、長さを確かめて`max_result_bytes`を超えるなら断る
+- `redis_write_command`が、Redisが断ったのではない失敗（時間切れ・切断等）で
+  終わったら、実行されたか分からないと書く（送り直すと`INCR`等が二重に当たる）
+- 監査ログには、コマンドの名前と引数の数、失敗の種類だけを書く
+- 設定の例: `configs/database/redis.toml`
+
+### 🍃 MongoDB（#530）
+
+- `engine = "mongodb"`。操作ごとのツールを出す: `find`・`aggregate`・
+  `count_documents`・`get_schema`。`allow_write = true`のときだけ
+  `insert_documents`・`update_documents`・`delete_documents`
+- 書き込みの段（`$out`・`$merge`）と、JavaScriptを動かす演算子（`$where`・
+  `$function`・`$accumulator`）は断る。`system.`のコレクションは使えない。
+  空のフィルターの更新・削除、置き換えの更新も断る。`insert_documents`は
+  あるコレクションにだけ挿入する
+- 書いたホストにだけつなぐ（`directConnection`）。書き込むなら、`host`は
+  プライマリー。新しい設定の項目`auth_source`（既定は`admin`）
+- 読み取りの時間の上限は`maxTimeMS`で送る。書き込みには送れないので、
+  時間が過ぎたら待つのをやめ、結果は分からないと書く（サーバーは続ける
+  ことがある）。ドライバーは書き込みを送り直さない（`retryWrites`を切った）
+- 待つのをやめた操作が接続のプールの大きさ（`max_connections`）に達したら、
+  新しい操作を断る。埋まったままなら、`killOp`で止めるか、mcp-rsを起動し
+  直す
+- 値はExtended JSON（relaxed）で返し、フィルターでも受け付ける。監査ログ
+  には、ツールとコレクションの名前だけを書く
+- 設定の例: `configs/database/mongodb.toml`
+
+Redis・MongoDBは、既定のビルド（リリースの実行ファイル・Dockerイメージ）に
+含めた。CIで、実際のRedis・MongoDBでツールを確かめる。
+
+### 🔍 explain_query（#646）
+
+- SELECTの実行計画を返す（PostgreSQL・MySQL・MariaDB・SQLite）。
+  PostgreSQLは`EXPLAIN (FORMAT JSON)`、MySQL・MariaDBは
+  `EXPLAIN FORMAT=JSON`、SQLiteは`EXPLAIN QUERY PLAN`
+- SQLは実行しない（`EXPLAIN ANALYZE`は送らない）。`execute_query`と同じ
+  検査を通し、読み取り専用のトランザクションの中で聞いて、ロールバックする
+- 読み取りだけのツールなので、`allow_write`に関わらず出す。計画が
+  `max_result_bytes`を超えるなら、エラーにする
+
+### 📝 WordPress（#819）
+
+- `upload_media`の`file_path`が許可フォルダ（`upload_allowed_dirs`）の外を
+  指したときのエラーに、使える許可フォルダと、ファイルをそこへ写して
+  やり直すよう書く。一覧を出すのはstdioのときだけで、HTTP・WebSocketでは
+  出さない。外のファイルと無いファイルは、今までどおり同じエラー
+- `file_data`（base64）の説明に、小さなファイル向けで、使えるなら
+  `file_path`を使うことを書いた
+
+### 🔧 v0.30.0からの変更のレビューの指摘（#806〜#810）
+
+v0.30.0からv0.31.0までの変更をまとめてレビューし（CodeRabbit、#806）、
+見つかった指摘を直した。主なもの（上に書いたものを除く）:
+
+- **マイクロセグメンテーション**（#807、ライブラリとして使う場合）: MySQLの
+  複数の表の`UPDATE`・`DELETE`で、`JOIN`しただけの表に`read`を求める
+  （`read`の許可なしに、その表の値を書き込みに使えた）。代入先の表を
+  見分けられないときは、`JOIN`した表のすべてに書き込みと`read`を求める
+- **MongoDB・Redis・SQLite**（#808）: 書き込みの成否が分からないときの
+  伝え方をそろえた。コレクションの名前の前後の空白を削らない（`users `で
+  `users`を読み書きしていた）。Redisの`HGETALL`の結果を切るとき、値が
+  落ちなくなった。SQLiteの`:memory:`が、時間がたつと消えなくなった
+  （ライブラリとして使う場合）
+- **`mcp-rs check`**（#808）: `[database]`につなぐのを10秒で打ち切って
+  いた。起動と同じだけ（12秒と`query_timeout_seconds`）待つ
+- **リリースのワークフロー**（#809）: タグの実行をやり直しても、リリースに
+  すでにあるファイルを置き換えない（作り直した`.mcpb`のハッシュが、MCP
+  Registryに登録したものと合わなくなるため）。無いファイルだけを足す
+- **文書・設定の例**（#810）: データベースの設定の例・ツールの説明・結合
+  テストの文書を、実際の動きに合わせた
+
+### ほかの変更
+
+- 公式のMCP Registryに、`io.github.n-takatsu/mcp-rs`の名前で載せた（#668）。
+  v0.31.0からは、リリースのタグで、新しいワークフロー`mcp-registry.yml`が
+  `.mcpb`を自動で登録する（認証はGitHub ActionsのOIDC）
+
+### 確かめていないこと
+
+- `mcp-registry.yml`による、リリースのタグからの自動の登録（v0.30.0は、
+  手で実行して登録した。v0.31.0が、初めての自動の登録になる）
+- `.mcpb`を、Claude Desktopで入れて使えること
+
 ## 🧱 v0.30.0 - 本体の強化（WordPress・MCP・導入）
 
 **Release Date:** 2026-11-26
@@ -222,9 +387,12 @@ Our project follows a detailed 0.01 increment versioning strategy to provide gra
 v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`のレビュー（CodeRabbit）の
 指摘のうち、本体に当たるものを直した。主なもの:
 
-- **WordPress**: 全件取得で、ページの間に一覧が変わったときの重なり・欠けを
-  見つけて読み直す。`set_featured_image`・`create_post_with_featured_image`が
-  画像を設定できなかったことを返す。`create_advanced_post`も、届いていない
+- **WordPress**: 全件取得で、ページの間に一覧が変わり、同じIDが2つのページに
+  現れたとき（重なり）や、総件数・総ページ数が1ページ目から変わったとき
+  （消えた分の欠け）に、初めから読み直す。総件数の変わらない削除と追加で
+  1件欠けたときは気付けない（件数の照合は警告だけで、読み直さない）。
+  `set_featured_image`・`create_post_with_featured_image`が画像を設定
+  できなかったことを返す。`create_advanced_post`も、届いていない
   `429`・接続の失敗を再送する。監査ログの対象のIDと`isError`の記録を直した
 - **HTTP**: 応答を読まないHTTP/2の相手の接続を閉じる。`/ws`のトークンの
   期限を、処理の直前にも確かめる
@@ -237,8 +405,11 @@ v0.15.0〜v0.21.0の変更と、v0.16.0以前からある`src`のレビュー（
 - **終了とプラグイン**: SIGTERM・Ctrl+C・標準入出力の失敗で終わるときも、
   プラグインを止め、コンテナ・Job・Secretの後片付けを最長10秒待つ
   （#673・#759）
-- **`mcp-rs init`・`uninstall`**: 前の登録・資格情報の項目を、失敗・Ctrl+C
-  のときに戻す（#710・#715）。Claude Desktopの設定ファイルを本人だけが
+- **`mcp-rs init`**: 前の登録・資格情報の項目を、失敗・Ctrl+Cのときに戻す
+  （#710・#715）。`uninstall`は戻さない。途中で止めたときは、Claude Desktopの
+  設定ファイルの控え（外す前に残し、その場所を表示する）を手で元の場所に
+  戻す。消した資格情報の項目は戻せないので、`init`で入れ直す
+- **`mcp-rs init`・`uninstall`**: Claude Desktopの設定ファイルを本人だけが
   読めるように書く。シンボリックリンクの設定ファイルは、リンク先に書く
 - **ログ**: STDIOモードで、ログを標準出力に書かない。ログの保持が、今の
   ファイルや別のプロセスのファイルを消さない

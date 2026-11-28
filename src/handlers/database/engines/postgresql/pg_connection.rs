@@ -1166,6 +1166,42 @@ impl DatabaseConnection for PostgreSqlConnection {
         })
     }
 
+    /// `EXPLAIN (FORMAT JSON)`の結果（#646）。`ANALYZE`を付けないので、SQLは
+    /// 実行されない。`EXPLAIN`はカーソルにできないので、`query`とは別に送る
+    async fn explain(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<serde_json::Value, DatabaseError> {
+        let mut tx = self.begin_read_only().await?;
+        let body = sql.trim_end().trim_end_matches(';').trim_end();
+        // パラメーターの型は、`EXPLAIN`を付けないSQLで聞く（`EXPLAIN`の中の
+        // SQLも、同じ型に推論される）
+        let params = Self::pg_params(&mut *tx, body, params).await?;
+        let explain = format!("EXPLAIN (FORMAT JSON) {body}");
+        let row = bind_params(sqlx::query(&explain), params)
+            .persistent(false)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+        let plan = match Self::extract_value(&row, 0) {
+            Value::Json(plan) => plan,
+            Value::String(text) => serde_json::from_str(&text).map_err(|e| {
+                DatabaseError::QueryFailed(format!("cannot read the query plan as JSON: {e}"))
+            })?,
+            _ => {
+                return Err(DatabaseError::QueryFailed(
+                    "the database returned no query plan".to_string(),
+                ))
+            }
+        };
+        drop(row);
+        tx.rollback()
+            .await
+            .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+        Ok(plan)
+    }
+
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError> {
         let tx = self
             .pool

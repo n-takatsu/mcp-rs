@@ -200,38 +200,159 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # 配るファイルが、このリポジトリのこのワークフローで作られたことの
-      # 証明（#599）。`.sha256`は同じリリースから取るので、リリースの
-      # ファイルを差し替えられる人には効かない。証明は、GitHubが署名して
-      # 別に保つので、`gh attestation verify`で確かめられる
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/*.mcpb
-
-      - name: Attach to the release
+      - name: Wait for the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          cd dist
-          # 全部のハッシュを1つにまとめたもの（sha256sum -c SHA256SUMSで確かめる）
-          cat ./*.sha256 > SHA256SUMS
-          cat SHA256SUMS
           for i in $(seq 1 60); do
             if gh release view "${TAG}" > /dev/null 2>&1; then
-              break
-            fi
-            if [ "${i}" = 60 ]; then
-              echo "::error::No GitHub release for ${TAG} after 30 minutes. Create it, then re-run this job"
-              exit 1
+              exit 0
             fi
             echo "Waiting for the GitHub release ${TAG} (${i}/60)"
             sleep 30
           done
-          gh release upload "${TAG}" ./*.zip ./*.tar.gz ./*.mcpb ./*.sha256 SHA256SUMS --clobber
+          echo "::error::No GitHub release for ${TAG} after 30 minutes. Create it, then re-run this job"
+          exit 1
+
+      # リリースにすでにあるファイルは、置き換えない（#809）。作り直した
+      # ファイルは、中身が同じでもハッシュが変わる（`.mcpb`・`.zip`は時刻を
+      # 入れる）。置き換えると、MCP Registryに登録した`.mcpb`の`fileSha256`や、
+      # 前に作った出所の証明と合わなくなる。ジョブをやり直したときは、無い
+      # ファイルだけを足す。リリースにあるファイルは、そのファイルから
+      # `.sha256`を作り直し、`SHA256SUMS`に入れる
+      - name: Keep the files already on the release
+        id: keep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd dist
+          # new: リリースに足すファイル、attest: そのうちの配るファイル、
+          # replace: 同じ名前のものを置き換えて上げるファイル
+          mkdir -p ../new ../attest ../replace ../release
+          # 上げ終わったファイル（`state`が`uploaded`）だけを、リリースにある
+          # ものとする。上げるのに失敗すると、中身の無いもの（`starter`）が
+          # 残ることがある（PR #818のレビュー）
+          uploaded=$(gh release view "${TAG}" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')
+          listed=$(gh release view "${TAG}" --json assets --jq '.assets[].name')
+          has() { printf '%s\n' "${uploaded}" | grep -Fxq -- "$1"; }
+          # 上げるファイルを置く。同じ名前のもの（上げ終わっていないもの・配る
+          # ファイルが無いのに残っていた`.sha256`）があれば、置き換える
+          put() {
+            if printf '%s\n' "${listed}" | grep -Fxq -- "$1"; then
+              echo "$1 is on the release but is not a file that is handed out: replacing it"
+              cp "$1" ../replace/
+            else
+              cp "$1" ../new/
+            fi
+          }
+          for file in *.zip *.tar.gz *.mcpb; do
+            if has "${file}"; then
+              echo "${file} is already on the release: keeping it"
+              gh release download "${TAG}" -p "${file}" -D ../release --clobber
+              mv "../release/${file}" "${file}"
+              sha256sum "${file}" > "${file}.sha256"
+              if has "${file}.sha256"; then
+                gh release download "${TAG}" -p "${file}.sha256" -D ../release --clobber
+                # ハッシュだけを比べる（Windowsで作ったものは、名前の前に`*`が付く）
+                if [ "$(cut -d ' ' -f 1 "../release/${file}.sha256")" != "$(cut -d ' ' -f 1 "${file}.sha256")" ]; then
+                  echo "::error::${file}.sha256 on the release does not match ${file} on the release. Fix the release by hand"
+                  exit 1
+                fi
+                # リリースの`.sha256`を、そのまま`SHA256SUMS`に入れる
+                cp "../release/${file}.sha256" "${file}.sha256"
+              else
+                put "${file}.sha256"
+              fi
+            else
+              put "${file}"
+              cp "${file}" ../attest/
+              # 配るファイルが無いのに`.sha256`だけがあれば（前の実行が途中で
+              # 止まった等）、それは配っているファイルのハッシュではないので、
+              # 置き換える（PR #818のレビュー。足すだけだと、同じ名前で失敗する）
+              put "${file}.sha256"
+            fi
+          done
+          # 全部のハッシュを1つにまとめたもの（sha256sum -c SHA256SUMSで確かめる）
+          cat ./*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          for dir in new replace; do
+            if compgen -G "../${dir}/*" > /dev/null; then
+              echo "${dir}=true" >> "${GITHUB_OUTPUT}"
+            else
+              echo "${dir}=false" >> "${GITHUB_OUTPUT}"
+            fi
+          done
+          if compgen -G '../attest/*' > /dev/null; then
+            echo "built=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "built=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # 配るファイルが、このリポジトリのこのワークフローで作られたことの
+      # 証明（#599）。`.sha256`は同じリリースから取るので、リリースの
+      # ファイルを差し替えられる人には効かない。証明は、GitHubが署名して
+      # 別に保つので、`gh attestation verify`で確かめられる。リリースに
+      # 足すファイルだけを証明する（すでにあるものは、前の実行で証明した）
+      - name: Attest build provenance
+        if: steps.keep.outputs.built == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: attest/*
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          NEW: ${{ steps.keep.outputs.new }}
+          REPLACE: ${{ steps.keep.outputs.replace }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # 同じ名前のもの（上げ終わっていないもの・配るファイルが無いのに
+          # 残っていた`.sha256`）を、足す前に置き換える（PR #818のレビュー。
+          # 後にすると、置き換えに失敗したとき、新しいファイルと古い`.sha256`が
+          # 残り、やり直しでも直らない。先なら、失敗しても配るファイルはまだ
+          # 上げ終わっていないので、やり直しで同じく置き換える）
+          # `.sha256`を先に、1つずつ置き換える（PR #818のレビュー。まとめて
+          # 上げると、`gh`はファイルごとに並べて置き換えるので、`.sha256`だけが
+          # 古いまま残りうる）。配るファイルの置き換えが途中で失敗しても、
+          # 上げ終わっていないので、やり直しで両方を置き換える
+          if [ "${REPLACE}" = "true" ]; then
+            for f in replace/*.sha256; do
+              gh release upload "${TAG}" "${f}" --clobber
+            done
+            for f in replace/*; do
+              case "${f}" in
+                *.sha256) ;;
+                *) gh release upload "${TAG}" "${f}" --clobber ;;
+              esac
+            done
+          fi
+          # 無いファイルだけを足す（`--clobber`を付けない。#809）。途中で
+          # 失敗しても、やり直しでは、上がったファイルを使い続け、残りを足す
+          if [ "${NEW}" = "true" ]; then
+            gh release upload "${TAG}" new/*
+          fi
+          # `SHA256SUMS`は、リリースのファイルから作り直したものなので、
+          # 置き換えてよい
+          gh release upload "${TAG}" dist/SHA256SUMS --clobber
+
+  # リリースに付けた`.mcpb`を、公式のMCP Registryに登録する（#668）
+  registry:
+    name: MCP Registry
+    needs: publish
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/mcp-registry.yml
+    with:
+      tag: ${{ github.ref_name }}

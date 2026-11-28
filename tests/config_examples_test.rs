@@ -39,6 +39,21 @@ const SNIPPETS: &[(&str, &str)] = &[
         "configs/database/postgres.toml",
         "[server]\n[transport]\n[handlers]\n",
     ),
+    (
+        "configs/database/mongodb.toml",
+        "[server]\n[transport]\n[handlers]\n",
+    ),
+    (
+        "configs/database/redis.toml",
+        "[server]
+[transport]
+[handlers]
+",
+    ),
+    (
+        "configs/database/sqlite.toml",
+        "[server]\n[transport]\n[handlers]\n",
+    ),
 ];
 
 fn toml_files(dir: &Path, out: &mut Vec<String>) {

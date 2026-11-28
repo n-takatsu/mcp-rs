@@ -761,6 +761,28 @@ async fn read_rows(
     Ok(Outcome::Done((infos, rows)))
 }
 
+/// `EXPLAIN FORMAT=JSON`の結果（1行1列のJSONの文）を、JSONにする（#646）
+fn plan_from_rows(rows: Vec<Vec<Value>>) -> Result<serde_json::Value, DatabaseError> {
+    let text = match rows
+        .into_iter()
+        .next()
+        .and_then(|row| row.into_iter().next())
+    {
+        Some(Value::Json(plan)) => return Ok(plan),
+        Some(Value::String(text)) => text,
+        Some(Value::Binary(bytes)) => String::from_utf8(bytes).map_err(|e| {
+            DatabaseError::QueryFailed(format!("cannot read the query plan as text: {e}"))
+        })?,
+        _ => {
+            return Err(DatabaseError::QueryFailed(
+                "the database returned no query plan".to_string(),
+            ))
+        }
+    };
+    serde_json::from_str(&text)
+        .map_err(|e| DatabaseError::QueryFailed(format!("cannot read the query plan as JSON: {e}")))
+}
+
 /// 読み取り専用のトランザクションを始め、SELECTの時間の上限を付ける
 async fn begin_read_only(
     conn: &mut Conn,
@@ -1038,11 +1060,44 @@ impl DatabaseConnection for MySqlConnection {
         })
     }
 
+    /// `EXPLAIN FORMAT=JSON`の結果（#646）。`ANALYZE`を付けないので、SQLは
+    /// 実行されない。`query`と同じ、読み取り専用のトランザクションの中で聞く
+    async fn explain(
+        &self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<serde_json::Value, DatabaseError> {
+        let result = self
+            .query(&format!("EXPLAIN FORMAT=JSON {sql}"), params)
+            .await?;
+        plan_from_rows(result.rows)
+    }
+
     async fn begin_transaction(&self) -> Result<Box<dyn DatabaseTransaction>, DatabaseError> {
         use crate::handlers::database::engines::mysql::MySqlTransaction;
 
         let mut conn = self.get_conn().await?;
-        conn.query_drop("START TRANSACTION").await.map_err(|e| {
+        // `START TRANSACTION`にも、時間の上限を付ける（#768。以前は、返事の
+        // 無いサーバーをいつまでも待った）。上限を超えたら、接続は使い
+        // 回さずに閉じる
+        let started = match self.client_timeout() {
+            Some(limit) => {
+                match tokio::time::timeout(limit, conn.query_drop("START TRANSACTION")).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        tokio::spawn(async move {
+                            let _ = conn.disconnect().await;
+                        });
+                        return Err(DatabaseError::TimeoutError(format!(
+                            "the transaction did not start within {} seconds",
+                            limit.as_secs()
+                        )));
+                    }
+                }
+            }
+            None => conn.query_drop("START TRANSACTION").await,
+        };
+        started.map_err(|e| {
             DatabaseError::TransactionFailed(format!("Failed to start transaction: {}", e))
         })?;
         Ok(Box::new(MySqlTransaction::new(conn)))
@@ -1298,6 +1353,23 @@ mod tests {
     }
 
     /// 始めは、最初の`?`の前まで、長くても64文字（マルチバイトでも切れる）
+    /// `EXPLAIN FORMAT=JSON`の1行1列を、JSONにする（#646）
+    #[test]
+    fn test_plan_from_rows() {
+        let plan = serde_json::json!({ "query_block": { "select_id": 1 } });
+        let text = plan.to_string();
+        for value in [
+            Value::String(text.clone()),
+            Value::Binary(text.clone().into_bytes()),
+            Value::Json(plan.clone()),
+        ] {
+            assert_eq!(plan_from_rows(vec![vec![value]]).unwrap(), plan);
+        }
+        assert!(plan_from_rows(Vec::new()).is_err());
+        assert!(plan_from_rows(vec![vec![Value::Null]]).is_err());
+        assert!(plan_from_rows(vec![vec![Value::String("not json".to_string())]]).is_err());
+    }
+
     #[test]
     fn test_statement_prefix() {
         assert_eq!(
