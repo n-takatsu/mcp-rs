@@ -178,6 +178,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `upload_media`の`file_path`が許可フォルダ（`upload_allowed_dirs`）の外を
+  指したときのエラーに、使える許可フォルダの一覧と、ファイルをそこへ写して
+  やり直すよう書く（#819）。今までは、どのフォルダなら使えるかが書かれて
+  いないので、AIは`file_data`（base64）に切り替えるしかなく、画像1枚に数分
+  かかり、大きなファイルは送れなかった。一覧を出すのはstdioのときだけで、
+  HTTP・WebSocketでは出さない（サーバーのフォルダを、つないできた相手に
+  見せない）。外のファイルと無いファイルは、今までどおり同じエラー。
+  `file_data`の説明に、小さなファイル向けで、使えるなら`file_path`を使うことを
+  書いた
 - データベースの設定例・ツールの説明・結合テストの文書を、実際の動きに
   合わせた（#810。v0.30.0からの変更のレビュー、#806）
   - `configs/database/sqlite.toml`: `max_connections`はプールごとの上限で、

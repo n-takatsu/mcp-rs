@@ -447,7 +447,7 @@ The output also has a `Featured Media:` line with the featured image's media ID 
 Upload a media file to WordPress media library.
 
 **Parameters:** Pass either `file_data` or `file_path`, not both.
-- `file_data` (string): Base64-encoded file data
+- `file_data` (string): Base64-encoded file data. Only for small files: the AI client writes out every character, so an image can take minutes, and large files such as videos cannot be sent this way. Use `file_path` when you can
 - `file_path` (string): Absolute path of a file on the machine running mcp-rs. Disabled unless [`upload_allowed_dirs`](#configuration) is set
 - `filename` (string): Original filename. Its extension must match `mime_type` (e.g., `photo.jpg` for `image/jpeg`). Required with `file_data`. With `file_path`, defaults to the file's name
 - `mime_type` (string): MIME type. Must be one of the [supported file types](#supported-file-types). Required with `file_data`. With `file_path`, defaults to the type for the file's extension
@@ -459,6 +459,7 @@ The upload is rejected before anything is sent to WordPress if the MIME type is 
 - The file must be inside one of the `upload_allowed_dirs` folders. The check uses the resolved path, so `..` and symbolic links (or junctions on Windows) cannot point outside them. After opening the file, mcp-rs checks that it opened the file it checked, so replacing an item in the folder with a link at that moment does not let it read a file outside. On Windows, the check uses the opened file's actual path. On Linux and macOS, it re-resolves the path and compares the files; a folder inside an allowed folder that is replaced twice at exactly the right moments can still get past it, so do not let others write to the allowed folders
 - On Windows, the path must be on a drive (such as `C:\...`). Network paths (`\\server\share\...`) and device paths (`\\.\...`) are rejected before mcp-rs touches them, so it does not connect to the server (and send your Windows credentials) for a path it would not allow
 - A path outside the allowed folders and a file that does not exist give the same error, so the error does not reveal which files exist elsewhere
+- With STDIO, that error lists the allowed folders, so the AI client can copy the file into one of them and retry (v0.31.0 and later). Over HTTP/WebSocket, the error does not list them, so the folders of the server are not shown to the client
 - With STDIO (Claude Code, Claude Desktop), mcp-rs runs on the same machine as the client, so it reads the client's local files. Over HTTP/WebSocket, the client may be on another machine, and the files are read from the server. mcp-rs logs a warning at startup in that case
 - The uploaded file is public at once: WordPress gives every media file a URL that anyone can open (the `source_url` in the result), even before it is used in a post. Put only files you are willing to publish in `upload_allowed_dirs`
 - The AI client decides which file to upload. A request in a web page, a document or a plugin's answer can lead it to upload a file you did not mean to publish. Do not allow whole folders such as Pictures or Documents: make a folder only for files to publish (for example `C:/Users/me/Pictures/mcp-upload`), and move files into it when you want the AI to use them

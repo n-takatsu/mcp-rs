@@ -1107,6 +1107,30 @@ fn canonicalize_upload_dirs(dirs: &[String]) -> Result<Vec<PathBuf>, String> {
         .collect()
 }
 
+/// `file_path`が許可フォルダの外か、無いファイルを指したときのエラー
+const UPLOAD_PATH_NOT_ALLOWED: &str =
+    "file_path must be an existing file inside one of upload_allowed_dirs";
+
+/// [`UPLOAD_PATH_NOT_ALLOWED`]に、使える許可フォルダと次の手を足した文（#819）。
+/// フォルダの名前を出しても、外のファイルの有無は分からない（同じ文のまま）
+fn upload_path_not_allowed_with_dirs(allowed_dirs: &[PathBuf]) -> String {
+    let dirs: Vec<String> = allowed_dirs.iter().map(|dir| display_dir(dir)).collect();
+    format!(
+        "{UPLOAD_PATH_NOT_ALLOWED} ({}). Copy the file into one of these folders and retry with its new path. Avoid file_data for anything but small files: it is slow, and large files cannot be sent with it",
+        dirs.join("; ")
+    )
+}
+
+/// 正規化したフォルダを、設定に書く形で表す。Windowsの正規化が付ける
+/// `\\?\`（`\\?\C:\…`）を外す。`\\?\UNC\…`等は、そのまま
+fn display_dir(dir: &Path) -> String {
+    let text = dir.display().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => text,
+    }
+}
+
 /// `upload_media`の`file_path`を、許可フォルダ内の実在するファイルの
 /// 正規化済みパスに解決する。
 ///
@@ -1148,11 +1172,7 @@ fn resolve_upload_path(file_path: &str, allowed_dirs: &[PathBuf]) -> Result<Path
         .filter(|canonical| {
             canonical.is_file() && allowed_dirs.iter().any(|dir| canonical.starts_with(dir))
         })
-        .ok_or_else(|| {
-            McpError::InvalidParams(
-                "file_path must be an existing file inside one of upload_allowed_dirs".to_string(),
-            )
-        })
+        .ok_or_else(|| McpError::InvalidParams(UPLOAD_PATH_NOT_ALLOWED.to_string()))
 }
 
 /// ファイル名の拡張子から、`upload_media`で許可するMIMEタイプを決める
@@ -1870,6 +1890,10 @@ pub struct WordPressHandler {
     /// `upload_media`の`file_path`で読み込みを許可するフォルダ（起動時に
     /// 正規化済み）。空なら`file_path`は使えない。
     upload_allowed_dirs: Arc<Vec<PathBuf>>,
+    /// `file_path`を断るエラーに、許可フォルダの一覧を出すか（#819）。stdioの
+    /// ときだけ出す。HTTP・WebSocketでは、サーバーのフォルダ構成を、つないで
+    /// きた相手に見せることになるので出さない（既定は出さない）
+    show_upload_dirs: bool,
     /// `post`・`page`のほかに使ってよいカスタム投稿タイプ（#642）
     allowed_post_types: Arc<Vec<String>>,
     /// カスタム投稿タイプのREST APIの場所（`rest_base`）。サイトに1回だけ聞く
@@ -1889,6 +1913,7 @@ impl std::fmt::Debug for WordPressHandler {
             .field("rate_limiter", &self.rate_limiter)
             .field("audit_logger", &self.audit_logger)
             .field("upload_allowed_dirs", &self.upload_allowed_dirs)
+            .field("show_upload_dirs", &self.show_upload_dirs)
             .finish()
     }
 }
@@ -2491,6 +2516,15 @@ impl WordPressHandler {
         self
     }
 
+    /// `upload_media`の`file_path`を断るエラーに、許可フォルダの一覧を出す
+    /// （#819。既定は出さない）。stdioで動くときだけ`true`にする。
+    /// HTTP・WebSocketでは、サーバーのフォルダ構成を、つないできた相手に
+    /// 見せることになる
+    pub fn with_upload_dirs_in_errors(mut self, show: bool) -> Self {
+        self.show_upload_dirs = show;
+        self
+    }
+
     pub fn try_new(config: WordPressConfig) -> Result<Self, String> {
         // URLにユーザー名・パスワード（`https://user:pass@…`）を書くと、状態の
         // 表示・エラーにそのまま出るので断る（#746。`mcp-rs init`と同じ）。
@@ -2576,6 +2610,7 @@ impl WordPressHandler {
             rate_limiter,
             audit_logger,
             upload_allowed_dirs: Arc::new(upload_allowed_dirs),
+            show_upload_dirs: false,
             allowed_post_types: Arc::new(allowed_post_types),
             type_endpoints: Default::default(),
         })
@@ -5560,7 +5595,18 @@ impl WordPressHandler {
                         (file_data, filename.to_string(), mime_type.to_string())
                     }
                     (None, Some(file_path)) => {
-                        let path = resolve_upload_path(file_path, &self.upload_allowed_dirs)?;
+                        let path = resolve_upload_path(file_path, &self.upload_allowed_dirs)
+                            .map_err(|e| match e {
+                                McpError::InvalidParams(message)
+                                    if self.show_upload_dirs
+                                        && message == UPLOAD_PATH_NOT_ALLOWED =>
+                                {
+                                    McpError::InvalidParams(upload_path_not_allowed_with_dirs(
+                                        &self.upload_allowed_dirs,
+                                    ))
+                                }
+                                other => other,
+                            })?;
                         let file_data = read_upload_file(&path).await?;
                         // 省略時はファイル名・拡張子から決める。中身は
                         // いずれの場合もvalidate_uploadで検証する
@@ -7243,7 +7289,7 @@ impl McpHandler for WordPressHandler {
                 name: "upload_media".to_string(),
                 title: Some("Upload a media file".to_string()),
                 description: format!(
-                    "Upload an image, PDF, video or audio file to the WordPress media library. Pass either file_data (base64, with filename and mime_type) or file_path (a file on the machine where mcp-rs runs, when allowed by upload_allowed_dirs). The filename extension and the file's content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first. Returns the new media ID and URL; use the ID with set_featured_image or featured_media_id.",
+                    "Upload an image, PDF, video or audio file to the WordPress media library. Pass either file_path (a file on the machine where mcp-rs runs, when allowed by upload_allowed_dirs; preferred) or file_data (base64, with filename and mime_type; only for small files, as it is slow). The filename extension and the file's content must match mime_type. Size is capped at {} MiB; with file_data, the transport's message size limit (including base64 overhead) usually applies first. Returns the new media ID and URL; use the ID with set_featured_image or featured_media_id.",
                     MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)
                 ),
                 input_schema: serde_json::json!({
@@ -7251,7 +7297,7 @@ impl McpHandler for WordPressHandler {
                     "properties": {
                         "file_data": {
                             "type": "string",
-                            "description": "Base64 encoded file data. Requires filename and mime_type. Use file_path instead for files on this machine when it is enabled"
+                            "description": "Base64 encoded file data. Requires filename and mime_type. Only for small files: the AI client writes out every character, so it is slow, and large files (such as videos) cannot be sent this way. Use file_path instead when it is enabled (copy the file into one of the allowed folders first)"
                         },
                         "file_path": {
                             "type": "string",
@@ -9555,6 +9601,65 @@ mod tests {
         assert_eq!(read_upload_file(&path).await.unwrap(), PNG_HEADER);
     }
 
+    /// 許可フォルダの外を指したエラーに、stdioのときだけ許可フォルダを出す
+    /// （#819）。既定（HTTP・WebSocket）では出さない
+    #[tokio::test]
+    async fn test_upload_media_file_path_error_lists_dirs_only_when_asked() {
+        let root = tempfile::tempdir().unwrap();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("photo.png"), PNG_HEADER).unwrap();
+        let outside_arg = serde_json::json!(outside.join("photo.png").to_string_lossy());
+        let shown = display_dir(&std::fs::canonicalize(&allowed).unwrap());
+
+        // 既定: フォルダを出さない
+        let handler = handler_with_upload_dirs(&[allowed.as_path()]);
+        let msg = invalid_params_message(
+            call_upload(&handler, &[("file_path", outside_arg.clone())]).await,
+        );
+        assert_eq!(msg, UPLOAD_PATH_NOT_ALLOWED);
+
+        // stdio: 許可フォルダと次の手を出す。無いファイルでも同じ文
+        let handler =
+            handler_with_upload_dirs(&[allowed.as_path()]).with_upload_dirs_in_errors(true);
+        for path in [outside.join("photo.png"), allowed.join("missing.png")] {
+            let msg = invalid_params_message(
+                call_upload(
+                    &handler,
+                    &[("file_path", serde_json::json!(path.to_string_lossy()))],
+                )
+                .await,
+            );
+            assert!(msg.starts_with(UPLOAD_PATH_NOT_ALLOWED), "got: {msg}");
+            assert!(msg.contains(&shown), "got: {msg}");
+            assert!(
+                msg.contains("Copy the file into one of these folders"),
+                "got: {msg}"
+            );
+        }
+        // 相対パス等、ほかのエラーは変えない
+        let msg = invalid_params_message(
+            call_upload(&handler, &[("file_path", serde_json::json!("photo.png"))]).await,
+        );
+        assert_eq!(msg, "file_path must be an absolute path");
+    }
+
+    /// Windowsの正規化が付ける`\\?\`を、表示では外す（#819）
+    #[test]
+    fn test_display_dir() {
+        assert_eq!(
+            display_dir(Path::new(r"\\?\C:\Users\me\upload")),
+            r"C:\Users\me\upload"
+        );
+        assert_eq!(
+            display_dir(Path::new(r"\\?\UNC\host\share")),
+            r"\\?\UNC\host\share"
+        );
+        assert_eq!(display_dir(Path::new("/home/me/upload")), "/home/me/upload");
+    }
+
     #[tokio::test]
     async fn test_upload_media_file_path_argument_validation() {
         let dir = tempfile::tempdir().unwrap();
@@ -9883,6 +9988,7 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::new(RateLimitConfig::default())),
             audit_logger: Arc::new(AuditLogger::with_defaults()),
             upload_allowed_dirs: Arc::new(Vec::new()),
+            show_upload_dirs: false,
             allowed_post_types: Arc::new(vec!["product".to_string()]),
             type_endpoints: Default::default(),
         }

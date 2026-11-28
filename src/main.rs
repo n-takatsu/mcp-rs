@@ -270,7 +270,10 @@ async fn build_server(
             for (name, site_config) in site_list {
                 let wp_handler = WordPressHandler::try_new(site_config.clone())
                     .map_err(|e| format!("WordPress handler creation failed ({}): {}", name, e))?
-                    .with_audit_logger(audit_logger.clone());
+                    .with_audit_logger(audit_logger.clone())
+                    // 許可フォルダの一覧は、stdioのときだけエラーに出す（#819。
+                    // HTTP・WebSocketの相手に、このサーバーのフォルダを見せない）
+                    .with_upload_dirs_in_errors(!http_mode);
 
                 // STDIOと違い、HTTP/WebSocketのクライアントは別のマシンにいる
                 // ことがある。その場合、file_pathで読まれるのはクライアントの
