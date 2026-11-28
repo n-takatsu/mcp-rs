@@ -936,14 +936,25 @@ impl Connection {
         }))
         .await?;
 
+        // 取り消された後に読んだ行の数。プラグインが関係の無い行（通知等）を
+        // 続けて書いても、取り消しを遅らせないよう、1行までにする（PR #826の
+        // レビュー。`biased`の`select!`は、読める行がある間は取り消しを見ない）
+        let mut lines_after_cancel = 0usize;
         loop {
             let read = match cancel.as_deref_mut() {
                 Some(cancel) => {
-                    // 応答が先に届いていれば、それを返す
-                    tokio::select! {
-                        biased;
-                        read = self.read_line(max_bytes) => Some(read),
-                        _ = cancel.cancelled() => None,
+                    if cancel.is_cancelled() {
+                        lines_after_cancel += 1;
+                    }
+                    if lines_after_cancel > 1 {
+                        None
+                    } else {
+                        // 応答が先に届いていれば、それを返す
+                        tokio::select! {
+                            biased;
+                            read = self.read_line(max_bytes) => Some(read),
+                            _ = cancel.cancelled() => None,
+                        }
                     }
                 }
                 None => Some(self.read_line(max_bytes).await),
@@ -2227,8 +2238,9 @@ pub(crate) mod tests {
         assert_eq!(text(&result), "after");
         let result = call(&handler, "cancel__cancels", json!({})).await.unwrap();
         let cancels: Vec<Value> = serde_json::from_str(text(&result)).unwrap();
-        assert_eq!(cancels.len(), 1, "{cancels:?}");
-        assert!(cancels[0].is_u64(), "the proxy's id: {cancels:?}");
+        // プロキシが割り当てた`id`（`initialize`・2ページの`tools/list`の後の
+        // 4番目）。クライアントの`id`（`1`）ではない（PR #826のレビュー）
+        assert_eq!(cancels, vec![json!(4)]);
 
         let entries = handler.audit_logger().get_all_entries().await;
         assert!(
