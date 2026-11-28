@@ -1521,29 +1521,28 @@ impl PluginHandler {
                 if let Some(egress) = &launch.egress {
                     // 内部のネットワーク・プロキシ・プラグインのコンテナを、まとめて
                     // 消す。用意の途中で失敗・中断しても残さない（#615）
-                    let guard = CleanupOnDrop::new(Cleanup {
+                    // 1つずつ消す（PR #828のレビュー。1つのコマンドでまとめて消すと、
+                    // 既に消えたものの「無い」の文面で、ほかの本当の失敗を見落とす）。
+                    // 前が失敗しても、続けて実行する
+                    let step = |args: &[&str], then: Option<Box<Cleanup>>| Cleanup {
                         program: launch.program.clone(),
-                        args: vec![
-                            "rm".into(),
-                            "-f".into(),
-                            launch.container_name.clone(),
-                            egress.proxy_name.clone(),
-                        ],
+                        args: args.iter().map(|arg| arg.to_string()).collect(),
                         env: docker_env.clone(),
                         ignore_already_removed: true,
-                        then: Some(Box::new(Cleanup {
-                            program: launch.program.clone(),
-                            args: vec![
-                                "network".into(),
-                                "rm".into(),
-                                egress.network.clone(),
-                                egress.outside_network.clone(),
-                            ],
-                            env: docker_env.clone(),
-                            ignore_already_removed: true,
-                            then: None,
-                        })),
-                    });
+                        then,
+                    };
+                    let networks = step(
+                        &["network", "rm", &egress.network],
+                        Some(Box::new(step(
+                            &["network", "rm", &egress.outside_network],
+                            None,
+                        ))),
+                    );
+                    let proxy = step(&["rm", "-f", &egress.proxy_name], Some(Box::new(networks)));
+                    let guard = CleanupOnDrop::new(step(
+                        &["rm", "-f", &launch.container_name],
+                        Some(Box::new(proxy)),
+                    ));
                     info!(
                         "Plugin '{}' can reach only {} (network '{}', through the egress proxy '{}')",
                         config.name,
