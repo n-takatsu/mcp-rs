@@ -639,7 +639,7 @@ pub struct PluginContainerConfig {
     /// 使うコマンド。省略時は`docker`（`podman`等も指定できる）
     pub docker_command: Option<String>,
     /// `network = "allowlist"`で、つないでよい行き先（`"api.example.com:443"`、
-    /// `"*.example.com:443"`。#615）。HTTPS（`CONNECT`）だけを中継する
+    /// `"*.example.com:443"`。#615）。`CONNECT`だけを受け付け、つないだ後は中身を確認しないTCPのトンネル
     pub allowed_hosts: Option<Vec<String>>,
     /// `network = "allowlist"`で、中継のプロキシに使うイメージ。省略時は、
     /// このmcp-rsと同じ版のmcp-rsのイメージ（`ghcr.io/n-takatsu/mcp-rs:<版>`）。

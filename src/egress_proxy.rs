@@ -296,7 +296,7 @@ async fn connect(
     if method != "CONNECT" {
         return Err(refuse(
             "405 Method Not Allowed",
-            format!("{method} is not relayed: only HTTPS (CONNECT) is allowed"),
+            format!("{method} is not relayed: only CONNECT is allowed (for example HTTPS through HTTPS_PROXY)"),
         ));
     }
     let (host, port) = target
