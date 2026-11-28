@@ -652,7 +652,7 @@ fn commit_unconfirmed(error: DatabaseError, server: ServerKind) -> DatabaseError
 }
 
 /// `mysql_async`の値を、列の型に合わせて変換する
-fn convert_value(value: mysql_async::Value, column: &Column) -> Value {
+pub(super) fn convert_value(value: mysql_async::Value, column: &Column) -> Value {
     match value {
         mysql_async::Value::NULL => Value::Null,
         mysql_async::Value::Bytes(bytes) => {
@@ -708,7 +708,7 @@ fn convert_value(value: mysql_async::Value, column: &Column) -> Value {
 }
 
 /// 値を、`?`にバインドする値にする
-fn convert_params(params: &[Value]) -> Vec<mysql_async::Value> {
+pub(super) fn convert_params(params: &[Value]) -> Vec<mysql_async::Value> {
     params
         .iter()
         .map(|value| match value {

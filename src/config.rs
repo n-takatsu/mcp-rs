@@ -2070,8 +2070,8 @@ impl McpConfig {
         Ok(())
     }
 
-    /// `[database]`の`host`・`database`・`username`・`password`の`${VAR}`を
-    /// 展開する（#453）。使わない設定（`enabled = false`）なら展開しない。
+    /// `[database]`の`host`・`database`・`username`・`password`・
+    /// `ssl_root_cert`（PR #822のレビュー）の`${VAR}`を展開する（#453）。使わない設定（`enabled = false`）なら展開しない。
     /// 設定の読み込みでは展開せず、ハンドラーを登録するときに展開する（環境
     /// 変数が無くても、データベースだけを飛ばし、mcp-rsは起動するため）
     pub fn expand_database_config(config: &mut DatabaseSettings) -> Result<(), ConfigEnvError> {
@@ -2092,6 +2092,12 @@ impl McpConfig {
         expand("username", &mut config.username)?;
         if let Some(password) = config.password.as_mut() {
             expand("password", password)?;
+        }
+        // `resolve_paths`は`${`で始まるパスを、展開の後の値をそのまま使うよう
+        // 残す。ここで展開しないと、`${VAR}`の文字のままファイルを開いていた
+        // （PR #822のレビュー）
+        if let Some(cert) = config.ssl_root_cert.as_mut() {
+            expand("ssl_root_cert", cert)?;
         }
         Ok(())
     }
@@ -3686,15 +3692,18 @@ start_timeout_seconds = 300
     #[test]
     fn test_expand_database_config() {
         std::env::set_var("MCP_RS_TEST_DB_PASSWORD_453", "from-env");
+        std::env::set_var("MCP_RS_TEST_DB_CA_822", "/etc/ssl/db-ca.pem");
         let mut db = DatabaseSettings {
             engine: "postgresql".to_string(),
             database: "app".to_string(),
             username: "reader".to_string(),
             password: Some("${MCP_RS_TEST_DB_PASSWORD_453}".to_string()),
+            ssl_root_cert: Some("${MCP_RS_TEST_DB_CA_822}".to_string()),
             ..Default::default()
         };
         McpConfig::expand_database_config(&mut db).unwrap();
         assert_eq!(db.password.as_deref(), Some("from-env"));
+        assert_eq!(db.ssl_root_cert.as_deref(), Some("/etc/ssl/db-ca.pem"));
 
         // 無い変数は、項目と変数の名前を返す（値は出さない）。テストを
         // 動かす環境に同じ名前があっても、無い状態にする（#737。名前は

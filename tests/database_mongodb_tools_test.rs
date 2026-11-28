@@ -25,6 +25,15 @@ fn test_server() -> Option<(String, u16)> {
         return None;
     }
     let parsed = url::Url::parse(&url).expect("TEST_MONGODB_URL is a URL");
+    // テストは`ssl_mode`を送らないので、ループバックでなければ、テストの
+    // データベースを消した後で失敗する。消す前に止める（PR #822のレビュー）
+    assert!(
+        matches!(
+            parsed.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]")
+        ),
+        "TEST_MONGODB_URL must point to a loopback host (localhost, 127.0.0.1 or [::1]): the tests send no ssl_mode and drop their test data"
+    );
     Some((
         parsed
             .host_str()

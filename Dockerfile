@@ -33,9 +33,11 @@ COPY website/assets/favicon-32.png website/assets/apple-touch-icon.png website/a
 
 # Build the application. The os-keyring feature (#533) is left out: a
 # container has no OS credential store, so credentials come from environment
-# variables (${VAR}) or encrypted_credentials
+# variables (${VAR}) or encrypted_credentials. The database engines are the
+# same as the default build (PostgreSQL, MySQL, MariaDB, SQLite, Redis,
+# MongoDB; Redis and MongoDB were missing until PR #822's review)
 RUN target="$(uname -m)-unknown-linux-musl" \
-    && cargo build --release --target "$target" --bin mcp-rs --no-default-features --features database,mysql-backend \
+    && cargo build --release --target "$target" --bin mcp-rs --no-default-features --features database,mysql-backend,redis-backend,mongodb-backend \
     && cp "target/$target/release/mcp-rs" /app/mcp-rs \
     && strip /app/mcp-rs
 
