@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- プラグインの起動の途中で終了の合図（SIGTERM・Ctrl+C）を受けたら、起動を
+  待たずにやめ、後片付け（子プロセス・コンテナ・KubernetesのJob・Secret）を
+  して終わる（#775）。残りのプラグインは起動しない。今までは、起動し終えて
+  から止めたので、`start_timeout`（既定は30秒）の間に`docker stop`の猶予
+  （既定は10秒）が過ぎ、後片付けの前にSIGKILLで終わることがあった
+  - ライブラリとして使う場合: `plugin_proxy::start_plugins_until`を足した
+    （`start_plugins_reporting_failures`に、やめる合図のfutureを渡す版）
 - STDIOで取り消した（`notifications/cancelled`）プラグインのツールの呼び出しを、
   プラグインにも取り消しとして伝える（#766）。今までは、プラグインは取り消された
   ことを知らずに処理を続け、STDIOの次の要求も、その呼び出しが終わるか

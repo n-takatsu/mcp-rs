@@ -606,6 +606,25 @@ pub async fn start_plugins_reporting_failures(
     configs: &[PluginConfig],
     audit_logger: Arc<AuditLogger>,
 ) -> (Vec<(String, Arc<PluginHandler>)>, Vec<(String, String)>) {
+    start_plugins_until(configs, audit_logger, std::future::pending()).await
+}
+
+/// `start_plugins_reporting_failures`と同じ。`stop`が終わったら（mcp-rsの
+/// 終了の合図、#775）、起動の途中のプラグインをやめ、残りのプラグインは
+/// 起動しない。やめたプラグインの子プロセスは止め、コンテナ・Kubernetesの
+/// Job・Secretの後片付けを始める（起動の途中のfutureを落とすと、
+/// `Connection`・`CleanupOnDrop`の破棄で始まる。終わるのは
+/// `wait_for_cleanups`で待つ）。起動し終えたプラグインは返すので、呼ぶ側が
+/// 止める（`McpServer::shutdown`）。
+///
+/// プラグインの起動（`start_timeout`の既定は30秒）を待ってから合図を見ると、
+/// `docker stop`の猶予（既定は10秒）の内に後片付けを終えられないため
+pub async fn start_plugins_until(
+    configs: &[PluginConfig],
+    audit_logger: Arc<AuditLogger>,
+    stop: impl std::future::Future<Output = ()>,
+) -> (Vec<(String, Arc<PluginHandler>)>, Vec<(String, String)>) {
+    let mut stop = std::pin::pin!(stop);
     let mut started = Vec::new();
     let mut failed = Vec::new();
     let mut seen = HashSet::new();
@@ -625,7 +644,22 @@ pub async fn start_plugins_reporting_failures(
             ));
             continue;
         }
-        match PluginHandler::start_with_audit_logger(config, audit_logger.clone()).await {
+        let start = PluginHandler::start_with_audit_logger(config, audit_logger.clone());
+        // 既に合図を受けていれば、起動しない
+        let result = tokio::select! {
+            biased;
+            () = &mut stop => None,
+            result = start => Some(result),
+        };
+        let Some(result) = result else {
+            warn!(
+                "Plugin '{}' was not started: mcp-rs is shutting down",
+                config.name
+            );
+            failed.push((config.name.clone(), "mcp-rs is shutting down".to_string()));
+            break;
+        };
+        match result {
             Ok(handler) => {
                 info!(
                     "Plugin '{}' started with {} tools",
@@ -1861,6 +1895,8 @@ pub(crate) mod tests {
     const TEST_PLUGIN_ENV: &str = "MCP_RS_TEST_PLUGIN";
     /// テスト用のプラグインが`initialize`で答える版（省略時は`PROTOCOL_VERSION`）
     const TEST_PLUGIN_VERSION_ENV: &str = "MCP_RS_TEST_PLUGIN_VERSION";
+    /// テスト用のプラグインが`initialize`に答えるまで待つミリ秒（#775）
+    const TEST_PLUGIN_START_DELAY_ENV: &str = "MCP_RS_TEST_PLUGIN_START_DELAY_MS";
 
     /// テスト用のMCPサーバー。このテストバイナリ自身をプラグインとして
     /// 起動し、この関数だけを実行させる（`--exact`・`--ignored`）。通常の
@@ -1901,13 +1937,21 @@ pub(crate) mod tests {
             };
             let method = request["method"].as_str().unwrap_or("");
             let result = match method {
-                "initialize" => json!({
+                "initialize" => {
+                    if let Some(ms) = std::env::var(TEST_PLUGIN_START_DELAY_ENV)
+                        .ok()
+                        .and_then(|ms| ms.parse().ok())
+                    {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
+                    json!({
                     // 知らない版で答えるプラグインのテスト（#750）
                     "protocolVersion": std::env::var(TEST_PLUGIN_VERSION_ENV)
                         .unwrap_or_else(|_| PROTOCOL_VERSION.to_string()),
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "test-plugin", "version": "1.0.0" }
-                }),
+                    })
+                }
                 "tools/list" => {
                     let tool = |name: &str| {
                         let mut tool = json!({
@@ -2439,6 +2483,53 @@ pub(crate) mod tests {
         let results: Vec<Option<&str>> = entries.iter().map(|e| e.result.as_deref()).collect();
         assert_eq!(results, vec![Some("FAILURE"), Some("SUCCESS")]);
         assert_eq!(entries[0].level, AuditLevel::Error);
+    }
+
+    /// 起動の途中で止める合図を受けたら、起動を待たずにやめ、残りの
+    /// プラグインも起動しない（#775）。合図の前に起動し終えたものは返す
+    #[tokio::test]
+    async fn test_start_plugins_until_stops_a_slow_start() {
+        let first = test_plugin_config("first");
+        let mut slow = test_plugin_config("slow");
+        slow.env
+            .insert(TEST_PLUGIN_START_DELAY_ENV.to_string(), "20000".to_string());
+        slow.call_timeout_seconds = Some(60);
+        let rest = test_plugin_config("rest");
+        let audit_logger = Arc::new(AuditLogger::with_defaults());
+
+        let started_at = std::time::Instant::now();
+        let (started, failed) = start_plugins_until(
+            &[first, slow, rest],
+            audit_logger,
+            // 1つ目が起動し、2つ目の`initialize`を待っている間に合図を受ける
+            tokio::time::sleep(Duration::from_secs(3)),
+        )
+        .await;
+        // 2つ目の起動（20秒）を待たない
+        assert!(
+            started_at.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started_at.elapsed()
+        );
+        let names: Vec<&str> = started.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["first"]);
+        assert_eq!(
+            failed,
+            vec![("slow".to_string(), "mcp-rs is shutting down".to_string())]
+        );
+        for (_, handler) in started {
+            handler.shutdown().await;
+        }
+
+        // 既に合図を受けていれば、1つも起動しない
+        let (started, failed) = start_plugins_until(
+            &[test_plugin_config("never")],
+            Arc::new(AuditLogger::with_defaults()),
+            std::future::ready(()),
+        )
+        .await;
+        assert!(started.is_empty());
+        assert_eq!(failed.len(), 1);
     }
 
     /// 知らない版で答えるプラグインは、起動のエラーにする（#750）

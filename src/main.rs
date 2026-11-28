@@ -230,6 +230,7 @@ async fn load_config_from_file(path: &str) -> Result<McpConfig, Box<dyn std::err
 async fn build_server(
     config: &McpConfig,
     http_mode: bool,
+    shutdown: &mut ShutdownSignal,
 ) -> Result<mcp_rs::mcp::McpServer, Box<dyn std::error::Error>> {
     let mut server = mcp_rs::mcp::McpServer::new();
 
@@ -345,12 +346,14 @@ async fn build_server(
         }
     }
 
-    // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす
-    let (plugins, plugin_failures) = mcp_rs::plugin_proxy::start_plugins_reporting_failures(
-        &config.plugins,
-        audit_logger.clone(),
-    )
-    .await;
+    // プラグイン（#394）。起動できなかったプラグインは警告を出して飛ばす。
+    // 起動の途中で終了の合図を受けたら、起動を待たずにやめ、後片付けを
+    // 始める（#775。起動し終えたプラグインは、呼ぶ側が止める）
+    let (plugins, plugin_failures) =
+        mcp_rs::plugin_proxy::start_plugins_until(&config.plugins, audit_logger.clone(), async {
+            shutdown.wait().await;
+        })
+        .await;
     if http_mode {
         warn_untrusted_read_only_plugins(config, &plugins).await;
     }
@@ -452,7 +455,7 @@ async fn run_stdio_server(
     config: &McpConfig,
     mut shutdown: ShutdownSignal,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let server = build_server(config, false).await?;
+    let server = build_server(config, false, &mut shutdown).await?;
     info!("🔌 STDIOモードで待機中");
     // 標準入出力の失敗（クライアントが去った等）で終わっても、プラグインを
     // 止める（#684）
@@ -489,7 +492,7 @@ async fn run_http_server(
     http_config: mcp_rs::transport::HttpConfig,
     mut shutdown: ShutdownSignal,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let server = build_server(config, true).await?;
+    let server = build_server(config, true, &mut shutdown).await?;
 
     // TLSを有効にしたら、起動のログのURLもhttps://にする（#750）
     let scheme = if http_config.tls_enabled {

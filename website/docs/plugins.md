@@ -84,7 +84,7 @@ By default, mcp-rs starts the container with:
 | `--memory=512m`, `--pids-limit=256` | Limits on memory and number of processes |
 | `--rm`, `--init` | The container is removed when the plugin stops |
 
-When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode, including on Ctrl+C, and on SIGTERM from `docker stop` or `systemctl stop` on Linux and macOS, even while plugins are still starting), it also runs `docker rm -f` on the container and waits up to 10 seconds for it to finish; if it takes longer, the log warns you to remove the container by hand. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
+When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode, including on Ctrl+C, and on SIGTERM from `docker stop` or `systemctl stop` on Linux and macOS, even while plugins are still starting), it also runs `docker rm -f` on the container and waits up to 10 seconds for it to finish. From v0.32.0, a signal received while a plugin is still starting stops that start at once (the rest of the plugins are not started), instead of waiting for it to finish starting (up to `start_timeout`, 30 seconds by default), so the cleanup ends within the grace period of `docker stop` (10 seconds by default); if it takes longer, the log warns you to remove the container by hand. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
 
 If the plugin cannot start (for example, Docker is not running or the image has not been pulled), the warning says so, and Docker's own message is in the log lines that start with `[plugin <name>]`.
 
