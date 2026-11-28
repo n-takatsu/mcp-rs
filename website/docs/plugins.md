@@ -102,7 +102,7 @@ allowed_hosts = ["api.example.com:443"]   # host:port; "*.example.com:443" also 
 
 mcp-rs then:
 
-1. creates an internal Docker network (`docker network create --internal`, named `mcp-rs-<plugin name>-<random>-net`), from which containers cannot reach the outside. On Docker 28 or later, its gateway is also isolated (`com.docker.network.bridge.gateway_mode_ipv4=isolated`), so that the plugin cannot reach services on the Docker host through the gateway address. mcp-rs decides this by the engine version (`docker version`); on an older Docker or another engine, it creates the network without it and warns in the log
+1. creates an internal Docker network (`docker network create --internal`, named `mcp-rs-<plugin name>-<random>-net`), from which containers cannot reach the outside. On Docker 28 or later, its gateway is also isolated (`com.docker.network.bridge.gateway_mode_ipv4=isolated`), so that the plugin cannot reach services on the Docker host through the gateway address. mcp-rs decides this by the engine version (`docker version`): on an older engine, it creates the network without it and warns in the log, and when the version cannot be read, the plugin does not start
 2. creates a second, ordinary network (`mcp-rs-<plugin name>-<random>-out`) and starts an egress proxy in a second container (`mcp-rs-<plugin name>-<random>-egress`), on both networks. The proxy is mcp-rs itself (`mcp-rs egress-proxy`), from the mcp-rs Docker image of the same version, with the same restrictions as the plugin (no capabilities, read-only)
 3. starts the plugin on the internal network, with `HTTPS_PROXY` and `HTTP_PROXY` (and the lower-case names) set to the proxy
 

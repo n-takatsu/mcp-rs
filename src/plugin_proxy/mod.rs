@@ -469,9 +469,8 @@ const ISOLATED_GATEWAY_OPTIONS: &[&str] = &[
 /// ゲートウェイを切り離せる（`gateway_mode`）Dockerの版
 const ISOLATED_GATEWAY_MIN_DOCKER: u32 = 28;
 
-/// エンジン（`docker version`のServer）の版の、最初の数。分からなければ
-/// `None`（Podman等は、Dockerの版ではないので、切り離せる版とはみなさない。
-/// Podmanの版は5等なので、28より小さい）
+/// エンジン（`docker version`のServer）の版の、最初の数。読めなければ
+/// `None`（Podman等の版は5等なので、28より小さいとみなす）
 async fn engine_major_version(program: &str, env: &[(String, String)]) -> Option<u32> {
     let output = docker_command(program, env)
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -555,21 +554,23 @@ async fn start_egress_proxy(
     // 切り離すかは、エンジンの版で決める（PR #828のレビュー。作るのに失敗した
     // だけで切り離さずに作り直すと、Docker 28以降の一時的な失敗でも穴が開く）。
     // 失敗したら、切り離さずに作り直すことはしない
+    // 版が読めないときは、起動しない（PR #828のレビュー。`docker version`の
+    // 一時的な失敗で、切り離さずに作らない）
     match engine_major_version(program, env).await {
         Some(major) if major >= ISOLATED_GATEWAY_MIN_DOCKER => {
             create_network(plugin, program, env, internal(true), &egress.network).await?;
         }
-        version => {
+        Some(major) => {
             create_network(plugin, program, env, internal(false), &egress.network).await?;
             warn!(
-                "Plugin '{}': the gateway of the internal network is not isolated ({}). The plugin may reach services on the Docker host at the gateway address without the egress proxy. Docker {} or later isolates it",
-                plugin,
-                match version {
-                    Some(major) => format!("the engine is version {major}"),
-                    None => "the engine version is not known".to_string(),
-                },
-                ISOLATED_GATEWAY_MIN_DOCKER
+                "Plugin '{}': the gateway of the internal network is not isolated (the engine is version {}). The plugin may reach services on the Docker host at the gateway address without the egress proxy. Docker {} or later isolates it",
+                plugin, major, ISOLATED_GATEWAY_MIN_DOCKER
             );
+        }
+        None => {
+            return Err(format!(
+                "could not read the version of the container engine (`{program} version`), which decides whether the internal network for allowed_hosts can isolate its gateway"
+            ));
         }
     }
     // プロキシだけが外に出るネットワーク
