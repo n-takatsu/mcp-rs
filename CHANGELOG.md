@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- プラグインの起動の途中で終了の合図（SIGTERM・Ctrl+C）を受けたら、起動を
+  待たずにやめ、後片付け（子プロセス・コンテナ・KubernetesのJob・Secret）を
+  して終わる（#775）。残りのプラグインは起動しない。今までは、起動し終えて
+  から止めたので、`start_timeout`（既定は30秒）の間に`docker stop`の猶予
+  （既定は10秒）が過ぎ、後片付けの前にSIGKILLで終わることがあった
+  - 起動の途中で止めたコンテナのプラグインは、3秒後にもう1度`docker rm -f`する
+    （`docker run`を止めたときに、デーモンがまだコンテナを作っている途中だと、
+    1回目は「無い」と返り、作り終えたコンテナが残るため。起動の期限切れも同じ）
+  - 後片付けを待つ10秒は、プラグインを止め始めてから数える。mcp-rs自身を
+    コンテナで動かすなら、`docker stop --timeout`等で猶予を延ばすとよい
+  - ライブラリとして使う場合: `plugin_proxy::start_plugins_until`を足した
+    （`start_plugins_reporting_failures`に、やめる合図のfutureを渡す版）
 - STDIOで取り消した（`notifications/cancelled`）プラグインのツールの呼び出しを、
   プラグインにも取り消しとして伝える（#766）。今までは、プラグインは取り消された
   ことを知らずに処理を続け、STDIOの次の要求も、その呼び出しが終わるか
