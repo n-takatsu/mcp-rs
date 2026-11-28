@@ -673,12 +673,15 @@ impl Cleanup {
     /// 返す（#684）。既に消えていた場合は成功
     fn execute(&self) -> Result<(), String> {
         let result = self.execute_one();
-        match &self.then {
-            Some(then) => {
-                let next = then.execute();
-                result.and(next)
-            }
-            None => result,
+        let Some(then) = &self.then else {
+            return result;
+        };
+        // 前が失敗しても実行し、両方の失敗を返す（PR #828のレビュー。前の
+        // 失敗だけを返すと、残ったネットワークに気づけない）
+        match (result, then.execute()) {
+            (Ok(()), next) => next,
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(next)) => Err(format!("{error}; {next}")),
         }
     }
 
@@ -2241,6 +2244,32 @@ pub(crate) mod tests {
             ignore_already_removed: false,
             then: None,
         }
+    }
+
+    /// `then`の後片付けは、前が失敗しても実行し、両方の失敗を返す（PR #828の
+    /// レビュー）
+    #[test]
+    fn test_cleanup_then_runs_after_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let touched = dir.path().join("then");
+        let mut first = exit_cleanup(1);
+        first.then = Some(Box::new(touch_cleanup(&touched)));
+        let error = first.execute().unwrap_err();
+        assert!(error.contains("exit 1`"), "{error}");
+        assert!(touched.exists(), "the next cleanup did not run");
+
+        let mut both = exit_cleanup(1);
+        both.then = Some(Box::new(exit_cleanup(2)));
+        let error = both.execute().unwrap_err();
+        assert!(
+            error.contains("exit 1`") && error.contains("exit 2`"),
+            "{error}"
+        );
+
+        let mut second_only = touch_cleanup(&dir.path().join("first"));
+        second_only.then = Some(Box::new(exit_cleanup(3)));
+        let error = second_only.execute().unwrap_err();
+        assert!(error.contains("exit 3`"), "{error}");
     }
 
     /// 後片付けのコマンドが失敗したら、コマンドと終了コードを返す（#684）

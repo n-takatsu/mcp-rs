@@ -709,13 +709,13 @@ async fn wait_for_plugin_cleanups() {
             });
     for failure in &report.failures {
         tracing::warn!(
-            "Could not remove a plugin container or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
+            "Could not remove a plugin container, network or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / docker network ls --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
             failure
         );
     }
     if report.timed_out {
         tracing::warn!(
-            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
+            "Stopping plugin containers, networks or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / docker network ls --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
             timeout.as_secs()
         );
     }
