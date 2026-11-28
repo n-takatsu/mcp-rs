@@ -818,6 +818,8 @@ struct Connection {
     stopped: Option<String>,
     /// コンテナ・Kubernetesで起動した場合に、終了時に実行する後片付け
     cleanup: Option<Cleanup>,
+    /// `initialize`・`tools/list`を終えた（起動し終えた）
+    started: bool,
 }
 
 impl Drop for Connection {
@@ -831,7 +833,16 @@ impl Connection {
     fn kill(&mut self) {
         let _ = self.child.start_kill();
         if let Some(cleanup) = self.cleanup.take() {
-            cleanup.run();
+            if self.started {
+                cleanup.run();
+            } else {
+                // 起動の途中で止めた（期限切れ・mcp-rsの終了の合図、#775）。
+                // `docker run`を止めたとき、デーモンがまだコンテナを作って
+                // いる途中だと、先の`docker rm -f`は「無い」と返し、その後に
+                // 作り終えたコンテナが残る。少し後でもう1度消す（PR #827の
+                // レビュー。Kubernetesの`CleanupOnDrop`と同じ）
+                cleanup.run_twice(CLEANUP_RETRY_DELAY);
+            }
         }
     }
 
@@ -1318,6 +1329,7 @@ impl PluginHandler {
             stopped: None,
             // 起動に失敗して`connection`を破棄するときも、コンテナ・Jobを消す
             cleanup,
+            started: false,
         };
 
         let raw_tools = match tokio::time::timeout(
@@ -1326,7 +1338,10 @@ impl PluginHandler {
         )
         .await
         {
-            Ok(Ok(tools)) => tools,
+            Ok(Ok(tools)) => {
+                connection.started = true;
+                tools
+            }
             Ok(Err(e)) => {
                 connection.kill();
                 return Err(e.to_string());

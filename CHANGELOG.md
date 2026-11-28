@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   して終わる（#775）。残りのプラグインは起動しない。今までは、起動し終えて
   から止めたので、`start_timeout`（既定は30秒）の間に`docker stop`の猶予
   （既定は10秒）が過ぎ、後片付けの前にSIGKILLで終わることがあった
+  - 起動の途中で止めたコンテナのプラグインは、3秒後にもう1度`docker rm -f`する
+    （`docker run`を止めたときに、デーモンがまだコンテナを作っている途中だと、
+    1回目は「無い」と返り、作り終えたコンテナが残るため。起動の期限切れも同じ）
+  - 後片付けを待つ10秒は、プラグインを止め始めてから数える。mcp-rs自身を
+    コンテナで動かすなら、`docker stop --timeout`等で猶予を延ばすとよい
   - ライブラリとして使う場合: `plugin_proxy::start_plugins_until`を足した
     （`start_plugins_reporting_failures`に、やめる合図のfutureを渡す版）
 - STDIOで取り消した（`notifications/cancelled`）プラグインのツールの呼び出しを、
