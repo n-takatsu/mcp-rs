@@ -741,6 +741,14 @@ fn json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
+/// STDIOの`notifications/cancelled`で取り消したプラグインの呼び出しの
+/// エラー（#766）。監査ログには`CANCELLED`と記録する
+const PLUGIN_CALL_CANCELLED: &str = "the tool call was cancelled by the client";
+
+fn plugin_call_cancelled() -> McpError {
+    McpError::Other(PLUGIN_CALL_CANCELLED.to_string())
+}
+
 /// 送信中の`write_message`が取り消された（期限切れ等）ら、接続を止める
 /// （#750）。送りかけのフレームがパイプに残り、次の要求がその続きになって、
 /// 子プロセスが独立したJSON-RPCのフレームとして読めなくなるため
@@ -892,8 +900,31 @@ impl Connection {
         params: Value,
         max_bytes: usize,
     ) -> Result<Value, McpError> {
+        self.request_cancellable(method, params, max_bytes, None)
+            .await
+    }
+
+    /// `request`と同じ。`cancel`で取り消されたら（STDIOの
+    /// `notifications/cancelled`、#766）:
+    /// - まだ送っていなければ、送らずにやめる
+    /// - 送り終えていれば、このリクエストの`id`（プロキシが割り当てたもの）で
+    ///   プラグインに`notifications/cancelled`を送り、応答を待たずにやめる。
+    ///   後から届く応答は、次のリクエストで`id`を見て読み飛ばす
+    ///
+    /// 書き込みの途中では止めない（取り消しを見るのは、応答を待つ間だけ）。
+    /// 途中で止めると、送りかけのフレームが残り、接続ごと止まるため（#750）
+    async fn request_cancellable(
+        &mut self,
+        method: &str,
+        params: Value,
+        max_bytes: usize,
+        mut cancel: Option<&mut crate::mcp::CallCancellation>,
+    ) -> Result<Value, McpError> {
         if let Some(reason) = self.stopped.clone() {
             return Err(self.not_running_error(&reason));
+        }
+        if cancel.as_ref().is_some_and(|cancel| cancel.is_cancelled()) {
+            return Err(plugin_call_cancelled());
         }
         let id = self.next_id;
         self.next_id += 1;
@@ -905,8 +936,43 @@ impl Connection {
         }))
         .await?;
 
+        // 取り消された後に読んだ行の数。プラグインが関係の無い行（通知等）を
+        // 続けて書いても、取り消しを遅らせないよう、1行までにする（PR #826の
+        // レビュー。`biased`の`select!`は、読める行がある間は取り消しを見ない）。
+        // 取り消しより前に届いた応答を返すのは、それが次の1行のときだけ。応答の
+        // 前に通知等が溜まっていれば、応答を読まずに取り消す（監査ログは
+        // `CANCELLED`。プラグインは処理を終えているが、取り消しの側に倒す）
+        let mut lines_after_cancel = 0usize;
         loop {
-            let bytes = match self.read_line(max_bytes).await? {
+            let read = match cancel.as_deref_mut() {
+                Some(cancel) => {
+                    if cancel.is_cancelled() {
+                        lines_after_cancel += 1;
+                    }
+                    if lines_after_cancel > 1 {
+                        None
+                    } else {
+                        // 応答が先に届いていれば、それを返す
+                        tokio::select! {
+                            biased;
+                            read = self.read_line(max_bytes) => Some(read),
+                            _ = cancel.cancelled() => None,
+                        }
+                    }
+                }
+                None => Some(self.read_line(max_bytes).await),
+            };
+            let Some(read) = read else {
+                // `read_line`は途中で止めても、読んだ分を`self.line`に残す
+                self.write_message(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": { "requestId": id, "reason": "cancelled by the client" }
+                }))
+                .await?;
+                return Err(plugin_call_cancelled());
+            };
+            let bytes = match read? {
                 ReadLine::Line(bytes) => bytes,
                 ReadLine::Oversized(prefix) => {
                     // 期限の切れた前の要求への応答なら、読み飛ばす（#750）。
@@ -1396,10 +1462,22 @@ impl PluginHandler {
             .as_ref()
             .is_ok_and(|value| value.get("isError") == Some(&Value::Bool(true)));
         let success = result.is_ok() && !tool_error;
-        let status = if success { "SUCCESS" } else { "FAILURE" };
+        // STDIOで取り消した呼び出し（#766）。プラグインは処理を続けているか
+        // もしれないので、失敗ではなく取り消しとして残す
+        let cancelled =
+            matches!(result, Err(McpError::Other(message)) if message == PLUGIN_CALL_CANCELLED);
+        let status = if success {
+            "SUCCESS"
+        } else if cancelled {
+            "CANCELLED"
+        } else {
+            "FAILURE"
+        };
         let mut entry = AuditLogEntry::new(
             if success {
                 AuditLevel::Info
+            } else if cancelled {
+                AuditLevel::Warning
             } else {
                 AuditLevel::Error
             },
@@ -1433,10 +1511,25 @@ impl PluginHandler {
             "arguments": arguments.unwrap_or_default()
         });
         let mut shutting_down = self.shutting_down.subscribe();
+        // STDIOの取り消し（#766）。HTTP等では`None`
+        let mut cancel = crate::mcp::call_cancellation();
         let call = tokio::time::timeout(self.call_timeout, async {
-            let mut connection = self.connection.lock().await;
+            // 前の呼び出しを待つ間に取り消されたら、送らずにやめる
+            let mut connection = match cancel.as_mut() {
+                Some(cancel) => tokio::select! {
+                    biased;
+                    connection = self.connection.lock() => connection,
+                    _ = cancel.cancelled() => return Err(plugin_call_cancelled()),
+                },
+                None => self.connection.lock().await,
+            };
             connection
-                .request("tools/call", params, self.max_response_bytes)
+                .request_cancellable(
+                    "tools/call",
+                    params,
+                    self.max_response_bytes,
+                    cancel.as_mut(),
+                )
                 .await
         });
         // mcp-rsの終了では、応答を待たずにやめる（#673）。待っている間は
@@ -1490,9 +1583,10 @@ impl McpHandler for PluginHandler {
     async fn call_tool(&self, params: ToolCallParams) -> Result<Value, McpError> {
         // STDIOの取り消し（`notifications/cancelled`）で、途中で止めさせない
         // （PR #765のレビュー）。送信の途中で止めると、`WriteInProgress`が
-        // 接続ごと止め、監査ログも残らない。取り消された呼び出しも最後まで
-        // 行い（`call_timeout`まで）、応答だけを返さない。プラグインに
-        // 取り消しを伝えることはしない
+        // 接続ごと止め、監査ログも残らない。取り消しは、止めずに知らせを
+        // 受ける（#766）: まだ送っていなければ送らず、送り終えていれば、
+        // プラグインに`notifications/cancelled`を伝えて、応答を待たずに
+        // 終える。どちらも監査ログに残す
         if !crate::mcp::keep_call_from_being_aborted() {
             return Err(McpError::Other(
                 "the tool call was cancelled before it started".to_string(),
@@ -1795,9 +1889,14 @@ pub(crate) mod tests {
         };
         let text_result = |text: String| json!({ "content": [{ "type": "text", "text": text }] });
 
+        // 受け取った`notifications/cancelled`の`requestId`（#766）
+        let mut cancels: Vec<Value> = Vec::new();
         while let Some(Ok(line)) = lines.next() {
             let request: Value = serde_json::from_str(&line).unwrap();
             let Some(id) = request.get("id").cloned() else {
+                if request["method"] == json!("notifications/cancelled") {
+                    cancels.push(request["params"]["requestId"].clone());
+                }
                 continue; // 通知
             };
             let method = request["method"].as_str().unwrap_or("");
@@ -1833,7 +1932,8 @@ pub(crate) mod tests {
                             tool("fail"),
                             tool("toolerror"),
                             tool("slowbig"),
-                            tool("raw")
+                            tool("raw"),
+                            tool("cancels")
                         ] })
                     } else {
                         json!({
@@ -1870,6 +1970,7 @@ pub(crate) mod tests {
                             text_result("x".repeat(args["bytes"].as_u64().unwrap_or(0) as usize))
                         }
                         "exit" => std::process::exit(3),
+                        "cancels" => text_result(Value::Array(cancels.clone()).to_string()),
                         "toolerror" => json!({
                             "content": [{ "type": "text", "text": "tool failed" }],
                             "isError": true
@@ -2065,7 +2166,8 @@ pub(crate) mod tests {
                 "demo__fail",
                 "demo__toolerror",
                 "demo__slowbig",
-                "demo__raw"
+                "demo__raw",
+                "demo__cancels"
             ]
         );
         let tools = handler.list_tools().await.unwrap();
@@ -2108,6 +2210,77 @@ pub(crate) mod tests {
         // すべての呼び出しを監査ログに記録する
         let entries = handler.audit_logger().get_all_entries().await;
         assert_eq!(entries.len(), 2);
+    }
+
+    /// STDIOで取り消した呼び出しは、プラグインに、プロキシの`id`で
+    /// `notifications/cancelled`を伝え、応答を待たずに終える（#766）。監査
+    /// ログには`CANCELLED`と残る。後から届く応答は、次の呼び出しで読み飛ばす
+    #[tokio::test]
+    async fn test_cancelled_call_is_relayed_to_the_plugin() {
+        let handler = PluginHandler::start(&test_plugin_config("cancel"))
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let (cancel, running) =
+            crate::mcp::run_as_stdio_call(call(&handler, "cancel__sleep", json!({ "ms": 1500 })));
+        let (result, ()) = tokio::join!(running, async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(cancel());
+        });
+        let error = result
+            .expect("a plugin call is not aborted midway")
+            .unwrap_err();
+        assert!(error.to_string().contains(PLUGIN_CALL_CANCELLED), "{error}");
+        // 応答（1.5秒後）を待たずに終わる
+        assert!(started.elapsed() < Duration::from_millis(1200));
+
+        // 次の呼び出しは、取り消した呼び出しの遅れた応答を読み飛ばす
+        let result = call(&handler, "cancel__echo", json!({ "text": "after" }))
+            .await
+            .unwrap();
+        assert_eq!(text(&result), "after");
+        let result = call(&handler, "cancel__cancels", json!({})).await.unwrap();
+        let cancels: Vec<Value> = serde_json::from_str(text(&result)).unwrap();
+        // プロキシが割り当てた`id`（`initialize`・2ページの`tools/list`の後の
+        // 4番目）。クライアントの`id`（`1`）ではない（PR #826のレビュー）
+        assert_eq!(cancels, vec![json!(4)]);
+
+        let entries = handler.audit_logger().get_all_entries().await;
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.message == "Plugin tool call: cancel__sleep - CANCELLED"),
+            "{:?}",
+            entries.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// 前の呼び出しを待っている間に取り消した呼び出しは、プラグインに送らない
+    /// （#766）
+    #[tokio::test]
+    async fn test_call_cancelled_before_sending_is_not_sent() {
+        let handler = PluginHandler::start(&test_plugin_config("queued"))
+            .await
+            .unwrap();
+        let (cancel, waiting) =
+            crate::mcp::run_as_stdio_call(call(&handler, "queued__echo", json!({ "text": "x" })));
+        let (first, second, ()) = tokio::join!(
+            call(&handler, "queued__sleep", json!({ "ms": 800 })),
+            async {
+                // 先の呼び出しが接続を使ってから、待ち始める
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                waiting.await
+            },
+            async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert!(cancel());
+            }
+        );
+        assert_eq!(text(&first.unwrap()), "slept");
+        let error = second.unwrap().unwrap_err();
+        assert!(error.to_string().contains(PLUGIN_CALL_CANCELLED), "{error}");
+        let result = call(&handler, "queued__cancels", json!({})).await.unwrap();
+        assert_eq!(text(&result), "[]");
     }
 
     #[tokio::test]
@@ -2243,7 +2416,7 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not running"), "{}", error);
-        assert_eq!(handler.list_tools().await.unwrap().len(), 10);
+        assert_eq!(handler.list_tools().await.unwrap().len(), 11);
     }
 
     /// 子プロセスが`isError: true`の結果を返したら、結果はそのまま中継し、
