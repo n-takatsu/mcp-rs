@@ -90,7 +90,7 @@ If the plugin cannot start (for example, Docker is not running or the image has 
 
 ### Reaching only some hosts
 
-A plugin that calls an outside API needs the network, but with `network = "bridge"` it can send what it receives from the AI client to any address. From v0.32.0, `network = "allowlist"` lets it reach only the hosts you list:
+A plugin that calls an outside API needs the network, but with `network = "bridge"` it can send what it receives from the AI client to any address. From v0.32.0, `network = "allowlist"` relays its HTTPS traffic only to the hosts you list (see below for what this does not cover):
 
 ```toml
 [plugins.container]
@@ -103,17 +103,17 @@ allowed_hosts = ["api.example.com:443"]   # host:port; "*.example.com:443" also 
 mcp-rs then:
 
 1. creates an internal Docker network (`docker network create --internal`, named `mcp-rs-<plugin name>-<random>-net`), from which containers cannot reach the outside
-2. starts an egress proxy in a second container (`mcp-rs-<plugin name>-<random>-egress`), on that network and on `bridge`. The proxy is mcp-rs itself (`mcp-rs egress-proxy`), from the mcp-rs Docker image of the same version, with the same restrictions as the plugin (no capabilities, read-only)
+2. creates a second, ordinary network (`mcp-rs-<plugin name>-<random>-out`) and starts an egress proxy in a second container (`mcp-rs-<plugin name>-<random>-egress`), on both networks. The proxy is mcp-rs itself (`mcp-rs egress-proxy`), from the mcp-rs Docker image of the same version, with the same restrictions as the plugin (no capabilities, read-only)
 3. starts the plugin on the internal network, with `HTTPS_PROXY` and `HTTP_PROXY` (and the lower-case names) set to the proxy
 
-The proxy relays only HTTPS (`CONNECT host:port`) to a host and port in `allowed_hosts`, without decrypting it. It looks up the name itself and does not connect when the name points to a loopback, private, link-local or other non-public address, so an allowed name cannot be used to reach your local network or the Docker host. Plain HTTP and IP addresses are refused. The proxy's messages, including each allowed and refused connection, are in the log lines that start with `[plugin <name>/egress]`. When the plugin stops, mcp-rs removes both containers and the network.
+The proxy relays only HTTPS (`CONNECT host:port`) to a host and port in `allowed_hosts`, without decrypting it. It looks up the name itself and does not connect when the name points to a loopback, private, link-local or other non-public address, so an allowed name cannot be used to reach your local network or the Docker host. Plain HTTP and IP addresses are refused. The proxy's messages, including each allowed and refused connection, are in the log lines that start with `[plugin <name>/egress]`. When the plugin stops, mcp-rs removes both containers and both networks.
 
 Before using it:
 
 - Pull the proxy image as well, the same as the plugin image: `docker pull ghcr.io/n-takatsu/mcp-rs:<version>` (the version of your mcp-rs, without the `v`), or set `egress_proxy_image`
-- It needs Docker 25 or later (the proxy is started with two `--network` options), and the `bridge` network
+- It needs Docker 25 or later (the proxy is started with two `--network` options)
 - The plugin's `name` can be at most 36 characters, because the proxy's container name is used as a host name
-- The plugin must use the proxy settings in `HTTPS_PROXY`. Most HTTP libraries do; a plugin that ignores them cannot reach anything
+- The plugin must use the proxy settings in `HTTPS_PROXY`. Most HTTP libraries do; a plugin that ignores them cannot reach the allowed hosts (but may still reach services on the Docker host, see below)
 - Pin the plugin image by digest (`image@sha256:...`): an image name such as `:latest` can point to different contents later
 
 What it does not protect:

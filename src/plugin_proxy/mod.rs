@@ -106,9 +106,6 @@ const CONTAINER_LABEL: &str = "mcp-rs.plugin";
 /// 許可した行き先にだけ通信させる`container.network`の値（#615）
 const ALLOWLIST_NETWORK: &str = "allowlist";
 
-/// 中継のプロキシが外に出るネットワーク（Dockerの既定のブリッジ）
-const EGRESS_NETWORK: &str = "bridge";
-
 /// 中継のプロキシの既定のイメージ（このmcp-rsと同じ版）
 const DEFAULT_EGRESS_PROXY_IMAGE: &str =
     concat!("ghcr.io/n-takatsu/mcp-rs:", env!("CARGO_PKG_VERSION"));
@@ -199,6 +196,10 @@ struct ContainerLaunch {
 struct EgressLaunch {
     /// プラグインを入れる、外に出られない内部のネットワーク
     network: String,
+    /// プロキシだけが外に出るためのネットワーク（ユーザー定義のブリッジ）。
+    /// 既定の`bridge`は、ユーザー定義のネットワークと同じ`docker run`に
+    /// 指定できない（PR #828のレビュー）
+    outside_network: String,
     /// 中継のプロキシのコンテナの名前
     proxy_name: String,
     /// 中継のプロキシを起動する`docker run`の引数
@@ -378,7 +379,8 @@ fn container_launch(
 }
 
 /// `network = "allowlist"`の内部のネットワークと中継のプロキシ（#615）。
-/// プロキシは、内部のネットワークと`bridge`の両方につなぎ（`--network`を
+/// プロキシは、内部のネットワークと外に出るネットワーク（どちらもユーザー
+/// 定義）の両方につなぎ（`--network`を
 /// 2つ。Docker 25以降）、プラグインと同じく、ケーパビリティを外し、読み取り
 /// 専用で動かす
 fn egress_launch(
@@ -407,6 +409,7 @@ fn egress_launch(
         .trim();
     validate_option_value("container.egress_proxy_image", image)?;
     let network = format!("{container_name}-net");
+    let outside_network = format!("{container_name}-out");
     let proxy_name = format!("{container_name}-egress");
     let mut proxy_args: Vec<String> = vec![
         "run".into(),
@@ -416,7 +419,7 @@ fn egress_launch(
         format!("--name={proxy_name}"),
         format!("--label={}={}", CONTAINER_LABEL, config.name),
         format!("--network={network}"),
-        format!("--network={EGRESS_NETWORK}"),
+        format!("--network={outside_network}"),
         "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
         "--read-only".into(),
@@ -434,6 +437,7 @@ fn egress_launch(
     }
     Ok(EgressLaunch {
         network,
+        outside_network,
         proxy_name,
         proxy_args,
     })
@@ -464,26 +468,30 @@ async fn start_egress_proxy(
     egress: &EgressLaunch,
     timeout: Duration,
 ) -> Result<Child, String> {
-    let created = docker_command(program, env)
-        .args([
-            "network".to_string(),
-            "create".to_string(),
-            "--internal".to_string(),
-            format!("--label={CONTAINER_LABEL}={plugin}"),
-            egress.network.clone(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("could not run `{program} network create`: {e}"))?;
-    if !created.status.success() {
-        return Err(format!(
-            "could not create the internal network '{}' for allowed_hosts: {}",
-            egress.network,
-            truncate(String::from_utf8_lossy(&created.stderr).trim(), 300)
-        ));
+    // プラグインの入る内部のネットワークと、プロキシだけが外に出る
+    // ネットワーク
+    for (network, internal) in [(&egress.network, true), (&egress.outside_network, false)] {
+        let mut args = vec!["network".to_string(), "create".to_string()];
+        if internal {
+            args.push("--internal".to_string());
+        }
+        args.push(format!("--label={CONTAINER_LABEL}={plugin}"));
+        args.push(network.clone());
+        let created = docker_command(program, env)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("could not run `{program} network create`: {e}"))?;
+        if !created.status.success() {
+            return Err(format!(
+                "could not create the network '{}' for allowed_hosts: {}",
+                network,
+                truncate(String::from_utf8_lossy(&created.stderr).trim(), 300)
+            ));
+        }
     }
     let mut proxy = docker_command(program, env)
         .args(&egress.proxy_args)
@@ -1525,7 +1533,12 @@ impl PluginHandler {
                         ignore_already_removed: true,
                         then: Some(Box::new(Cleanup {
                             program: launch.program.clone(),
-                            args: vec!["network".into(), "rm".into(), egress.network.clone()],
+                            args: vec![
+                                "network".into(),
+                                "rm".into(),
+                                egress.network.clone(),
+                                egress.outside_network.clone(),
+                            ],
                             env: docker_env.clone(),
                             ignore_already_removed: true,
                             then: None,
@@ -3122,7 +3135,8 @@ pub(crate) mod tests {
     }
 
     /// `network = "allowlist"`（#615）: プラグインは内部のネットワークに入れ、
-    /// プロキシを環境変数で教える。プロキシは内部のネットワークと`bridge`に
+    /// プロキシを環境変数で教える。プロキシは内部のネットワークと外に出る
+    /// ネットワーク（`-out`）に
     /// つなぎ、許可した行き先だけを渡す
     #[test]
     fn test_container_launch_with_allowlist() {
@@ -3149,6 +3163,7 @@ pub(crate) mod tests {
         }
         let egress = launch.egress.unwrap();
         assert_eq!(egress.network, "mcp-rs-search-abc123-net");
+        assert_eq!(egress.outside_network, "mcp-rs-search-abc123-out");
         assert_eq!(egress.proxy_name, "mcp-rs-search-abc123-egress");
         let expected: Vec<String> = [
             "run",
@@ -3158,7 +3173,7 @@ pub(crate) mod tests {
             "--name=mcp-rs-search-abc123-egress",
             "--label=mcp-rs.plugin=search",
             "--network=mcp-rs-search-abc123-net",
-            "--network=bridge",
+            "--network=mcp-rs-search-abc123-out",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             "--read-only",

@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- コンテナのプラグインで、許可した行き先にだけ通信させる`network = "allowlist"`
+- コンテナのプラグインの外への通信を、許可した行き先にだけ中継する`network = "allowlist"`
   と`allowed_hosts`（`["api.example.com:443"]`、`*.example.com:443`も可）を
   足した（#615）。今までは、ネットワークは無し（`none`）か全部（`bridge`）しか
   選べず、外のAPIを使うプラグインは、AIから受け取った情報をどこへでも送れた
   - mcp-rsは、外に出られない内部のネットワーク（`--internal`）にプラグインを
-    入れ、そのネットワークと`bridge`の両方につないだ中継のプロキシのコンテナを
-    起動する。プロキシは、mcp-rsのDockerイメージ（同じ版）で動く新しい
+    入れ、そのネットワークと、外に出るためのネットワーク（ユーザー定義）の
+    両方につないだ中継のプロキシのコンテナを起動する。プロキシは、mcp-rsのDockerイメージ（同じ版）で動く新しい
     サブコマンド`mcp-rs egress-proxy`。プラグインには`HTTPS_PROXY`等で教える
   - 中継するのはHTTPSの`CONNECT`だけ（中身は復号しない）。名前はプロキシが
     引き、ループバック・プライベート等のアドレスにはつながない。平文のHTTP・
