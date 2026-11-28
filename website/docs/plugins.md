@@ -119,6 +119,7 @@ Before using it:
 What it does not protect:
 
 - A plugin can still send data to the allowed hosts themselves
+- An internal Docker network has no route to the outside, but the plugin may still reach services on the Docker host itself at the network's gateway address, without going through the proxy (this depends on the Docker version and its settings; newer Docker versions can isolate the gateway). Do not leave services without authentication listening on all addresses of the host where you run such plugins
 - Name lookups of the plugin are answered by Docker's own DNS server. Whether Docker forwards lookups of outside names from an internal network depends on the Docker version, so a plugin may still be able to send small amounts of data in DNS queries
 - It applies to container plugins only. A child-process plugin has no isolation, and on Kubernetes `network` is still `none` or `allow`
 - Limiting the network does not stop prompt injection: a plugin can still write instructions for the AI in its tool descriptions and results. Do not use a plugin you do not trust in the same conversation as tools that change things (WordPress, `[database]` with `allow_write`); check what such tools are about to do before you approve them; and in HTTP mode, give separate API keys the tools they need

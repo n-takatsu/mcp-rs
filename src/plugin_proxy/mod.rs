@@ -120,7 +120,12 @@ const MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST: usize = 63 - 27;
 
 /// 中継のプロキシの使ってよいメモリ・プロセス数
 const EGRESS_PROXY_MEMORY: &str = "64m";
-const EGRESS_PROXY_PIDS_LIMIT: u32 = 64;
+const EGRESS_PROXY_PIDS_LIMIT: u32 = 256;
+
+/// 中継のプロキシのtokioの作業スレッドの数（`TOKIO_WORKER_THREADS`）。
+/// 既定はCPUの数なので、CPUの多いホストでも、プロセス数の上限に
+/// かからないようにする（PR #828のレビュー）
+const EGRESS_PROXY_WORKER_THREADS: u32 = 2;
 
 /// プラグインにプロキシを教える環境変数。`env`では渡せない
 const PROXY_ENV_VARS: &[&str] = &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
@@ -417,6 +422,7 @@ fn egress_launch(
         "--read-only".into(),
         format!("--memory={EGRESS_PROXY_MEMORY}"),
         format!("--pids-limit={EGRESS_PROXY_PIDS_LIMIT}"),
+        format!("--env=TOKIO_WORKER_THREADS={EGRESS_PROXY_WORKER_THREADS}"),
         image.to_string(),
         crate::egress_proxy::SUBCOMMAND.into(),
         "--listen".into(),
@@ -1528,15 +1534,28 @@ impl PluginHandler {
                         egress.network,
                         egress.proxy_name
                     );
+                    // ネットワークを作るところから、待ち受けを始めるまでの全体に
+                    // 期限を付ける（PR #828のレビュー。`docker network create`が
+                    // 返らないと、起動が止まったままになる）。期限切れでは、
+                    // プロキシの子プロセスを止め、`guard`が後片付けを始める
                     egress_proxy = Some(
-                        start_egress_proxy(
-                            &config.name,
-                            &launch.program,
-                            &docker_env,
-                            egress,
+                        tokio::time::timeout(
                             start_timeout,
+                            start_egress_proxy(
+                                &config.name,
+                                &launch.program,
+                                &docker_env,
+                                egress,
+                                start_timeout,
+                            ),
                         )
-                        .await?,
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "the egress proxy did not start within {} seconds",
+                                start_timeout.as_secs()
+                            )
+                        })??,
                     );
                     cleanup = Some(guard.disarm());
                 }
@@ -3140,7 +3159,8 @@ pub(crate) mod tests {
             "--security-opt=no-new-privileges",
             "--read-only",
             "--memory=64m",
-            "--pids-limit=64",
+            "--pids-limit=256",
+            "--env=TOKIO_WORKER_THREADS=2",
             DEFAULT_EGRESS_PROXY_IMAGE,
             "egress-proxy",
             "--listen",

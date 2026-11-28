@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - プロキシのイメージも事前に`docker pull`する（`egress_proxy_image`で変えられる）。
     Docker 25以降が要る
   - 許した行き先そのものへの持ち出し、DNSの問い合わせに載せた持ち出し（Dockerの
-    版による）、プロンプトインジェクションは防げないこと、子プロセスと
+    版による）、内部のネットワークのゲートウェイのアドレスにある、Dockerの
+    ホストのサービスへの接続（プロキシを通らない。Dockerの版と設定による）、
+    プロンプトインジェクションは防げないこと、子プロセスと
     Kubernetesのプラグインには効かないことを、文書に書いた
 
 ### Changed
