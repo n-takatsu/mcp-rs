@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 内部のネットワークは、Docker 28以降では出入り口（ゲートウェイ）も
     切り離す（`gateway_mode_ipv4=isolated`）。`--internal`だけでは、プラグインが
     ゲートウェイのアドレスで、プロキシを通らずにDockerのホストのサービスに
-    つながる（Docker 29.9で確かめた）。切り離せない版では、付けずに作り、ログで
-    警告する
+    つながる（Docker 29.9で確かめた）。切り離すかは、エンジンの版で決める。
+    28より前の版・Podman等では、付けずに作り、ログで警告する
   - プロキシのイメージも事前に`docker pull`する（`egress_proxy_image`で変えられる）。
     Docker 25以降が要る
   - 許した行き先そのものへの持ち出し、DNSの問い合わせに載せた持ち出し（Dockerの

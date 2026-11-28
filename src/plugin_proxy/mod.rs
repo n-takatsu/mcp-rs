@@ -466,6 +466,34 @@ const ISOLATED_GATEWAY_OPTIONS: &[&str] = &[
     "com.docker.network.bridge.gateway_mode_ipv6=isolated",
 ];
 
+/// ゲートウェイを切り離せる（`gateway_mode`）Dockerの版
+const ISOLATED_GATEWAY_MIN_DOCKER: u32 = 28;
+
+/// エンジン（`docker version`のServer）の版の、最初の数。分からなければ
+/// `None`（Podman等は、Dockerの版ではないので、切り離せる版とはみなさない。
+/// Podmanの版は5等なので、28より小さい）
+async fn engine_major_version(program: &str, env: &[(String, String)]) -> Option<u32> {
+    let output = docker_command(program, env)
+        .args(["version", "--format", "{{.Server.Version}}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())?;
+    parse_major_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `"29.9.3"`の`29`
+fn parse_major_version(version: &str) -> Option<u32> {
+    version
+        .trim()
+        .split(['.', '-', '+'])
+        .next()
+        .and_then(|major| major.parse().ok())
+}
+
 /// `args`（`network create …`）にラベルと名前を足して、ネットワークを作る
 async fn create_network(
     plugin: &str,
@@ -523,15 +551,26 @@ async fn start_egress_proxy(
         }
         args
     };
-    let first = create_network(plugin, program, env, internal(true), &egress.network).await;
-    if let Err(isolated_error) = first {
-        create_network(plugin, program, env, internal(false), &egress.network)
-            .await
-            .map_err(|_| isolated_error.clone())?;
-        warn!(
-            "Plugin '{}': this Docker does not support isolating the gateway of the internal network ({}). The plugin may reach services on the Docker host at the gateway address without the egress proxy. Docker 28 or later isolates it",
-            plugin, isolated_error
-        );
+    //
+    // 切り離すかは、エンジンの版で決める（PR #828のレビュー。作るのに失敗した
+    // だけで切り離さずに作り直すと、Docker 28以降の一時的な失敗でも穴が開く）。
+    // 失敗したら、切り離さずに作り直すことはしない
+    match engine_major_version(program, env).await {
+        Some(major) if major >= ISOLATED_GATEWAY_MIN_DOCKER => {
+            create_network(plugin, program, env, internal(true), &egress.network).await?;
+        }
+        version => {
+            create_network(plugin, program, env, internal(false), &egress.network).await?;
+            warn!(
+                "Plugin '{}': the gateway of the internal network is not isolated ({}). The plugin may reach services on the Docker host at the gateway address without the egress proxy. Docker {} or later isolates it",
+                plugin,
+                match version {
+                    Some(major) => format!("the engine is version {major}"),
+                    None => "the engine version is not known".to_string(),
+                },
+                ISOLATED_GATEWAY_MIN_DOCKER
+            );
+        }
     }
     // プロキシだけが外に出るネットワーク
     let outside = vec!["network".to_string(), "create".to_string()];
@@ -3174,6 +3213,22 @@ pub(crate) mod tests {
         .map(|s| s.to_string())
         .collect();
         assert_eq!(launch.args, expected);
+    }
+
+    #[test]
+    fn test_parse_major_version() {
+        assert_eq!(
+            parse_major_version(
+                "29.9.3
+"
+            ),
+            Some(29)
+        );
+        assert_eq!(parse_major_version("27.5.1"), Some(27));
+        assert_eq!(parse_major_version("28.0.0-rc.1"), Some(28));
+        assert_eq!(parse_major_version("5.4.2"), Some(5));
+        assert_eq!(parse_major_version(""), None);
+        assert_eq!(parse_major_version("unknown"), None);
     }
 
     /// `network = "allowlist"`（#615）: プラグインは内部のネットワークに入れ、
