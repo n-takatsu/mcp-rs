@@ -559,7 +559,7 @@ pub struct WriteTables {
     pub also_deletes: bool,
     /// 書き込む表（重複は除く）。名前は[`resolve_query_tables`]と同じく、
     /// PostgreSQLでは引用符なしの名前を、SQLiteではすべての名前を、小文字に
-    /// そろえる（MySQL・MariaDBは、文に書いたとおり）
+    /// そろえる（ASCIIの文字だけ。MySQL・MariaDBは、文に書いたとおり）
     pub written: Vec<String>,
     /// 読むだけの表（`INSERT … SELECT`の元、副問い合わせ、`UPDATE … FROM`・
     /// `DELETE … USING`の表）。書き込む表を、副問い合わせ等でも読むなら、
@@ -593,9 +593,11 @@ pub struct WriteTables {
 /// 許可に含める（読む許可は求めない）。名前は、[`resolve_query_tables`]と
 /// 同じく、スキーマまで含めて比べ（`public.users`と`users`は別の名前）、
 /// PostgreSQLでは引用符なしの名前を、SQLiteではすべての名前を小文字に
-/// そろえる。マイクロセグメンテーションの許可のリソースは、そろえずに
-/// 書いたとおりに比べるので、PostgreSQLの引用符なしの表とSQLiteの表は、
-/// 小文字で書く（PostgreSQLの`"Users"`は`Users`のまま）。
+/// そろえる。小文字にするのはASCIIの文字だけで、ほかの文字はそのまま
+/// （SQLiteの`"ÄNotes"`は`Änotes`。PR #824のレビュー）。マイクロ
+/// セグメンテーションの許可のリソースは、そろえずに書いたとおりに比べる
+/// ので、PostgreSQLの引用符なしの表とSQLiteの表は、ASCIIの文字を小文字で
+/// 書く（PostgreSQLの`"Users"`は`Users`のまま）。
 ///
 /// 確かに分けられない形（`WITH`、表の関数や副問い合わせへの`INSERT`等）は
 /// エラーにする。呼ぶ側は、そのとき文を断る。
