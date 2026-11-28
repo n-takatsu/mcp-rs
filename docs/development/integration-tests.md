@@ -45,9 +45,10 @@ docker run -d --name mcp-rs-test-postgres -p 127.0.0.1:5433:5432 \
   -e POSTGRES_DB=mcptest -e POSTGRES_USER=testuser -e POSTGRES_PASSWORD=testpass \
   postgres:16-alpine
 docker run -d --name mcp-rs-test-redis -p 127.0.0.1:6380:6379 redis:7-alpine
-# データベースのツールのテストも実行するなら
+# MySQLは、`mod`のMySQLのエンジンの結合テストでも使う（PR #822のレビュー）
 docker run -d --name mcp-rs-test-mysql -p 127.0.0.1:3307:3306 \
   -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=mcptest mysql:8.4
+# データベースのツールのテストも実行するなら
 docker run -d --name mcp-rs-test-mariadb -p 127.0.0.1:3308:3306 \
   -e MARIADB_ROOT_PASSWORD=testpass -e MARIADB_DATABASE=mcptest mariadb:11.4
 docker run -d --name mcp-rs-test-mongodb -p 127.0.0.1:27018:27017 mongo:7
