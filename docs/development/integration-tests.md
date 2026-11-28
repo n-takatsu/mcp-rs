@@ -34,7 +34,7 @@ PostgreSQL・Redisのサーバーが要るテストは`#[ignore]`にしてあり
 | Redis（#529） | `database_redis_tools_test` | `TEST_REDIS_URL` |
 | MongoDB（#530） | `database_mongodb_tools_test` | `TEST_MONGODB_URL` |
 
-SQLite（#528）は、テストの中でファイルを作るので、サーバーが要らない（`mod`の`database::sqlite_integration_tests`）。`sqlite`のfeatureが要る（既定では入っていない）: `cargo test --features sqlite --test mod database::sqlite_integration_tests`。MySQLのエンジンの結合テスト（`mod`の`database::mysql_integration_tests`）は`#[ignore]`で、CIは`TEST_MYSQL_URL`を渡して`--ignored`で実行する。
+SQLite（#528）は、テストの中でファイルを作るので、サーバーが要らない（`mod`の`database::sqlite_integration_tests`）。SQLiteのエンジンはいつもビルドに入るが、このテストは`sqlite`のfeatureのときだけ入る: `cargo test --features sqlite --test mod database::sqlite_integration_tests`。MySQLのエンジンの結合テスト（`mod`の`database::mysql_integration_tests`）は`#[ignore]`で、CIは`TEST_MYSQL_URL`を渡して`--ignored`で実行する。
 
 ## ローカルで実行する
 
@@ -45,9 +45,10 @@ docker run -d --name mcp-rs-test-postgres -p 127.0.0.1:5433:5432 \
   -e POSTGRES_DB=mcptest -e POSTGRES_USER=testuser -e POSTGRES_PASSWORD=testpass \
   postgres:16-alpine
 docker run -d --name mcp-rs-test-redis -p 127.0.0.1:6380:6379 redis:7-alpine
-# データベースのツールのテストも実行するなら
+# MySQLは、`mod`のMySQLのエンジンの結合テストでも使う（PR #822のレビュー）
 docker run -d --name mcp-rs-test-mysql -p 127.0.0.1:3307:3306 \
   -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=mcptest mysql:8.4
+# データベースのツールのテストも実行するなら
 docker run -d --name mcp-rs-test-mariadb -p 127.0.0.1:3308:3306 \
   -e MARIADB_ROOT_PASSWORD=testpass -e MARIADB_DATABASE=mcptest mariadb:11.4
 docker run -d --name mcp-rs-test-mongodb -p 127.0.0.1:27018:27017 mongo:7
@@ -68,6 +69,8 @@ until docker exec mcp-rs-test-mongodb mongosh --quiet --eval 'db.runCommand({ pi
 ```bash
 export TEST_DATABASE_URL=postgres://testuser:testpass@localhost:5433/mcptest
 export TEST_REDIS_URL=redis://localhost:6380/0
+# `mod`にはMySQLのエンジンの結合テスト（#[ignore]）も入るので、先に設定する
+export TEST_MYSQL_URL=mysql://root:testpass@127.0.0.1:3307/mcptest
 
 cargo test --features redis-backend --no-fail-fast \
   --test mod \
@@ -78,7 +81,6 @@ cargo test --features redis-backend --no-fail-fast \
 データベースのツールのテストは、変数を設定して、それぞれを実行する（`--ignored`は要らない）:
 
 ```bash
-export TEST_MYSQL_URL=mysql://root:testpass@127.0.0.1:3307/mcptest
 export TEST_MARIADB_URL=mysql://root:testpass@127.0.0.1:3308/mcptest
 export TEST_MONGODB_URL=mongodb://localhost:27018
 

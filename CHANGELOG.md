@@ -134,7 +134,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     理由を書き直した
   - ライブラリとして使う場合: `SqliteEngine`は、プール（読み取りと書き込み）を
     1つ持ち、接続の間で共有する（以前は接続ごとにプールを作っていた）。
-    `SqliteConnection::query`は、読み取り専用の接続で読む。`:memory:`は、
+    `SqliteConnection::query`は、読み取り専用の接続で読む。
+    `SqliteConnection::pool()`は外した（PR #822のレビューで、書いていない
+    ことを指摘された）。読み書きは`DatabaseConnection`のメソッド（`query`・
+    `execute`・`prepare`・`begin_transaction`等）で行う。sqlxのプールが要る
+    なら、呼ぶ側で作って持つ。`:memory:`は、
     1つの接続を共有し、使わない時間・接続の寿命（sqlxの既定は10分・30分）で
     閉じない（#808。閉じると、データベースが消えていた）
 - データベースのツールに、SELECTの実行計画を返す`explain_query`を足した
@@ -158,7 +162,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   13件の指摘があった（`Local`の鍵をメモリにだけ持ち、再起動すると保存した
   値を復号できない。ローテーション・キャッシュ・排他の不具合。`AwsKms`・
   `Vault`を選んでもメモリの鍵で動く等）。直すには鍵の管理の作り直しが要る
-  ので、不具合のあるAPIを公開したままにせず、外した。指摘は、外したので直さない
+  ので、不具合のあるAPIを公開したままにせず、外した。指摘は、外したので直さない。
+  列を伏せる・復号する処理に頼っていた場合は、外したAPIの呼び出しを消すだけ
+  では足りない（PR #822のレビュー）。`execute_query`は、列をデータベースの
+  値のまま返す。見せてよい列だけを読めるロール・ビュー等の守りを、更新の
+  前に用意する。保存済みの暗号文は、復号されないまま返る
   - `handlers::database::column_encryption`（`ColumnEncryptionManager`・
     `ColumnEncryptionConfig`・`KeyManager`・`KeyManagerConfig`・`KeyProvider`・
     `KeyMetadata`・`EncryptionAlgorithm`・`CacheStats`）
@@ -178,6 +186,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- v0.31.0のリリースのPR（#822）のレビュー（CodeRabbit）の指摘を直した
+  - Dockerイメージに、Redis・MongoDBのエンジンが入っていなかった
+    （`Dockerfile`が`database,mysql-backend`だけでビルドしていた）。既定の
+    ビルドと同じエンジンを入れる
+  - `[database]`の`ssl_root_cert`の`${VAR}`を展開していなかった（どの
+    エンジンでも、`${VAR}`の文字のままファイルを開いて失敗した）。`${VAR}`で
+    始まるパスは、今までの説明のとおり、展開した値をそのまま使う（相対
+    パスでも、設定ファイルのフォルダを基準にしない）
+  - Redisの`LPOP`・`RPOP`で、`max_result_bytes`を超える値を、取り出して
+    から結果を切っていた（切った値は、もうリストに無い）。取り出す前に
+    `LRANGE`で読み、返す形のJSONの長さを確かめ、超えるなら取り出さずに
+    断る。結果は切らない。確かめた後に、ほかのクライアントがリストを
+    変えたら、確かめた値と違う値を取り出し、`max_result_bytes`を超えて
+    返すことがある
+  - MongoDBの`insert_documents`で、mongosが結果を受け取れなかったエラー
+    （`Write results unavailable`）が最初のドキュメントのとき、「入って
+    いない」と言っていた。入ったか分からないと書く
+  - MongoDBで、接続のプールが埋まって操作を始めなかったときのエラーが、
+    いつも「待つのをやめた操作が埋めている」と言っていた。今の操作が
+    使っているだけのこともあるので、送っていないので送り直してよいこと
+    を先に書く
+  - ライブラリとして使う場合: `MySqlTransaction`の`query`・`execute`が、
+    パラメーターのJSON・日時を`NULL`にしていた。結果の符号なしの大きな
+    整数を負の数に、`TIME`を`12:34:56:000001`の形にしていた。接続
+    （`MySqlConnection`）と同じ変換を使う
+  - `mcp-registry.yml`: PRで`server.json`を確かめるジョブにも、OIDCの
+    トークンを取る権限（`id-token: write`）を付けていた。確かめるジョブと
+    登録するジョブを分け、確かめるジョブには付けない
+  - 結合テストの文書: SQLiteのエンジンはいつもビルドに入る（SQLiteの結合
+    テストだけが`sqlite`のfeatureを見る）。`mod`の`--ignored`の実行の前に、
+    MySQLのコンテナを起動して`TEST_MYSQL_URL`を設定する。Redis・MongoDBの
+    結合テストは、ループバックでない接続先では、データを消す前に止める
 - `upload_media`の`file_path`が許可フォルダ（`upload_allowed_dirs`）の外を
   指したときのエラーに、使える許可フォルダの一覧と、ファイルをそこへ写して
   やり直すよう書く（#819）。今までは、どのフォルダなら使えるかが書かれて

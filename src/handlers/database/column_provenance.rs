@@ -557,7 +557,9 @@ pub struct WriteTables {
     /// `ON DELETE CASCADE`も動く（PR #802のレビュー）。文に書いた分だけを
     /// 見る。表の定義の`ON CONFLICT REPLACE`は、文からは分からない
     pub also_deletes: bool,
-    /// 書き込む表（文に書いたとおりの名前。重複は除く）
+    /// 書き込む表（重複は除く）。名前は[`resolve_query_tables`]と同じく、
+    /// PostgreSQLでは引用符なしの名前を、SQLiteではすべての名前を、小文字に
+    /// そろえる（MySQL・MariaDBは、文に書いたとおり）
     pub written: Vec<String>,
     /// 読むだけの表（`INSERT … SELECT`の元、副問い合わせ、`UPDATE … FROM`・
     /// `DELETE … USING`の表）。書き込む表を、副問い合わせ等でも読むなら、
@@ -589,7 +591,11 @@ pub struct WriteTables {
 ///
 /// 書き込む表を`WHERE`で絞ること・`SET`でその列を使うことは、書き込みの
 /// 許可に含める（読む許可は求めない）。名前は、[`resolve_query_tables`]と
-/// 同じく、文に書いたとおり（`public.users`と`users`は別の名前）。
+/// 同じく、スキーマまで含めて比べ（`public.users`と`users`は別の名前）、
+/// PostgreSQLでは引用符なしの名前を、SQLiteではすべての名前を小文字に
+/// そろえる。マイクロセグメンテーションの許可のリソースは、そろえずに
+/// 書いたとおりに比べるので、PostgreSQLの引用符なしの表とSQLiteの表は、
+/// 小文字で書く（PostgreSQLの`"Users"`は`Users`のまま）。
 ///
 /// 確かに分けられない形（`WITH`、表の関数や副問い合わせへの`INSERT`等）は
 /// エラーにする。呼ぶ側は、そのとき文を断る。
@@ -898,8 +904,8 @@ fn resolve_joined(qualifier: &[&Ident], joined: &[Joined], fold: NameFold) -> Op
     found.map(str::to_string)
 }
 
-/// Fully schema-qualified table name (all parts joined with `.`), preserving
-/// exactly what appeared in the SQL - see [`resolve_query_tables`]'s doc
+/// Fully schema-qualified table name (all parts joined with `.`), keeping
+/// every part that appeared in the SQL - see [`resolve_query_tables`]'s doc
 /// comment for why this must not collapse to the bare table name.
 ///
 /// `fold`に従って、小文字にそろえる（[`NameFold`]。PostgreSQL・SQLiteと

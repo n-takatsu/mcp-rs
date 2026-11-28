@@ -69,7 +69,8 @@ enum Check {
     StreamRange,
     /// `HSCAN`・`SSCAN`・`ZSCAN`: `COUNT`は`max_rows`まで
     Scan,
-    /// `LPOP`・`RPOP`: 数（`args[1]`）は`max_rows`まで
+    /// `LPOP`・`RPOP`: 数（`args[1]`）は`max_rows`まで。取り出す値の長さの
+    /// 合計も、`max_result_bytes`まで（`LRANGE`で先に読む）
     PopCount,
 }
 
@@ -520,10 +521,55 @@ impl RedisHandler {
                 }
             }
             Check::PopCount => {
-                if let Some(count) = args.get(1) {
-                    if !count.parse::<usize>().is_ok_and(|c| c <= max) {
+                let n = match args.get(1) {
+                    Some(count) => match count.parse::<usize>() {
+                        Ok(c) if c <= max => c,
+                        _ => {
+                            return Err(McpError::InvalidParams(format!(
+                                "{name} count must be from 0 to max_rows ({max})"
+                            )))
+                        }
+                    },
+                    None => 1,
+                };
+                // Redisは値を消してから返すので、後で結果を切ると、切った値は
+                // 戻らない（PR #822のレビュー）。取り出す前に、同じ範囲を
+                // `LRANGE`で読み、返す形のJSONの長さを確かめる（PR #823の
+                // レビュー。JSONのエスケープで長くなる分も数える）。確かめた
+                // 後に、ほかのクライアントがリストを変えたら、取り出す値は
+                // 確かめた値と違うことがある（そのときも結果は切らない）
+                if n > 0 {
+                    let (start, stop) = if name == "LPOP" {
+                        ("0".to_string(), (n - 1).to_string())
+                    } else {
+                        (format!("-{n}"), "-1".to_string())
+                    };
+                    let total = match self.send_raw("LRANGE", &[key()?, start, stop]).await {
+                        Ok(items @ redis::Value::Array(_)) => {
+                            let mut json = value_to_json(items);
+                            // 数を書かなければ、1つの値を返す（配列ではない）
+                            if args.get(1).is_none() {
+                                json = json
+                                    .as_array()
+                                    .and_then(|items| items.first())
+                                    .cloned()
+                                    .unwrap_or(JsonValue::Null);
+                            }
+                            serde_json::to_string(&json).map_or(0, |text| text.len())
+                        }
+                        // リストでない鍵は、`LPOP`・`RPOP`もWRONGTYPEで断る
+                        Err(e) if e.code() == Some("WRONGTYPE") => 0,
+                        Ok(other) => {
+                            return Err(McpError::ExternalApi(format!(
+                                "Redis LRANGE returned {other:?} instead of a list"
+                            )))
+                        }
+                        Err(e) => return Err(McpError::ExternalApi(format!("Redis LRANGE: {e}"))),
+                    };
+                    if total > self.limits.max_result_bytes {
                         return Err(McpError::InvalidParams(format!(
-                            "{name} count must be from 0 to max_rows ({max})"
+                            "{name} would remove and return {total} bytes, more than max_result_bytes ({}) allows. Nothing was removed. Remove fewer values",
+                            self.limits.max_result_bytes
                         )));
                     }
                 }
@@ -566,7 +612,10 @@ impl RedisHandler {
         let mut truncated = false;
         let max = self.limits.max_items;
         let max_bytes = self.limits.max_result_bytes;
-        if check == Check::Scan {
+        if check == Check::PopCount {
+            // `LPOP`・`RPOP`の結果は切らない（PR #822のレビュー）。切った値は、
+            // もうリストに無い。長さは、送る前に確かめた
+        } else if check == Check::Scan {
             // `HSCAN`・`SSCAN`・`ZSCAN`の結果は切らない（PR #799のレビュー）。
             // 切った項目は、次のカーソルでは返らないため（`scan_keys`と同じ）。
             // `COUNT`は目安なので、`max_rows`を超えることがある（小さい形

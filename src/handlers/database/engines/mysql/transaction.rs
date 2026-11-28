@@ -3,6 +3,7 @@
 //! Provides ACID transaction support with savepoint functionality
 //! Ensures data integrity and consistent database operations
 
+use super::connection::{convert_params, convert_value};
 use crate::handlers::database::{
     engine::DatabaseTransaction,
     types::{DatabaseError, ExecuteResult, QueryResult, Value},
@@ -37,53 +38,6 @@ impl MySqlTransaction {
             is_active: Arc::new(Mutex::new(true)),
         }
     }
-
-    /// Convert mysql_async Value to our Value type
-    fn convert_value(mysql_value: mysql_async::Value) -> Value {
-        match mysql_value {
-            mysql_async::Value::NULL => Value::Null,
-            mysql_async::Value::Bytes(bytes) => match String::from_utf8(bytes.clone()) {
-                Ok(s) => Value::String(s),
-                Err(_) => Value::Binary(bytes),
-            },
-            mysql_async::Value::Int(i) => Value::Int(i),
-            mysql_async::Value::UInt(u) => Value::Int(u as i64),
-            mysql_async::Value::Float(f) => Value::Float(f as f64),
-            mysql_async::Value::Double(d) => Value::Float(d),
-            mysql_async::Value::Date(year, month, day, hour, minute, second, micro) => {
-                let datetime_str = format!(
-                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}",
-                    year, month, day, hour, minute, second, micro
-                );
-                Value::String(datetime_str)
-            }
-            mysql_async::Value::Time(neg, days, hours, minutes, seconds, micros) => {
-                let sign = if neg { "-" } else { "" };
-                let total_hours = days * 24 + hours as u32;
-                let time_str = format!(
-                    "{}{}:{:02}:{:02}:{:06}",
-                    sign, total_hours, minutes, seconds, micros
-                );
-                Value::String(time_str)
-            }
-        }
-    }
-
-    /// Convert our Value type to mysql_async params
-    fn convert_params(params: &[Value]) -> Vec<mysql_async::Value> {
-        params
-            .iter()
-            .map(|v| match v {
-                Value::Null => mysql_async::Value::NULL,
-                Value::Int(i) => mysql_async::Value::Int(*i),
-                Value::Float(f) => mysql_async::Value::Double(*f),
-                Value::String(s) => mysql_async::Value::Bytes(s.as_bytes().to_vec()),
-                Value::Binary(b) => mysql_async::Value::Bytes(b.clone()),
-                Value::Bool(b) => mysql_async::Value::Int(if *b { 1 } else { 0 }),
-                _ => mysql_async::Value::NULL,
-            })
-            .collect()
-    }
 }
 
 #[async_trait]
@@ -96,7 +50,7 @@ impl DatabaseTransaction for MySqlTransaction {
             ));
         }
 
-        let mysql_params = Self::convert_params(params);
+        let mysql_params = convert_params(params);
 
         let mut conn = self.conn.lock().await;
         let result: Vec<mysql_async::Row> = conn
@@ -126,8 +80,15 @@ impl DatabaseTransaction for MySqlTransaction {
         let rows: Vec<Vec<Value>> = result
             .into_iter()
             .map(|row| {
+                // 列の型を見て、接続と同じに変換する（PR #822のレビュー。符号なしの
+                // 大きな整数が負の数に、TIMEのマイクロ秒の前が`:`になっていた）
+                let columns = row.columns();
                 let values: Vec<mysql_async::Value> = row.unwrap();
-                values.into_iter().map(Self::convert_value).collect()
+                values
+                    .into_iter()
+                    .zip(columns.iter())
+                    .map(|(value, column)| convert_value(value, column))
+                    .collect()
             })
             .collect();
 
@@ -149,7 +110,7 @@ impl DatabaseTransaction for MySqlTransaction {
             ));
         }
 
-        let mysql_params = Self::convert_params(params);
+        let mysql_params = convert_params(params);
 
         let mut conn = self.conn.lock().await;
         conn.exec_drop(sql, mysql_params)
