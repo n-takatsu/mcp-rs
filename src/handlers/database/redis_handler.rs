@@ -534,7 +534,10 @@ impl RedisHandler {
                 };
                 // Redisは値を消してから返すので、後で結果を切ると、切った値は
                 // 戻らない（PR #822のレビュー）。取り出す前に、同じ範囲を
-                // `LRANGE`で読んで長さを確かめる
+                // `LRANGE`で読み、返す形のJSONの長さを確かめる（PR #823の
+                // レビュー。JSONのエスケープで長くなる分も数える）。確かめた
+                // 後に、ほかのクライアントがリストを変えたら、取り出す値は
+                // 確かめた値と違うことがある（そのときも結果は切らない）
                 if n > 0 {
                     let (start, stop) = if name == "LPOP" {
                         ("0".to_string(), (n - 1).to_string())
@@ -542,13 +545,18 @@ impl RedisHandler {
                         (format!("-{n}"), "-1".to_string())
                     };
                     let total = match self.send_raw("LRANGE", &[key()?, start, stop]).await {
-                        Ok(redis::Value::Array(items)) => items
-                            .iter()
-                            .map(|item| match item {
-                                redis::Value::BulkString(bytes) => bytes.len(),
-                                _ => 0,
-                            })
-                            .fold(0usize, usize::saturating_add),
+                        Ok(items @ redis::Value::Array(_)) => {
+                            let mut json = value_to_json(items);
+                            // 数を書かなければ、1つの値を返す（配列ではない）
+                            if args.get(1).is_none() {
+                                json = json
+                                    .as_array()
+                                    .and_then(|items| items.first())
+                                    .cloned()
+                                    .unwrap_or(JsonValue::Null);
+                            }
+                            serde_json::to_string(&json).map_or(0, |text| text.len())
+                        }
                         // リストでない鍵は、`LPOP`・`RPOP`もWRONGTYPEで断る
                         Err(e) if e.code() == Some("WRONGTYPE") => 0,
                         Ok(other) => {

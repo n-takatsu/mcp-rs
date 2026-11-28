@@ -187,10 +187,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （`Dockerfile`が`database,mysql-backend`だけでビルドしていた）。既定の
     ビルドと同じエンジンを入れる
   - `[database]`の`ssl_root_cert`の`${VAR}`を展開していなかった（どの
-    エンジンでも、`${VAR}`の文字のままファイルを開いて失敗した）
+    エンジンでも、`${VAR}`の文字のままファイルを開いて失敗した）。`${VAR}`で
+    始まるパスは、今までの説明のとおり、展開した値をそのまま使う（相対
+    パスでも、設定ファイルのフォルダを基準にしない）
   - Redisの`LPOP`・`RPOP`で、`max_result_bytes`を超える値を、取り出して
     から結果を切っていた（切った値は、もうリストに無い）。取り出す前に
-    `LRANGE`で長さを確かめ、超えるなら取り出さずに断る。結果は切らない
+    `LRANGE`で読み、返す形のJSONの長さを確かめ、超えるなら取り出さずに
+    断る。結果は切らない。確かめた後に、ほかのクライアントがリストを
+    変えたら、確かめた値と違う値を取り出し、`max_result_bytes`を超えて
+    返すことがある
   - MongoDBの`insert_documents`で、mongosが結果を受け取れなかったエラー
     （`Write results unavailable`）が最初のドキュメントのとき、「入って
     いない」と言っていた。入ったか分からないと書く
