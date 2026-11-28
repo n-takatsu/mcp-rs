@@ -33,6 +33,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // `network = "allowlist"`のプラグインの中継のプロキシ（#615）。mcp-rsの
+    // Dockerイメージの中で、mcp-rsが起動する。設定ファイル・ログには触れない
+    if args.get(1).map(String::as_str) == Some(mcp_rs::egress_proxy::SUBCOMMAND) {
+        if let Err(e) = mcp_rs::egress_proxy::run(&args[2..]).await {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // mcp-rsの登録を外す（#636）
     if args.get(1).map(String::as_str) == Some(mcp_rs::uninstall::SUBCOMMAND) {
         match mcp_rs::uninstall::run(&args[2..]) {

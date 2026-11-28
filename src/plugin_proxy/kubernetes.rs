@@ -435,6 +435,7 @@ pub(super) async fn prepare(
         args: delete_args,
         env: kubectl.env.clone(),
         ignore_already_removed: false,
+        then: None,
     });
     let result = async {
         let uid = kubectl

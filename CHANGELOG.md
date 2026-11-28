@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- コンテナのプラグインで、許可した行き先にだけ通信させる`network = "allowlist"`
+  と`allowed_hosts`（`["api.example.com:443"]`、`*.example.com:443`も可）を
+  足した（#615）。今までは、ネットワークは無し（`none`）か全部（`bridge`）しか
+  選べず、外のAPIを使うプラグインは、AIから受け取った情報をどこへでも送れた
+  - mcp-rsは、外に出られない内部のネットワーク（`--internal`）にプラグインを
+    入れ、そのネットワークと`bridge`の両方につないだ中継のプロキシのコンテナを
+    起動する。プロキシは、mcp-rsのDockerイメージ（同じ版）で動く新しい
+    サブコマンド`mcp-rs egress-proxy`。プラグインには`HTTPS_PROXY`等で教える
+  - 中継するのはHTTPSの`CONNECT`だけ（中身は復号しない）。名前はプロキシが
+    引き、ループバック・プライベート等のアドレスにはつながない。平文のHTTP・
+    IPアドレスは断る。中継した・断った行き先は`[plugin <名前>/egress]`のログに出る
+  - プロキシのイメージも事前に`docker pull`する（`egress_proxy_image`で変えられる）。
+    Docker 25以降が要る
+  - 許した行き先そのものへの持ち出し、DNSの問い合わせに載せた持ち出し（Dockerの
+    版による）、プロンプトインジェクションは防げないこと、子プロセスと
+    Kubernetesのプラグインには効かないことを、文書に書いた
+
 ### Changed
 
 - プラグインの起動の途中で終了の合図（SIGTERM・Ctrl+C）を受けたら、起動を
