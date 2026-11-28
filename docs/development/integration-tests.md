@@ -34,7 +34,7 @@ PostgreSQL・Redisのサーバーが要るテストは`#[ignore]`にしてあり
 | Redis（#529） | `database_redis_tools_test` | `TEST_REDIS_URL` |
 | MongoDB（#530） | `database_mongodb_tools_test` | `TEST_MONGODB_URL` |
 
-SQLite（#528）は、テストの中でファイルを作るので、サーバーが要らない（`mod`の`database::sqlite_integration_tests`）。featureは要らない（SQLiteのエンジンは、いつもビルドに入る）: `cargo test --test mod database::sqlite_integration_tests`。MySQLのエンジンの結合テスト（`mod`の`database::mysql_integration_tests`）は`#[ignore]`で、CIは`TEST_MYSQL_URL`を渡して`--ignored`で実行する。
+SQLite（#528）は、テストの中でファイルを作るので、サーバーが要らない（`mod`の`database::sqlite_integration_tests`）。SQLiteのエンジンはいつもビルドに入るが、このテストは`sqlite`のfeatureのときだけ入る: `cargo test --features sqlite --test mod database::sqlite_integration_tests`。MySQLのエンジンの結合テスト（`mod`の`database::mysql_integration_tests`）は`#[ignore]`で、CIは`TEST_MYSQL_URL`を渡して`--ignored`で実行する。
 
 ## ローカルで実行する
 

@@ -179,8 +179,8 @@ redis-backend = ["database", "redis"]
 # (#527), so release builds and the Docker image can use engine = "mysql"
 mysql-backend = ["database", "mysql_async", "dep:lru"]
 postgresql-backend = []
-# No code checks this feature: the SQLite engine (#528) is always built, as
-# sqlx always has SQLite. Kept so that builds passing --features sqlite work
+# The SQLite engine (#528) is always built, as sqlx always has SQLite. Only
+# tests/database/sqlite_integration_tests.rs checks this feature
 sqlite = []
 # MongoDB engine: engine = "mongodb" in [database] (#530). On by default, so
 # release builds and the Docker image include it
