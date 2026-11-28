@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     入れ、そのネットワークと、外に出るためのネットワーク（ユーザー定義）の
     両方につないだ中継のプロキシのコンテナを起動する。プロキシは、mcp-rsのDockerイメージ（同じ版）で動く新しい
     サブコマンド`mcp-rs egress-proxy`。プラグインには`HTTPS_PROXY`等で教える
-  - 中継するのはHTTPSの`CONNECT`だけ（中身は復号しない）。名前はプロキシが
-    引き、ループバック・プライベート等のアドレスにはつながない。平文のHTTP・
+  - 中継するのは`CONNECT`だけ。つないだ後は許可した行き先へのTCPのトンネルで、
+    中身は復号も確認もしない（守るのは行き先の名前とポート）。名前はプロキシが
+    引き、ループバック・プライベート等のアドレスにはつながない。外側の平文のHTTP要求・
     IPアドレスは断る。中継した・断った行き先は`[plugin <名前>/egress]`のログに出る
   - 内部のネットワークは、Docker 28以降では出入り口（ゲートウェイ）も
     切り離す（`gateway_mode_ipv4=isolated`）。`--internal`だけでは、プラグインが

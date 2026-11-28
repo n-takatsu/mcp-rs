@@ -90,7 +90,7 @@ If the plugin cannot start (for example, Docker is not running or the image has 
 
 ### Reaching only some hosts
 
-A plugin that calls an outside API needs the network, but with `network = "bridge"` it can send what it receives from the AI client to any address. From v0.32.0, `network = "allowlist"` relays its HTTPS traffic only to the hosts you list (see below for what this does not cover):
+A plugin that calls an outside API needs the network, but with `network = "bridge"` it can send what it receives from the AI client to any address. From v0.32.0, `network = "allowlist"` relays its traffic (through `HTTPS_PROXY`) only to the hosts and ports you list (see below for what this does not cover):
 
 ```toml
 [plugins.container]
@@ -106,7 +106,7 @@ mcp-rs then:
 2. creates a second, ordinary network (`mcp-rs-<plugin name>-<random>-out`) and starts an egress proxy in a second container (`mcp-rs-<plugin name>-<random>-egress`), on both networks. The proxy is mcp-rs itself (`mcp-rs egress-proxy`), from the mcp-rs Docker image of the same version, with the same restrictions as the plugin (no capabilities, read-only)
 3. starts the plugin on the internal network, with `HTTPS_PROXY` and `HTTP_PROXY` (and the lower-case names) set to the proxy
 
-The proxy relays only HTTPS (`CONNECT host:port`) to a host and port in `allowed_hosts`, without decrypting it. It looks up the name itself and does not connect when the name points to a loopback, private, link-local or other non-public address, so an allowed name cannot be used to reach your local network or the Docker host. Plain HTTP and IP addresses are refused. The proxy's messages, including each allowed and refused connection, are in the log lines that start with `[plugin <name>/egress]`. When the plugin stops, mcp-rs removes both containers and both networks.
+The proxy relays only `CONNECT host:port` (the way HTTPS goes through a proxy) to a host and port in `allowed_hosts`. After that, it passes the bytes through as a TCP tunnel without decrypting or checking them, so traffic that is not TLS also reaches an allowed host and port: what it limits is the destination. It looks up the name itself and does not connect when the name points to a loopback, private, link-local or other non-public address, so an allowed name cannot be used to reach your local network or the Docker host. Plain HTTP requests to the proxy (`GET http://...`) and IP addresses are refused. The proxy's messages, including each allowed and refused connection, are in the log lines that start with `[plugin <name>/egress]`. When the plugin stops, mcp-rs removes both containers and both networks.
 
 Before using it:
 
