@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-28
+
 ### Added
 
 - 公式のMCP Registry（`registry.modelcontextprotocol.io`）に、リリースの
@@ -317,7 +319,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （断る側）。許可のリソースの側は、そろえずに、書いたとおりに比べるので、
     次のように書き直すこと: PostgreSQLは、引用符なしで使う表を小文字で
     （`"Users"`と引用符で囲んで使う表は、そのまま`Users`）、SQLiteは、
-    すべて小文字で
+    すべて小文字で。小文字にするのはASCIIの文字だけで、ほかの文字は
+    そのまま（`ÄNotes`は`Änotes`。#825）
   - 確かめるのは、SQLに書いた表の名前だけ。その先でデータベースがすること
     （PostgreSQLの継承・パーティションの子の表、ビューの元の表、トリガー、
     `ON DELETE CASCADE`）は見ない。親の表・ビューへの許可は、それを通して

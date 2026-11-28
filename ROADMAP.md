@@ -1,7 +1,7 @@
 # 🗺️ mcp-rs プロジェクト ロードマップ
 
 > **最終更新**: 2026年11月28日
-> **バージョン**: v1.19
+> **バージョン**: v1.20
 > **ステータス**: アクティブ開発中
 
 ## 🎯 プロジェクト概要
@@ -31,6 +31,7 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 | v0.28.0 | 2026-11-18 | MCPの2026-07-28版に、新旧の両方を受ける形で対応する（#570）、`mcp-rs check`で`[database]`・`[[plugins]]`も確かめる（#589） |
 | v0.29.0 | 2026-11-19 | 導入を簡単にする（続き）と使いやすさ: `init`でデータベース（#590）、`database-keyring`（#628）、ScoopとHomebrew（#578）、`uninstall`（#636）、新しい版の知らせ（#635）、投稿の検索（#637）、予約投稿（#625）、使われていないモジュールの整理（#638）、小さな強化（#598） |
 | v0.30.0 | 2026-11-26 | 本体の強化（WordPress・MCP・導入）: 複数のWordPressのサイト（#640・#657）、コメント（#639）、リビジョン（#641）、カスタム投稿タイプ（#642）、YouTube Shorts（#680）、MCPのプロンプト（#643）、リソースのテンプレート（#644）、Claude Desktopの拡張機能（#632）、`init`でデータベースだけ（#645）、設定ファイルが無くても起動（#667）、ツールの説明（#676）、WindowsのACL（#674）、Dockerイメージの静的リンク（#631）、リモートのデータベースで`ssl_mode`を必須に（#722）、過去の版のレビューの指摘（#684・#692・#697・#705・#710・#717・#724・#744・#746・#750・#755・#758・#759・#760）。リリースの後に、公式のMCP Registryに登録（#668） |
+| v0.31.0 | 2026-11-28 | データベース: SQLite（#528）、Redis（#529）、MongoDB（#530）、`explain_query`（#646）、マイクロセグメンテーションを`execute_command`にも（#609）、データベースのライブラリのコードのレビューの指摘（#768。列の暗号化は外した）、v0.30.0のレビューで後回しにした指摘（#785）、v0.30.0からの変更のレビューの指摘（#806〜#810）、`upload_media`の許可フォルダの案内（#819） |
 
 ---
 
@@ -50,35 +51,7 @@ mcp-rsは、Rustで書いたModel Context Protocol (MCP) サーバーです。Cl
 
 MCPのクライアント（Claude Desktop・Claude Code等）から使える機能に絞る（#419で範囲を見直した。SAML・LDAP・MFA・マルチテナント・請求システム・ゼロコピー/分散キャッシュは対象外。SAML・LDAPとの連携は、OAuth 2.1の認可サーバー（IdP）側で行う）。
 
-### 🔜 v0.31.0: データベース（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/10)）
-
-**データベースの対応を広げる**（#526）
-
-データベースのハンドラーは、MySQL・MariaDB・PostgreSQL・SQLite・Redis・MongoDBのエンジンをライブラリとして持っている。用意してあるエンジンを、PostgreSQL（#453）と同じ安全性（既定は読み取りだけ、行数の上限、タイムアウト）で、本体（`[database]`）から使えるようにする。どのエンジンも、リリースのバイナリ・Dockerイメージに含めるかを、それぞれのIssueで決める（MySQL・MariaDBは含めた。約0.7MB増）。
-
-- ✅ #527 MySQL・MariaDB（v0.25.0）、✅ #574 `sql_mode`による検査のすり抜け（v0.26.0）
-- ✅ #528 SQLite（同梱のSQLiteの脆弱性の扱いを含む。#449 はsqlxの対応待ち）
-- ✅ #529 Redis、✅ #530 MongoDB
-- ✅ #646 SQLの実行計画（EXPLAIN）を見るツール
-- ✅ #609 マイクロセグメンテーション（表ごとの許可）を、`execute_command`にもかける
-- ✅ #768 データベースのライブラリのコード（列の暗号化・ゼロトラスト・MySQL）のレビューの指摘（列の暗号化は、本体から使わないので外した）
-
-**v0.30.0のレビューで後回しにした指摘**
-
-- ✅ #785 `/wp/v2`の外のタクソノミーのIDを確かめる・`init`で新しい設定ファイルに置き換えるときの、質問中の編集を確かめる
-
-**v0.30.0からv0.31.0までの変更のレビュー（#806）の指摘**（v0.31.0を出す前に直す）
-
-- ✅ #807 MySQLの結合した`UPDATE`・`DELETE`で、`JOIN`しただけの表に`read`を求める（マイクロセグメンテーションのすり抜け）
-- ✅ #808 MongoDB・Redis・SQLiteのハンドラーと`mcp-rs check`（書き込みの成否が分からないときの伝え方等）
-- ✅ #809 リリースのやり直しで`.mcpb`を上書きせず、MCP Registryのハッシュとずらさない
-- #810 データベースの設定例・ツールの説明・ドキュメント・CIを、実際の動きに合わせる
-
-**WordPress（データベースだけの方針の例外）**
-
-- #819 `upload_media`の`file_path`を断るエラーで、使える許可フォルダを案内する（stdioのときだけ）
-
-### 📅 v0.32.0: プラグイン（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/11)）
+### 🔜 v0.32.0: プラグイン（[マイルストーン](https://github.com/n-takatsu/mcp-rs/milestone/11)）
 
 - #615 プラグインのコンテナで、許可した行き先にだけ通信できるようにする（egressの許可リスト）
 - #616 プラグインを、ストアのように探して入れ、管理する
@@ -118,11 +91,10 @@ v0.33.0までで機能をそろえ、v1.0.0までは安定化と、実際に使�
 
 ## 📋 GitHub Issues
 
-- [Milestone v0.31.0](https://github.com/n-takatsu/mcp-rs/milestone/10) - データベース
 - [Milestone v0.32.0](https://github.com/n-takatsu/mcp-rs/milestone/11) - プラグイン
 - [Milestone v0.33.0](https://github.com/n-takatsu/mcp-rs/milestone/12) - WordPressの強化
 - [Milestone v1.0.0](https://github.com/n-takatsu/mcp-rs/milestone/3) - 安定化（v0.33.0より後）
-- 完了: [v0.30.0](https://github.com/n-takatsu/mcp-rs/milestone/9)（本体の強化（WordPress・MCP・導入））・[v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8)（導入を簡単にする（続き）と使いやすさ）・[v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6)（セキュリティの強化）・[v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7)（MCPの新しい版）・[Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（HTTPモードの認可・ツールの権限・監査ログ）
+- 完了: [v0.31.0](https://github.com/n-takatsu/mcp-rs/milestone/10)（データベース）・[v0.30.0](https://github.com/n-takatsu/mcp-rs/milestone/9)（本体の強化（WordPress・MCP・導入））・[v0.29.0](https://github.com/n-takatsu/mcp-rs/milestone/8)（導入を簡単にする（続き）と使いやすさ）・[v0.27.0](https://github.com/n-takatsu/mcp-rs/milestone/6)（セキュリティの強化）・[v0.28.0](https://github.com/n-takatsu/mcp-rs/milestone/7)（MCPの新しい版）・[Epic #41](https://github.com/n-takatsu/mcp-rs/issues/41)（HTTPモードの認可・ツールの権限・監査ログ）
 
 ## 📚 ドキュメント
 
