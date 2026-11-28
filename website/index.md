@@ -86,7 +86,17 @@ See [Database Integration](docs/database/) for the settings.
 
 ## Current Status
 
-## ✅ Recently Completed (v0.30.0)
+## ✅ Recently Completed (v0.31.0)
+
+More databases. Library users: some changes are not backward compatible (for example, micro-segmentation table names are now compared in lower case); see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.31.0) before updating.
+
+- **🗄️ SQLite, Redis and MongoDB**: `[database]` takes `engine = "sqlite"` (the path of the database file), `"redis"` and `"mongodb"`, with the same safety as PostgreSQL and MySQL: read-only by default, limits on rows, bytes and time. Redis and MongoDB have their own tools (`redis_command`, `scan_keys`; `find`, `aggregate`, `count_documents`), and their write tools appear only with `allow_write = true`. See [Database Integration](docs/database/)
+- **🔍 `explain_query`**: The plan of a `SELECT` (PostgreSQL, MySQL, MariaDB, SQLite), without running it
+- **📝 `upload_media`**: In STDIO mode, when `file_path` is outside `upload_allowed_dirs`, the error lists the allowed folders, so the AI can copy the file there and retry instead of sending it as base64
+- **📋 MCP Registry**: mcp-rs is listed in the official MCP Registry as `io.github.n-takatsu/mcp-rs`, and each release is published there automatically
+- **🔧 Fixes**: Fixes from the review of the changes since v0.30.0. For library users, column encryption was removed, and micro-segmentation now also checks `execute_command`
+
+## ✅ v0.30.0
 
 A stronger core for WordPress, MCP and setup. Some changes affect existing settings (for example, `ssl_mode` is now required for remote databases); see the [release notes](https://github.com/n-takatsu/mcp-rs/releases/tag/v0.30.0) before updating.
 
