@@ -439,10 +439,15 @@ fn egress_launch(
     })
 }
 
-/// `docker`（か`docker_command`）の`Command`。コンソールのウィンドウを開かない
+/// `docker`（か`docker_command`）の`Command`。コンソールのウィンドウを開かない。
+/// 待つのをやめた（期限切れ・終了の合図）ら止める（PR #828のレビュー。
+/// `docker network create`も、返らなければ残さない）
 fn docker_command(program: &str, env: &[(String, String)]) -> Command {
     let mut command = Command::new(program);
-    command.env_clear().envs(env.iter().cloned());
+    command
+        .env_clear()
+        .envs(env.iter().cloned())
+        .kill_on_drop(true);
     #[cfg(windows)]
     {
         command.creation_flags(0x0800_0000);
@@ -485,7 +490,6 @@ async fn start_egress_proxy(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("could not start the egress proxy with '{program}': {e}"))?;
     if let Some(stderr) = proxy.stderr.take() {
