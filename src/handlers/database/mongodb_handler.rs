@@ -276,7 +276,7 @@ impl MongoHandler {
     ) -> Result<impl std::future::Future<Output = T> + Send + 'static, McpError> {
         let slot = self.busy.clone().try_acquire_owned().map_err(|_| {
             McpError::ExternalApi(format!(
-                "MongoDB {what} was not started: every connection of the pool is still used by earlier operations that mcp-rs stopped waiting for (the server has not answered them yet). Try again later. If this does not clear, stop those operations on the server (killOp) or restart mcp-rs"
+                "MongoDB {what} was not started: every connection of the pool (max_connections) is in use. This request was not sent to the server, so it is safe to try again later. If it keeps failing while nothing else is running, operations that mcp-rs stopped waiting for may still hold the connections: stop them on the server (killOp) or restart mcp-rs"
             ))
         })?;
         Ok(async move {
@@ -965,7 +965,14 @@ fn insert_error(error: &mongodb::error::Error, total: usize) -> String {
         ..
     }) = error.kind.as_ref()
     {
-        if let Some(first) = errors.iter().min_by_key(|e| e.index) {
+        // mongosが結果を受け取れなかったエラー（`Write results unavailable`）は、
+        // そのドキュメントが入ったかが分からないので、件数を言い切らない
+        // （PR #822のレビュー）
+        if let Some(first) = errors
+            .iter()
+            .min_by_key(|e| e.index)
+            .filter(|first| !results_unavailable(&first.message))
+        {
             return partial_insert_message(first.index, total, &first.message);
         }
     }

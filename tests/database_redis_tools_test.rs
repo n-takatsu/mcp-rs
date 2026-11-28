@@ -31,6 +31,15 @@ fn test_server() -> Option<(String, u16)> {
         return None;
     }
     let parsed = url::Url::parse(&url).expect("TEST_REDIS_URL is a URL");
+    // テストは`ssl_mode`を送らないので、ループバックでなければ、テストの
+    // データベースを消した後で失敗する。消す前に止める（PR #822のレビュー）
+    assert!(
+        matches!(
+            parsed.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]")
+        ),
+        "TEST_REDIS_URL must point to a loopback host (localhost, 127.0.0.1 or [::1]): the tests send no ssl_mode and drop their test data"
+    );
     Some((
         parsed
             .host_str()
@@ -290,6 +299,19 @@ async fn redis_write_tool() {
         let err = write(name, json!(["a", "b"])).await.unwrap_err();
         assert!(matches!(err, McpError::InvalidParams(_)), "{name}: {err}");
     }
+    // `max_result_bytes`（1000）を超える値は、取り出さずに断る（PR #822の
+    // レビュー。取り出してから切ると、値が消える）
+    let big = "x".repeat(2000);
+    write("RPUSH", json!(["queue", "small", big]))
+        .await
+        .unwrap();
+    let err = write("RPOP", json!(["queue"])).await.unwrap_err();
+    assert!(matches!(err, McpError::InvalidParams(_)), "{err}");
+    let len = command(&handler, "LLEN", json!(["queue"])).await.unwrap();
+    assert_eq!(len["result"], 2);
+    let popped = write("LPOP", json!(["queue"])).await.unwrap();
+    assert_eq!(popped["result"], "small");
+    write("DEL", json!(["queue"])).await.unwrap();
     let schema = call(&handler, "get_schema", json!({})).await.unwrap();
     assert_eq!(schema["keys"], 7);
 }
