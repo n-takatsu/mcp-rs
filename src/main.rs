@@ -33,6 +33,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // `network = "allowlist"`のプラグインの中継のプロキシ（#615）。mcp-rsの
+    // Dockerイメージの中で、mcp-rsが起動する。設定ファイル・ログには触れない
+    if args.get(1).map(String::as_str) == Some(mcp_rs::egress_proxy::SUBCOMMAND) {
+        if let Err(e) = mcp_rs::egress_proxy::run(&args[2..]).await {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     // mcp-rsの登録を外す（#636）
     if args.get(1).map(String::as_str) == Some(mcp_rs::uninstall::SUBCOMMAND) {
         match mcp_rs::uninstall::run(&args[2..]) {
@@ -699,13 +709,13 @@ async fn wait_for_plugin_cleanups() {
             });
     for failure in &report.failures {
         tracing::warn!(
-            "Could not remove a plugin container or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
+            "Could not remove a plugin container, network or Kubernetes job: {}. Run the command again by hand, or check for any left over (docker ps -a --filter label=mcp-rs.plugin / docker network ls --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
             failure
         );
     }
     if report.timed_out {
         tracing::warn!(
-            "Stopping plugin containers or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
+            "Stopping plugin containers, networks or Kubernetes jobs did not finish within {} seconds: remove any left over by hand (docker ps -a --filter label=mcp-rs.plugin / docker network ls --filter label=mcp-rs.plugin / kubectl get jobs,secrets -l mcp-rs.plugin, with the --context and --namespace of the plugin; if the plugin sets docker_command or kubectl_command, such as podman, use that command instead)",
             timeout.as_secs()
         );
     }

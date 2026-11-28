@@ -103,6 +103,30 @@ const CONTAINER_TMPFS: &str = "/tmp:rw,noexec,nosuid,size=64m";
 /// コンテナに付けるラベル（値はプラグイン名）
 const CONTAINER_LABEL: &str = "mcp-rs.plugin";
 
+/// 許可した行き先にだけ通信させる`container.network`の値（#615）
+const ALLOWLIST_NETWORK: &str = "allowlist";
+
+/// 中継のプロキシの既定のイメージ（このmcp-rsと同じ版）
+const DEFAULT_EGRESS_PROXY_IMAGE: &str =
+    concat!("ghcr.io/n-takatsu/mcp-rs:", env!("CARGO_PKG_VERSION"));
+
+/// `network = "allowlist"`のプラグインの名前の長さの上限。プロキシの
+/// コンテナの名前（`mcp-rs-`・`-`・12文字・`-egress`の27文字を足す）が、
+/// DNSのラベルの上限の63文字に収まるように
+const MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST: usize = 63 - 27;
+
+/// 中継のプロキシの使ってよいメモリ・プロセス数
+const EGRESS_PROXY_MEMORY: &str = "64m";
+const EGRESS_PROXY_PIDS_LIMIT: u32 = 256;
+
+/// 中継のプロキシのtokioの作業スレッドの数（`TOKIO_WORKER_THREADS`）。
+/// 既定はCPUの数なので、CPUの多いホストでも、プロセス数の上限に
+/// かからないようにする（PR #828のレビュー）
+const EGRESS_PROXY_WORKER_THREADS: u32 = 2;
+
+/// プラグインにプロキシを教える環境変数。`env`では渡せない
+const PROXY_ENV_VARS: &[&str] = &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
+
 fn is_docker_cli_env_var(key: &str) -> bool {
     DOCKER_CLI_ENV_VARS
         .iter()
@@ -163,6 +187,23 @@ struct ContainerLaunch {
     program: String,
     args: Vec<String>,
     container_name: String,
+    /// `network = "allowlist"`のとき、内部のネットワークと中継のプロキシ
+    egress: Option<EgressLaunch>,
+}
+
+/// `network = "allowlist"`（#615）で、プラグインの前に用意するもの
+#[derive(Debug)]
+struct EgressLaunch {
+    /// プラグインを入れる、外に出られない内部のネットワーク
+    network: String,
+    /// プロキシだけが外に出るためのネットワーク（ユーザー定義のブリッジ）。
+    /// 既定の`bridge`は、ユーザー定義のネットワークと同じ`docker run`に
+    /// 指定できない（PR #828のレビュー）
+    outside_network: String,
+    /// 中継のプロキシのコンテナの名前
+    proxy_name: String,
+    /// 中継のプロキシを起動する`docker run`の引数
+    proxy_args: Vec<String>,
 }
 
 /// `docker run`の引数を組み立てる。`env_keys`は、値をdockerコマンドの
@@ -204,6 +245,17 @@ fn container_launch(
             config.name
         );
     }
+    let allowlist = network == ALLOWLIST_NETWORK;
+    if !allowlist && container.allowed_hosts.is_some() {
+        return Err(format!(
+            "container.allowed_hosts needs network = \"{ALLOWLIST_NETWORK}\""
+        ));
+    }
+    if !allowlist && container.egress_proxy_image.is_some() {
+        return Err(format!(
+            "container.egress_proxy_image needs network = \"{ALLOWLIST_NETWORK}\""
+        ));
+    }
     let memory = container
         .memory
         .as_deref()
@@ -211,6 +263,14 @@ fn container_launch(
     validate_option_value("container.memory", memory)?;
 
     let container_name = format!("mcp-rs-{}-{}", config.name, instance);
+    let egress = if allowlist {
+        Some(egress_launch(config, container, &container_name)?)
+    } else {
+        None
+    };
+    let network = egress
+        .as_ref()
+        .map_or(network, |egress| egress.network.as_str());
     let mut args: Vec<String> = vec![
         "run".into(),
         "-i".into(),
@@ -259,7 +319,24 @@ fn container_launch(
                 key
             ));
         }
+        if egress.is_some() && PROXY_ENV_VARS.contains(key) {
+            return Err(format!(
+                "environment variable '{}' cannot be set with network = \"{ALLOWLIST_NETWORK}\" (mcp-rs sets it to its proxy)",
+                key
+            ));
+        }
         args.push(format!("--env={}", key));
+    }
+    if let Some(egress) = &egress {
+        // プロキシの名前は、内部のネットワークでDockerが引く。値は秘密ではない
+        for key in PROXY_ENV_VARS {
+            args.push(format!(
+                "--env={}=http://{}:{}",
+                key,
+                egress.proxy_name,
+                crate::egress_proxy::LISTEN_PORT
+            ));
+        }
     }
     for mount in &container.mounts {
         validate_mount_path("source", &mount.source)?;
@@ -297,7 +374,242 @@ fn container_launch(
         program,
         args,
         container_name,
+        egress,
     })
+}
+
+/// `network = "allowlist"`の内部のネットワークと中継のプロキシ（#615）。
+/// プロキシは、内部のネットワークと外に出るネットワーク（どちらもユーザー
+/// 定義）の両方につなぎ（`--network`を
+/// 2つ。Docker 25以降）、プラグインと同じく、ケーパビリティを外し、読み取り
+/// 専用で動かす
+fn egress_launch(
+    config: &PluginConfig,
+    container: &PluginContainerConfig,
+    container_name: &str,
+) -> Result<EgressLaunch, String> {
+    // プロキシのコンテナの名前（`mcp-rs-<名前>-<12文字>-egress`）は、
+    // プラグインが`HTTPS_PROXY`で引くホスト名になる。DNSのラベルの上限
+    // （63文字）に収まる名前だけにする（PR #828のレビュー）。`mcp-rs check`
+    // （`instance`が短い）も同じ上限で確かめる
+    if config.name.len() > MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST {
+        return Err(format!(
+            "plugin name '{}' must be at most {} characters with network = \"{ALLOWLIST_NETWORK}\" (the proxy's container name is used as a host name)",
+            config.name, MAX_PLUGIN_NAME_LEN_WITH_ALLOWLIST
+        ));
+    }
+    let hosts = container.allowed_hosts.as_deref().unwrap_or_default();
+    crate::egress_proxy::parse_allowed_hosts(hosts).map_err(|e| {
+        format!("container.{e} (network = \"{ALLOWLIST_NETWORK}\" needs allowed_hosts, such as [\"api.example.com:443\"])")
+    })?;
+    let image = container
+        .egress_proxy_image
+        .as_deref()
+        .unwrap_or(DEFAULT_EGRESS_PROXY_IMAGE)
+        .trim();
+    validate_option_value("container.egress_proxy_image", image)?;
+    let network = format!("{container_name}-net");
+    let outside_network = format!("{container_name}-out");
+    let proxy_name = format!("{container_name}-egress");
+    let mut proxy_args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "--init".into(),
+        "--pull=never".into(),
+        format!("--name={proxy_name}"),
+        format!("--label={}={}", CONTAINER_LABEL, config.name),
+        format!("--network={network}"),
+        format!("--network={outside_network}"),
+        "--cap-drop=ALL".into(),
+        "--security-opt=no-new-privileges".into(),
+        "--read-only".into(),
+        format!("--memory={EGRESS_PROXY_MEMORY}"),
+        format!("--pids-limit={EGRESS_PROXY_PIDS_LIMIT}"),
+        format!("--env=TOKIO_WORKER_THREADS={EGRESS_PROXY_WORKER_THREADS}"),
+        image.to_string(),
+        crate::egress_proxy::SUBCOMMAND.into(),
+        "--listen".into(),
+        format!("0.0.0.0:{}", crate::egress_proxy::LISTEN_PORT),
+    ];
+    for host in hosts {
+        proxy_args.push("--allow".into());
+        proxy_args.push(host.trim().to_string());
+    }
+    Ok(EgressLaunch {
+        network,
+        outside_network,
+        proxy_name,
+        proxy_args,
+    })
+}
+
+/// `docker`（か`docker_command`）の`Command`。コンソールのウィンドウを開かない。
+/// 待つのをやめた（期限切れ・終了の合図）ら止める（PR #828のレビュー。
+/// `docker network create`も、返らなければ残さない）
+fn docker_command(program: &str, env: &[(String, String)]) -> Command {
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .envs(env.iter().cloned())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
+
+/// `docker network create`の、内部のネットワークの出入り口（ゲートウェイ）を
+/// 切り離すオプション（Docker 28以降、#615）
+const ISOLATED_GATEWAY_OPTIONS: &[&str] = &[
+    "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+    "com.docker.network.bridge.gateway_mode_ipv6=isolated",
+];
+
+/// ゲートウェイを切り離せる（`gateway_mode`）Dockerの版
+const ISOLATED_GATEWAY_MIN_DOCKER: u32 = 28;
+
+/// エンジン（`docker version`のServer）の版の、最初の数。読めなければ
+/// `None`（Podman等の版は5等なので、28より小さいとみなす）
+async fn engine_major_version(program: &str, env: &[(String, String)]) -> Option<u32> {
+    let output = docker_command(program, env)
+        .args(["version", "--format", "{{.Server.Version}}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())?;
+    parse_major_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// `"29.9.3"`の`29`
+fn parse_major_version(version: &str) -> Option<u32> {
+    version
+        .trim()
+        .split(['.', '-', '+'])
+        .next()
+        .and_then(|major| major.parse().ok())
+}
+
+/// `args`（`network create …`）にラベルと名前を足して、ネットワークを作る
+async fn create_network(
+    plugin: &str,
+    program: &str,
+    env: &[(String, String)],
+    mut args: Vec<String>,
+    network: &str,
+) -> Result<(), String> {
+    args.push(format!("--label={CONTAINER_LABEL}={plugin}"));
+    args.push(network.to_string());
+    let created = docker_command(program, env)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("could not run `{program} network create`: {e}"))?;
+    if !created.status.success() {
+        return Err(format!(
+            "could not create the network '{}' for allowed_hosts: {}",
+            network,
+            truncate(String::from_utf8_lossy(&created.stderr).trim(), 300)
+        ));
+    }
+    Ok(())
+}
+
+/// 内部のネットワークを作り、中継のプロキシを起動して、待ち受けを始めるまで
+/// 待つ（#615）。返すプロキシの子プロセスは、プラグインと一緒に止める
+async fn start_egress_proxy(
+    plugin: &str,
+    program: &str,
+    env: &[(String, String)],
+    egress: &EgressLaunch,
+    timeout: Duration,
+) -> Result<Child, String> {
+    // プラグインの入る内部のネットワーク。`--internal`だけでは、プラグインが
+    // ネットワークの出入り口（ゲートウェイ）のアドレスで、Dockerのホストの
+    // サービスにつながる（Docker 29.9で確かめた。PR #828のレビュー）。
+    // Docker 28以降の`gateway_mode`を`isolated`にして、出入り口のアドレスを
+    // 持たせない。受け付けない版（27以前、Podman等）では付けずに作り、警告する
+    let internal = |isolated: bool| {
+        let mut args = vec![
+            "network".to_string(),
+            "create".to_string(),
+            "--internal".to_string(),
+        ];
+        if isolated {
+            args.extend(
+                ISOLATED_GATEWAY_OPTIONS
+                    .iter()
+                    .flat_map(|option| ["--opt".to_string(), option.to_string()]),
+            );
+        }
+        args
+    };
+    //
+    // 切り離すかは、エンジンの版で決める（PR #828のレビュー。作るのに失敗した
+    // だけで切り離さずに作り直すと、Docker 28以降の一時的な失敗でも穴が開く）。
+    // 失敗したら、切り離さずに作り直すことはしない
+    // 版が読めないときは、起動しない（PR #828のレビュー。`docker version`の
+    // 一時的な失敗で、切り離さずに作らない）
+    match engine_major_version(program, env).await {
+        Some(major) if major >= ISOLATED_GATEWAY_MIN_DOCKER => {
+            create_network(plugin, program, env, internal(true), &egress.network).await?;
+        }
+        Some(major) => {
+            create_network(plugin, program, env, internal(false), &egress.network).await?;
+            warn!(
+                "Plugin '{}': the gateway of the internal network is not isolated (the engine is version {}). The plugin may reach services on the Docker host at the gateway address without the egress proxy. Docker {} or later isolates it",
+                plugin, major, ISOLATED_GATEWAY_MIN_DOCKER
+            );
+        }
+        None => {
+            return Err(format!(
+                "could not read the version of the container engine (`{program} version`), which decides whether the internal network for allowed_hosts can isolate its gateway"
+            ));
+        }
+    }
+    // プロキシだけが外に出るネットワーク
+    let outside = vec!["network".to_string(), "create".to_string()];
+    create_network(plugin, program, env, outside, &egress.outside_network).await?;
+    let mut proxy = docker_command(program, env)
+        .args(&egress.proxy_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start the egress proxy with '{program}': {e}"))?;
+    if let Some(stderr) = proxy.stderr.take() {
+        spawn_stderr_logger(format!("{plugin}/egress"), stderr);
+    }
+    let stdout = proxy
+        .stdout
+        .take()
+        .ok_or("could not read the egress proxy's output")?;
+    let ready = tokio::time::timeout(timeout, async {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.trim() == crate::egress_proxy::READY_LINE {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    match ready {
+        Ok(true) => Ok(proxy),
+        Ok(false) => Err(format!(
+            "the egress proxy exited before it was ready (its messages are in the log lines starting with \"[plugin {plugin}/egress]\". The image must be pulled beforehand with `docker pull`)"
+        )),
+        Err(_) => Err(format!(
+            "the egress proxy did not start within {} seconds",
+            timeout.as_secs()
+        )),
+    }
 }
 
 /// プラグインを止めたときに、コンテナ・Jobを消すコマンド。dockerや
@@ -312,6 +624,9 @@ struct Cleanup {
     /// 成功で終わるので、失敗はいつも知らせる（認証のコマンドの失敗の文面に
     /// `No such container`が入ることもあるため。PR #685のレビュー）
     ignore_already_removed: bool,
+    /// 続けて実行する後片付け（`network = "allowlist"`の内部のネットワークを
+    /// 消す等、#615）。このコマンドが失敗しても実行する
+    then: Option<Box<Cleanup>>,
 }
 
 impl Cleanup {
@@ -357,6 +672,20 @@ impl Cleanup {
     /// コマンドを実行し、終了を待つ。起動できない・失敗したら、その理由を
     /// 返す（#684）。既に消えていた場合は成功
     fn execute(&self) -> Result<(), String> {
+        let result = self.execute_one();
+        let Some(then) = &self.then else {
+            return result;
+        };
+        // 前が失敗しても実行し、両方の失敗を返す（PR #828のレビュー。前の
+        // 失敗だけを返すと、残ったネットワークに気づけない）
+        match (result, then.execute()) {
+            (Ok(()), next) => next,
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(next)) => Err(format!("{error}; {next}")),
+        }
+    }
+
+    fn execute_one(&self) -> Result<(), String> {
         let mut command = std::process::Command::new(&self.program);
         command
             .args(&self.args)
@@ -445,6 +774,8 @@ fn is_already_removed(stderr: &str) -> bool {
         "no such container",
         "already in progress",
         "no container with name or id",
+        // `docker network rm`（#615）
+        "no such network",
     ]
     .iter()
     .any(|text| stderr.contains(text))
@@ -820,6 +1151,8 @@ struct Connection {
     cleanup: Option<Cleanup>,
     /// `initialize`・`tools/list`を終えた（起動し終えた）
     started: bool,
+    /// `network = "allowlist"`の中継のプロキシ（#615）。プラグインと一緒に止める
+    egress_proxy: Option<Child>,
 }
 
 impl Drop for Connection {
@@ -832,6 +1165,9 @@ impl Connection {
     /// プロセスを止め、コンテナ・Jobで起動していればそれも消す。
     fn kill(&mut self) {
         let _ = self.child.start_kill();
+        if let Some(proxy) = self.egress_proxy.as_mut() {
+            let _ = proxy.start_kill();
+        }
         if let Some(cleanup) = self.cleanup.take() {
             if self.started {
                 cleanup.run();
@@ -1229,6 +1565,8 @@ impl PluginHandler {
 
         let env = plugin_env(config);
         let mut cleanup = None;
+        // `network = "allowlist"`の中継のプロキシ（#615）
+        let mut egress_proxy = None;
         let mut start_timeout = call_timeout;
         let mut command = match (&config.container, &config.kubernetes) {
             (None, Some(kubernetes)) => {
@@ -1266,6 +1604,63 @@ impl PluginHandler {
                         .unwrap_or(DEFAULT_CONTAINER_NETWORK)
                 );
                 let docker_env = docker_cli_env();
+                if let Some(egress) = &launch.egress {
+                    // 内部のネットワーク・プロキシ・プラグインのコンテナを、まとめて
+                    // 消す。用意の途中で失敗・中断しても残さない（#615）
+                    // 1つずつ消す（PR #828のレビュー。1つのコマンドでまとめて消すと、
+                    // 既に消えたものの「無い」の文面で、ほかの本当の失敗を見落とす）。
+                    // 前が失敗しても、続けて実行する
+                    let step = |args: &[&str], then: Option<Box<Cleanup>>| Cleanup {
+                        program: launch.program.clone(),
+                        args: args.iter().map(|arg| arg.to_string()).collect(),
+                        env: docker_env.clone(),
+                        ignore_already_removed: true,
+                        then,
+                    };
+                    let networks = step(
+                        &["network", "rm", &egress.network],
+                        Some(Box::new(step(
+                            &["network", "rm", &egress.outside_network],
+                            None,
+                        ))),
+                    );
+                    let proxy = step(&["rm", "-f", &egress.proxy_name], Some(Box::new(networks)));
+                    let guard = CleanupOnDrop::new(step(
+                        &["rm", "-f", &launch.container_name],
+                        Some(Box::new(proxy)),
+                    ));
+                    info!(
+                        "Plugin '{}' can reach only {} (network '{}', through the egress proxy '{}')",
+                        config.name,
+                        container.allowed_hosts.as_deref().unwrap_or_default().join(", "),
+                        egress.network,
+                        egress.proxy_name
+                    );
+                    // ネットワークを作るところから、待ち受けを始めるまでの全体に
+                    // 期限を付ける（PR #828のレビュー。`docker network create`が
+                    // 返らないと、起動が止まったままになる）。期限切れでは、
+                    // プロキシの子プロセスを止め、`guard`が後片付けを始める
+                    egress_proxy = Some(
+                        tokio::time::timeout(
+                            start_timeout,
+                            start_egress_proxy(
+                                &config.name,
+                                &launch.program,
+                                &docker_env,
+                                egress,
+                                start_timeout,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| {
+                            format!(
+                                "the egress proxy did not start within {} seconds",
+                                start_timeout.as_secs()
+                            )
+                        })??,
+                    );
+                    cleanup = Some(guard.disarm());
+                }
                 let mut command = Command::new(&launch.program);
                 command
                     .args(&launch.args)
@@ -1273,12 +1668,15 @@ impl PluginHandler {
                     .envs(docker_env.clone())
                     // `--env=NAME`の値は、dockerコマンドの環境変数から渡る
                     .envs(env);
-                cleanup = Some(Cleanup {
-                    program: launch.program,
-                    args: vec!["rm".into(), "-f".into(), launch.container_name],
-                    env: docker_env,
-                    ignore_already_removed: true,
-                });
+                if cleanup.is_none() {
+                    cleanup = Some(Cleanup {
+                        program: launch.program,
+                        args: vec!["rm".into(), "-f".into(), launch.container_name],
+                        env: docker_env,
+                        ignore_already_removed: true,
+                        then: None,
+                    });
+                }
                 command
             }
         };
@@ -1330,6 +1728,7 @@ impl PluginHandler {
             // 起動に失敗して`connection`を破棄するときも、コンテナ・Jobを消す
             cleanup,
             started: false,
+            egress_proxy,
         };
 
         let raw_tools = match tokio::time::timeout(
@@ -1720,6 +2119,7 @@ pub(crate) mod tests {
             args: vec!["job/test-684".to_string()],
             env: Vec::new(),
             ignore_already_removed: false,
+            then: None,
         }
         .run();
         let report = wait_for_cleanups(std::time::Duration::from_secs(30));
@@ -1752,6 +2152,7 @@ pub(crate) mod tests {
                 path.to_string_lossy().into_owned(),
             )],
             ignore_already_removed: false,
+            then: None,
         }
     }
 
@@ -1841,7 +2242,34 @@ pub(crate) mod tests {
             args,
             env: Vec::new(),
             ignore_already_removed: false,
+            then: None,
         }
+    }
+
+    /// `then`の後片付けは、前が失敗しても実行し、両方の失敗を返す（PR #828の
+    /// レビュー）
+    #[test]
+    fn test_cleanup_then_runs_after_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let touched = dir.path().join("then");
+        let mut first = exit_cleanup(1);
+        first.then = Some(Box::new(touch_cleanup(&touched)));
+        let error = first.execute().unwrap_err();
+        assert!(error.contains("exit 1`"), "{error}");
+        assert!(touched.exists(), "the next cleanup did not run");
+
+        let mut both = exit_cleanup(1);
+        both.then = Some(Box::new(exit_cleanup(2)));
+        let error = both.execute().unwrap_err();
+        assert!(
+            error.contains("exit 1`") && error.contains("exit 2`"),
+            "{error}"
+        );
+
+        let mut second_only = touch_cleanup(&dir.path().join("first"));
+        second_only.then = Some(Box::new(exit_cleanup(3)));
+        let error = second_only.execute().unwrap_err();
+        assert!(error.contains("exit 3`"), "{error}");
     }
 
     /// 後片付けのコマンドが失敗したら、コマンドと終了コードを返す（#684）
@@ -1877,6 +2305,7 @@ pub(crate) mod tests {
             args: args.clone(),
             env: Vec::new(),
             ignore_already_removed,
+            then: None,
         };
         assert_eq!(cleanup(true).execute(), Ok(()));
         let error = cleanup(false).execute().unwrap_err();
@@ -2745,6 +3174,8 @@ pub(crate) mod tests {
             read_only: None,
             user: None,
             docker_command: None,
+            allowed_hosts: None,
+            egress_proxy_image: None,
         }
     }
 
@@ -2812,6 +3243,132 @@ pub(crate) mod tests {
         .map(|s| s.to_string())
         .collect();
         assert_eq!(launch.args, expected);
+    }
+
+    #[test]
+    fn test_parse_major_version() {
+        assert_eq!(
+            parse_major_version(
+                "29.9.3
+"
+            ),
+            Some(29)
+        );
+        assert_eq!(parse_major_version("27.5.1"), Some(27));
+        assert_eq!(parse_major_version("28.0.0-rc.1"), Some(28));
+        assert_eq!(parse_major_version("5.4.2"), Some(5));
+        assert_eq!(parse_major_version(""), None);
+        assert_eq!(parse_major_version("unknown"), None);
+    }
+
+    /// `network = "allowlist"`（#615）: プラグインは内部のネットワークに入れ、
+    /// プロキシを環境変数で教える。プロキシは内部のネットワークと外に出る
+    /// ネットワーク（`-out`）に
+    /// つなぎ、許可した行き先だけを渡す
+    #[test]
+    fn test_container_launch_with_allowlist() {
+        let mut container = container_config("example/search:1.0");
+        container.network = Some("allowlist".to_string());
+        container.allowed_hosts = Some(vec![
+            "api.example.com:443".to_string(),
+            "*.cdn.example.com:443".to_string(),
+        ]);
+        let config = container_plugin_config("search", container.clone());
+        let launch = container_launch(&config, &container, &["API_KEY"], "abc123").unwrap();
+        assert!(launch
+            .args
+            .contains(&"--network=mcp-rs-search-abc123-net".to_string()));
+        assert!(!launch.args.iter().any(|a| a == "--network=allowlist"));
+        for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+            assert!(
+                launch.args.contains(&format!(
+                    "--env={key}=http://mcp-rs-search-abc123-egress:3128"
+                )),
+                "{key}: {:?}",
+                launch.args
+            );
+        }
+        let egress = launch.egress.unwrap();
+        assert_eq!(egress.network, "mcp-rs-search-abc123-net");
+        assert_eq!(egress.outside_network, "mcp-rs-search-abc123-out");
+        assert_eq!(egress.proxy_name, "mcp-rs-search-abc123-egress");
+        let expected: Vec<String> = [
+            "run",
+            "--rm",
+            "--init",
+            "--pull=never",
+            "--name=mcp-rs-search-abc123-egress",
+            "--label=mcp-rs.plugin=search",
+            "--network=mcp-rs-search-abc123-net",
+            "--network=mcp-rs-search-abc123-out",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--read-only",
+            "--memory=64m",
+            "--pids-limit=256",
+            "--env=TOKIO_WORKER_THREADS=2",
+            DEFAULT_EGRESS_PROXY_IMAGE,
+            "egress-proxy",
+            "--listen",
+            "0.0.0.0:3128",
+            "--allow",
+            "api.example.com:443",
+            "--allow",
+            "*.cdn.example.com:443",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(egress.proxy_args, expected);
+
+        // プロキシのイメージを変えられる
+        container.egress_proxy_image = Some("registry.example.com/mcp-rs:0.32.0".to_string());
+        let launch = container_launch(&config, &container, &[], "x").unwrap();
+        assert!(launch
+            .egress
+            .unwrap()
+            .proxy_args
+            .contains(&"registry.example.com/mcp-rs:0.32.0".to_string()));
+    }
+
+    #[test]
+    fn test_container_launch_rejects_invalid_allowlist() {
+        let check = |container: PluginContainerConfig, env: &[&str], expected: &str| {
+            let config = container_plugin_config("bad", container.clone());
+            let error = container_launch(&config, &container, env, "x").unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        };
+        let mut allowlist = container_config("example/search:1.0");
+        allowlist.network = Some("allowlist".to_string());
+        // 行き先が無い・形が違う
+        check(allowlist.clone(), &[], "allowed_hosts is empty");
+        let mut bad = allowlist.clone();
+        bad.allowed_hosts = Some(vec!["1.2.3.4:443".to_string()]);
+        check(bad, &[], "not an IP address");
+        let mut bad = allowlist.clone();
+        bad.allowed_hosts = Some(vec!["api.example.com".to_string()]);
+        check(bad, &[], "needs a port");
+        // プロキシの環境変数は`env`で渡せない
+        let mut ok = allowlist.clone();
+        ok.allowed_hosts = Some(vec!["api.example.com:443".to_string()]);
+        check(ok, &["HTTPS_PROXY"], "sets it to its proxy");
+        // 名前が長いと、プロキシのホスト名がDNSのラベルの上限を超える
+        let mut long = allowlist.clone();
+        long.allowed_hosts = Some(vec!["api.example.com:443".to_string()]);
+        let config = container_plugin_config(&"a".repeat(37), long.clone());
+        let error = container_launch(&config, &long, &[], "x").unwrap_err();
+        assert!(error.contains("at most 36 characters"), "{error}");
+        let config = container_plugin_config(&"a".repeat(36), long.clone());
+        let launch = container_launch(&config, &long, &[], "abcdef123456").unwrap();
+        assert_eq!(launch.egress.unwrap().proxy_name.len(), 63);
+        // `allowlist`でないのに`allowed_hosts`・`egress_proxy_image`
+        let mut other = container_config("example/search:1.0");
+        other.network = Some("bridge".to_string());
+        other.allowed_hosts = Some(vec!["api.example.com:443".to_string()]);
+        check(other, &[], "needs network = \"allowlist\"");
+        let mut other = container_config("example/search:1.0");
+        other.egress_proxy_image = Some("x/y:1".to_string());
+        check(other, &[], "needs network = \"allowlist\"");
     }
 
     #[test]

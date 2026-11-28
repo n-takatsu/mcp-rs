@@ -14,6 +14,7 @@ pub mod check;
 pub mod cli_args;
 pub mod config;
 pub mod database_keyring;
+pub mod egress_proxy;
 pub mod error;
 pub mod handlers;
 pub mod init;

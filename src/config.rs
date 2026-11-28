@@ -638,6 +638,13 @@ pub struct PluginContainerConfig {
     pub user: Option<String>,
     /// 使うコマンド。省略時は`docker`（`podman`等も指定できる）
     pub docker_command: Option<String>,
+    /// `network = "allowlist"`で、つないでよい行き先（`"api.example.com:443"`、
+    /// `"*.example.com:443"`。#615）。`CONNECT`だけを受け付け、つないだ後は中身を確認しないTCPのトンネル
+    pub allowed_hosts: Option<Vec<String>>,
+    /// `network = "allowlist"`で、中継のプロキシに使うイメージ。省略時は、
+    /// このmcp-rsと同じ版のmcp-rsのイメージ（`ghcr.io/n-takatsu/mcp-rs:<版>`）。
+    /// プラグインのイメージと同じく、事前に`docker pull`しておく
+    pub egress_proxy_image: Option<String>,
 }
 
 /// プラグインをKubernetesのJobとして起動する設定（#413、

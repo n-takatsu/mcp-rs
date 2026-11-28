@@ -122,6 +122,10 @@ Commands:
   {credentials}
                    Encrypt a WordPress Application Password for the config
                    file (run with --help for details)
+  {egress} --allow <host:port>...
+                   Relay HTTPS to the allowed hosts only. mcp-rs starts it
+                   in a container for plugins with network = \"allowlist\";
+                   it is not meant to be run by hand
 ",
         version = version_text(),
         check = crate::check::SUBCOMMAND,
@@ -130,6 +134,7 @@ Commands:
         credentials = crate::security::credential_tool::SUBCOMMAND,
         keyring = crate::security::keyring_tool::SUBCOMMAND,
         database_keyring = crate::database_keyring::SUBCOMMAND,
+        egress = crate::egress_proxy::SUBCOMMAND,
     )
 }
 

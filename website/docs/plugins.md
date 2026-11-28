@@ -59,7 +59,7 @@ mounts = [
 ]
 
 # Optional:
-# network = "none"          # default. Use "bridge" only for plugins that must reach the network
+# network = "none"          # default. "allowlist" (v0.32.0 and later) reaches only allowed_hosts; "bridge" reaches every address
 # memory = "512m"           # default
 # pids_limit = 256          # default
 # cpus = "1.0"              # default: no limit
@@ -84,9 +84,45 @@ By default, mcp-rs starts the container with:
 | `--memory=512m`, `--pids-limit=256` | Limits on memory and number of processes |
 | `--rm`, `--init` | The container is removed when the plugin stops |
 
-When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode, including on Ctrl+C, and on SIGTERM from `docker stop` or `systemctl stop` on Linux and macOS, even while plugins are still starting), it also runs `docker rm -f` on the container and waits up to 10 seconds for it to finish. From v0.32.0, a signal received while a plugin is still starting stops that start at once (the rest of the plugins are not started), instead of waiting for it to finish starting (up to `start_timeout`, 30 seconds by default), and starts the cleanup at once. This makes it much more likely that the cleanup ends within the grace period of `docker stop` (10 seconds by default), but does not guarantee it: the 10 seconds that mcp-rs waits for the cleanup are counted from when it starts stopping the plugins, and a container that was still being created is removed again 3 seconds later. When mcp-rs itself runs in a container, give it more time to stop, for example `docker stop --timeout 30`, or `stop_grace_period: 30s` in Docker Compose; if it takes longer and mcp-rs is still running when those 10 seconds end (it is not killed first, for example by `docker stop` after its grace period), the log warns you to remove the container by hand. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin`.
+When mcp-rs stops the plugin (or exits, in STDIO or HTTP mode, including on Ctrl+C, and on SIGTERM from `docker stop` or `systemctl stop` on Linux and macOS, even while plugins are still starting), it also runs `docker rm -f` on the container and waits up to 10 seconds for it to finish. From v0.32.0, a signal received while a plugin is still starting stops that start at once (the rest of the plugins are not started), instead of waiting for it to finish starting (up to `start_timeout`, 30 seconds by default), and starts the cleanup at once. This makes it much more likely that the cleanup ends within the grace period of `docker stop` (10 seconds by default), but does not guarantee it: the 10 seconds that mcp-rs waits for the cleanup are counted from when it starts stopping the plugins, and a container that was still being created is removed again 3 seconds later. When mcp-rs itself runs in a container, give it more time to stop, for example `docker stop --timeout 30`, or `stop_grace_period: 30s` in Docker Compose; if it takes longer and mcp-rs is still running when those 10 seconds end (it is not killed first, for example by `docker stop` after its grace period), the log warns you to remove the container by hand. Containers are named `mcp-rs-<plugin name>-<random>` and labeled `mcp-rs.plugin=<plugin name>`, so you can list them with `docker ps --filter label=mcp-rs.plugin` (and the networks of `network = "allowlist"` with `docker network ls --filter label=mcp-rs.plugin`).
 
 If the plugin cannot start (for example, Docker is not running or the image has not been pulled), the warning says so, and Docker's own message is in the log lines that start with `[plugin <name>]`.
+
+### Reaching only some hosts
+
+A plugin that calls an outside API needs the network, but with `network = "bridge"` it can send what it receives from the AI client to any address. From v0.32.0, `network = "allowlist"` relays its traffic (through `HTTPS_PROXY`) only to the hosts and ports you list (see below for what this does not cover):
+
+```toml
+[plugins.container]
+image = "example/search-mcp@sha256:..."   # pin the image by digest
+network = "allowlist"
+allowed_hosts = ["api.example.com:443"]   # host:port; "*.example.com:443" also allows its subdomains
+# egress_proxy_image = "ghcr.io/n-takatsu/mcp-rs:0.32.0"   # default: the image of this mcp-rs version
+```
+
+mcp-rs then:
+
+1. creates an internal Docker network (`docker network create --internal`, named `mcp-rs-<plugin name>-<random>-net`), from which containers cannot reach the outside. On Docker 28 or later, its gateway is also isolated (`com.docker.network.bridge.gateway_mode_ipv4=isolated`), so that the plugin cannot reach services on the Docker host through the gateway address. mcp-rs decides this by the engine version (`docker version`): on an older engine, it creates the network without it and warns in the log, and when the version cannot be read, the plugin does not start
+2. creates a second, ordinary network (`mcp-rs-<plugin name>-<random>-out`) and starts an egress proxy in a second container (`mcp-rs-<plugin name>-<random>-egress`), on both networks. The proxy is mcp-rs itself (`mcp-rs egress-proxy`), from the mcp-rs Docker image of the same version, with the same restrictions as the plugin (no capabilities, read-only)
+3. starts the plugin on the internal network, with `HTTPS_PROXY` and `HTTP_PROXY` (and the lower-case names) set to the proxy
+
+The proxy relays only `CONNECT host:port` (the way HTTPS goes through a proxy) to a host and port in `allowed_hosts`. After that, it passes the bytes through as a TCP tunnel without decrypting or checking them, so traffic that is not TLS also reaches an allowed host and port: what it limits is the destination. It looks up the name itself and does not connect when the name points to a loopback, private, link-local or other non-public address, so an allowed name that points to such an address does not reach it. An allowed name that points to a public address of the Docker host or of another of your machines is still connected to, on the allowed port. Plain HTTP requests to the proxy (`GET http://...`) and IP addresses are refused. The proxy's messages, including each allowed and refused connection, are in the log lines that start with `[plugin <name>/egress]`. When the plugin stops, mcp-rs removes both containers and both networks.
+
+Before using it:
+
+- Pull the proxy image as well, the same as the plugin image: `docker pull ghcr.io/n-takatsu/mcp-rs:<version>` (the version of your mcp-rs, without the `v`), or set `egress_proxy_image`
+- It needs Docker 25 or later (the proxy is started with two `--network` options)
+- The plugin's `name` can be at most 36 characters, because the proxy's container name is used as a host name
+- The plugin must use the proxy settings in `HTTPS_PROXY`. Most HTTP libraries do; a plugin that ignores them cannot reach the allowed hosts (but may still reach services on the Docker host, see below)
+- Pin the plugin image by digest (`image@sha256:...`): an image name such as `:latest` can point to different contents later
+
+What it does not protect:
+
+- A plugin can still send data to the allowed hosts themselves
+- On Docker older than 28 (or another engine, such as Podman, that does not support the isolated gateway), the plugin can reach services on the Docker host at the internal network's gateway address without going through the proxy (on Docker 29.9 without the isolated gateway, this was checked to be possible). mcp-rs warns in the log in that case. Do not leave services without authentication listening on all addresses of such a host
+- Name lookups of the plugin are answered by Docker's own DNS server. On Docker 29.9, it does not look up outside names for an internal network (checked); other versions may differ, and then a plugin may be able to send small amounts of data in DNS queries
+- It applies to container plugins only. A child-process plugin has no isolation, and on Kubernetes `network` is still `none` or `allow`
+- Limiting the network does not stop prompt injection: a plugin can still write instructions for the AI in its tool descriptions and results. Do not use a plugin you do not trust in the same conversation as tools that change things (WordPress, `[database]` with `allow_write`); check what such tools are about to do before you approve them; and in HTTP mode, give separate API keys the tools they need
 
 ## Running a plugin on Kubernetes
 
