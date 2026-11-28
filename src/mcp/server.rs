@@ -223,9 +223,55 @@ fn cancelled_request_id(line: &str) -> Option<String> {
 }
 
 tokio::task_local! {
-    /// STDIOで実行中の要求を、取り消しで止めてよいか（PR #765のレビュー）。
+    /// STDIOで実行中の要求を、取り消しで止めてよいか（PR #765のレビュー）と、
+    /// 途中で止めない処理への取り消しの知らせ（#766）
+    static CALL_ABORT_STATE: Arc<CallAbort>;
+}
+
+/// STDIOで実行中の1つの要求の、止め方の状態
+struct CallAbort {
     /// `CALL_ABORTABLE`・`CALL_NOT_ABORTABLE`・`CALL_ABORTED`
-    static CALL_ABORT_STATE: Arc<std::sync::atomic::AtomicU8>;
+    state: std::sync::atomic::AtomicU8,
+    /// 途中で止めない処理（`keep_call_from_being_aborted`）が取り消されたら
+    /// `true`にする（#766）。処理の側は、[`call_cancellation`]で知る
+    cancelled: tokio::sync::watch::Sender<bool>,
+}
+
+impl CallAbort {
+    fn new() -> Self {
+        Self {
+            state: std::sync::atomic::AtomicU8::new(CALL_ABORTABLE),
+            cancelled: tokio::sync::watch::channel(false).0,
+        }
+    }
+}
+
+/// STDIOで実行中の要求が取り消されたかを知る（#766）。[`call_cancellation`]
+pub(crate) struct CallCancellation(tokio::sync::watch::Receiver<bool>);
+
+impl CallCancellation {
+    /// 取り消された
+    pub(crate) fn is_cancelled(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    /// 取り消されるまで待つ（既に取り消されていれば、すぐ戻る）
+    pub(crate) async fn cancelled(&mut self) {
+        if self.0.wait_for(|cancelled| *cancelled).await.is_err() {
+            // 要求が終わった（知らせる側が無くなった）。取り消されない
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// 途中で止めない処理（`keep_call_from_being_aborted`）が、STDIOの
+/// `notifications/cancelled`で取り消されたことを知る（#766）。プラグインの
+/// ツールの呼び出しは、これでプラグインに取り消しを伝え、応答を待たずに
+/// 終える。STDIOの要求の外（HTTP等）では`None`
+pub(crate) fn call_cancellation() -> Option<CallCancellation> {
+    CALL_ABORT_STATE
+        .try_with(|state| CallCancellation(state.cancelled.subscribe()))
+        .ok()
 }
 
 /// 取り消しで、処理を途中で止めてよい
@@ -246,7 +292,7 @@ pub fn keep_call_from_being_aborted() -> bool {
     use std::sync::atomic::Ordering;
     CALL_ABORT_STATE
         .try_with(|state| {
-            match state.compare_exchange(
+            match state.state.compare_exchange(
                 CALL_ABORTABLE,
                 CALL_NOT_ABORTABLE,
                 Ordering::SeqCst,
@@ -363,8 +409,9 @@ struct RunningLine {
     id: Option<String>,
     len: usize,
     abort: futures::future::AbortHandle,
-    /// 途中で止めてよいか（`keep_call_from_being_aborted`）
-    abort_state: Arc<std::sync::atomic::AtomicU8>,
+    /// 途中で止めてよいか（`keep_call_from_being_aborted`）と、取り消しの
+    /// 知らせ
+    abort_state: Arc<CallAbort>,
     /// 取り消された（応答を返さない）
     cancelled: bool,
 }
@@ -395,14 +442,10 @@ impl StdioQueue {
     #[allow(clippy::type_complexity)]
     fn start_next(
         &mut self,
-    ) -> Option<(
-        String,
-        futures::future::AbortRegistration,
-        Arc<std::sync::atomic::AtomicU8>,
-    )> {
+    ) -> Option<(String, futures::future::AbortRegistration, Arc<CallAbort>)> {
         let line = self.pending.pop_front()?;
         let (abort, registration) = futures::future::AbortHandle::new_pair();
-        let abort_state = Arc::new(std::sync::atomic::AtomicU8::new(CALL_ABORTABLE));
+        let abort_state = Arc::new(CallAbort::new());
         self.running = Some(RunningLine {
             id: line.id,
             len: line.message.len(),
@@ -435,10 +478,13 @@ impl StdioQueue {
             .filter(|running| !running.cancelled && running.id.as_deref() == Some(id))
         {
             running.cancelled = true;
-            // 途中で止めない処理（`keep_call_from_being_aborted`）は、最後まで
-            // 行わせ、応答だけを返さない
+            // 途中で止めない処理（`keep_call_from_being_aborted`）は、止めずに
+            // 取り消しを知らせ、応答だけを返さない。プラグインのツールの
+            // 呼び出しは、プラグインに取り消しを伝えて、応答を待たずに終える
+            // （#766）。ほかの処理は、最後まで行う
             if running
                 .abort_state
+                .state
                 .compare_exchange(
                     CALL_ABORTABLE,
                     CALL_ABORTED,
@@ -449,7 +495,8 @@ impl StdioQueue {
             {
                 running.abort.abort();
             } else {
-                info!("The cancelled request cannot be stopped midway (a plugin tool call); it runs to the end, and its response is not sent");
+                running.abort_state.cancelled.send_replace(true);
+                info!("The cancelled request is not stopped midway; it finishes (a plugin tool call is told to stop), and its response is not sent");
             }
             return true;
         }
@@ -467,6 +514,31 @@ impl StdioQueue {
             None => false,
         }
     }
+}
+
+/// テスト用（#766）: `future`を、STDIOで実行中の要求（`id`は`1`）として
+/// 動かす。返す関数は、`notifications/cancelled`を受けたときと同じく取り消す
+/// （取り消したら`true`）。止めてよい処理は`Err(Aborted)`で終わる
+#[cfg(test)]
+pub(crate) fn run_as_stdio_call<F: std::future::Future>(
+    future: F,
+) -> (
+    impl Fn() -> bool,
+    impl std::future::Future<Output = Result<F::Output, futures::future::Aborted>>,
+) {
+    let queue = Arc::new(std::sync::Mutex::new(StdioQueue::default()));
+    let (registration, abort_state) = {
+        let mut queue = queue.lock().unwrap();
+        assert!(queue.try_push(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#));
+        let (_, registration, abort_state) = queue.start_next().unwrap();
+        (registration, abort_state)
+    };
+    let cancel = move || queue.lock().unwrap().cancel("1");
+    let call = CALL_ABORT_STATE.scope(
+        abort_state,
+        futures::future::Abortable::new(future, registration),
+    );
+    (cancel, call)
 }
 
 /// 落とされたら、タスクを止める（`serve_lines`の子のタスク、PR #765の
